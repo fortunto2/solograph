@@ -1,6 +1,6 @@
 [project]
 name = "solograph"
-version = "0.1.8"
+version = "0.2.0"
 description = "Code intelligence MCP server — multi-project code graph, semantic search, session history, knowledge base, web search"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -21,6 +21,12 @@ dependencies = [
     "tree-sitter-swift>=0.0.1",
     "tree-sitter-typescript>=0.23",
     "tree-sitter-kotlin>=1.0",
+    "tree-sitter-rust>=0.23",
+    "tree-sitter-go>=0.23",
+    "tree-sitter-java>=0.23",
+    "tree-sitter-ruby>=0.23",
+    "tree-sitter-c>=0.23",
+    "tree-sitter-cpp>=0.23",
     # Schema & Config
     "pydantic>=2.12.5",
     "pyyaml>=6.0",

@@ -14,10 +14,20 @@ LANG_MAP = {
     ".ts": "typescript",
     ".tsx": "tsx",
     ".kt": "kotlin",
+    ".rs": "rust",
+    ".go": "go",
+    ".java": "java",
+    ".rb": "ruby",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".cxx": "cpp",
+    ".hpp": "cpp",
 }
 
-# TSX uses same queries as TypeScript
-_TS_FAMILY = {"typescript", "tsx"}
+# Languages that share query definitions with another language
+_QUERY_ALIASES = {"tsx": "typescript"}
 
 # Directories to skip during scan
 SKIP_DIRS = {
@@ -56,6 +66,12 @@ def _get_ts_language(lang: str):
         "typescript": ("tree_sitter_typescript", "language_typescript"),
         "tsx": ("tree_sitter_typescript", "language_tsx"),
         "kotlin": ("tree_sitter_kotlin", "language"),
+        "rust": ("tree_sitter_rust", "language"),
+        "go": ("tree_sitter_go", "language"),
+        "java": ("tree_sitter_java", "language"),
+        "ruby": ("tree_sitter_ruby", "language"),
+        "c": ("tree_sitter_c", "language"),
+        "cpp": ("tree_sitter_cpp", "language"),
     }
 
     if lang not in grammar_map:
@@ -135,10 +151,42 @@ def extract_symbols(file_path: Path, project_name: str, lang: str, rel_path: str
             (class_declaration (identifier) @class.def)
             (object_declaration (identifier) @class.def)
         """,
+        "rust": """
+            (function_item name: (identifier) @func.def)
+            (struct_item name: (type_identifier) @class.def)
+            (enum_item name: (type_identifier) @class.def)
+            (trait_item name: (type_identifier) @protocol.def)
+        """,
+        "go": """
+            (function_declaration name: (identifier) @func.def)
+            (method_declaration name: (field_identifier) @func.def)
+            (type_declaration (type_spec name: (type_identifier) @class.def))
+        """,
+        "java": """
+            (method_declaration name: (identifier) @func.def)
+            (class_declaration name: (identifier) @class.def)
+            (interface_declaration name: (identifier) @protocol.def)
+            (enum_declaration name: (identifier) @class.def)
+        """,
+        "ruby": """
+            (method name: (identifier) @func.def)
+            (class name: (constant) @class.def)
+            (module name: (constant) @class.def)
+        """,
+        "c": """
+            (function_definition declarator: (function_declarator declarator: (identifier) @func.def))
+            (struct_specifier name: (type_identifier) @class.def)
+            (enum_specifier name: (type_identifier) @class.def)
+        """,
+        "cpp": """
+            (function_definition declarator: (function_declarator declarator: (identifier) @func.def))
+            (class_specifier name: (type_identifier) @class.def)
+            (struct_specifier name: (type_identifier) @class.def)
+            (enum_specifier name: (type_identifier) @class.def)
+        """,
     }
 
-    # tsx uses same queries as typescript
-    query_lang = "typescript" if lang in _TS_FAMILY else lang
+    query_lang = _QUERY_ALIASES.get(lang, lang)
     query_str = queries_by_lang.get(query_lang)
     if not query_str:
         return []
@@ -222,6 +270,37 @@ NOISE_CALLS: dict[str, set[str]] = {
     },
     "swift": {"print", "fatalError", "precondition", "debugPrint", "assert"},
     "kotlin": {"println", "print", "listOf", "mapOf", "setOf", "arrayOf", "emptyList", "emptyMap"},
+    "rust": {
+        "println", "eprintln", "format", "panic", "todo", "unimplemented",
+        "vec", "assert", "assert_eq", "assert_ne", "dbg", "write", "writeln",
+        "Some", "None", "Ok", "Err", "Box", "Arc", "Rc", "Vec", "String",
+    },
+    "go": {
+        "Println", "Printf", "Sprintf", "Fprintf", "Errorf", "Fatal", "Fatalf",
+        "Log", "Logf", "Panicf", "New", "Error", "make", "append", "len", "cap",
+        "close", "delete", "copy", "panic", "recover",
+    },
+    "java": {
+        "println", "printf", "format", "toString", "equals", "hashCode",
+        "valueOf", "parseInt", "parseDouble", "getName", "getClass",
+        "System", "String", "Integer", "Long", "Boolean", "List", "Map",
+    },
+    "ruby": {
+        "puts", "print", "p", "pp", "raise", "require", "require_relative",
+        "attr_reader", "attr_writer", "attr_accessor", "include", "extend",
+        "new", "to_s", "to_i", "to_f", "nil?", "empty?", "each", "map", "select",
+    },
+    "c": {
+        "printf", "fprintf", "sprintf", "snprintf", "scanf", "malloc", "calloc",
+        "realloc", "free", "memcpy", "memset", "strlen", "strcmp", "strcpy",
+        "assert", "exit", "abort", "sizeof",
+    },
+    "cpp": {
+        "printf", "fprintf", "sprintf", "snprintf", "malloc", "calloc", "free",
+        "memcpy", "memset", "strlen", "strcmp", "assert", "exit", "abort",
+        "cout", "cerr", "endl", "move", "forward", "make_shared", "make_unique",
+        "static_cast", "dynamic_cast", "reinterpret_cast",
+    },
 }
 
 # Tree-sitter queries for deep analysis per language
@@ -240,6 +319,26 @@ _IMPORT_QUERIES: dict[str, str] = {
     "kotlin": """
         (import_header (identifier) @import.module)
     """,
+    "rust": """
+        (use_declaration argument: (scoped_identifier) @import.module)
+        (use_declaration argument: (identifier) @import.module)
+    """,
+    "go": """
+        (import_spec path: (interpreted_string_literal) @import.module)
+    """,
+    "java": """
+        (import_declaration (scoped_identifier) @import.module)
+    """,
+    "ruby": """
+        (call method: (identifier) @_method arguments: (argument_list (string (string_content) @import.module))
+            (#match? @_method "^require"))
+    """,
+    "c": """
+        (preproc_include path: [(system_lib_string) (string_literal)] @import.module)
+    """,
+    "cpp": """
+        (preproc_include path: [(system_lib_string) (string_literal)] @import.module)
+    """,
 }
 
 _CALL_QUERIES: dict[str, str] = {
@@ -256,6 +355,28 @@ _CALL_QUERIES: dict[str, str] = {
     """,
     "kotlin": """
         (call_expression (simple_identifier) @call.func)
+    """,
+    "rust": """
+        (call_expression function: (identifier) @call.func)
+        (call_expression function: (field_expression field: (field_identifier) @call.method))
+        (call_expression function: (scoped_identifier name: (identifier) @call.func))
+    """,
+    "go": """
+        (call_expression function: (identifier) @call.func)
+        (call_expression function: (selector_expression field: (field_identifier) @call.method))
+    """,
+    "java": """
+        (method_invocation name: (identifier) @call.func)
+    """,
+    "ruby": """
+        (call method: (identifier) @call.func)
+    """,
+    "c": """
+        (call_expression function: (identifier) @call.func)
+    """,
+    "cpp": """
+        (call_expression function: (identifier) @call.func)
+        (call_expression function: (field_expression field: (field_identifier) @call.method))
     """,
 }
 
@@ -282,6 +403,25 @@ _INHERIT_QUERIES: dict[str, str] = {
                 (delegation_specifier
                     (user_type (type_identifier) @inherit.parent))))
     """,
+    "java": """
+        (class_declaration
+            name: (identifier) @inherit.child
+            (superclass (type_identifier) @inherit.parent))
+    """,
+    "cpp": """
+        (class_specifier
+            name: (type_identifier) @inherit.child
+            (base_class_clause (type_identifier) @inherit.parent))
+    """,
+    # Rust: trait impl is tracked via impl_item in symbols, not inheritance
+    # Go: no class inheritance (composition via embedding)
+    # Ruby: class Foo < Bar
+    "ruby": """
+        (class
+            name: (constant) @inherit.child
+            superclass: (superclass (constant) @inherit.parent))
+    """,
+    # C: no inheritance
 }
 
 
@@ -293,20 +433,41 @@ def _classify_import(module_text: str, lang: str) -> tuple[str, str]:
     if lang == "python":
         if module_text.startswith("."):
             return "internal", module_text
-        # Top-level package name for external
         return "external", module_text.split(".")[0]
     elif lang == "typescript":
-        # Strip quotes from string captures
         clean = module_text.strip("'\"")
         if clean.startswith(".") or clean.startswith("/"):
             return "internal", clean
-        # Package name: keep @scope/name
         parts = clean.split("/")
         if clean.startswith("@") and len(parts) >= 2:
             return "external", f"{parts[0]}/{parts[1]}"
         return "external", parts[0]
+    elif lang == "rust":
+        # crate:: = internal, std/external crate = external
+        if module_text.startswith("crate::") or module_text.startswith("self::") or module_text.startswith("super::"):
+            return "internal", module_text
+        return "external", module_text.split("::")[0]
+    elif lang == "go":
+        clean = module_text.strip('"')
+        # Internal: no dots in path (relative packages in same module)
+        # In practice, Go imports are all absolute — classify by known stdlib
+        # Simple heuristic: if contains "." it's external (github.com/...), else stdlib
+        if "." in clean:
+            return "external", clean
+        return "external", clean
+    elif lang == "java":
+        # Top-level package: java.*, javax.*, org.*, com.*
+        return "external", module_text.split(".")[0]
+    elif lang == "ruby":
+        if module_text.startswith("./") or module_text.startswith("../"):
+            return "internal", module_text
+        return "external", module_text
+    elif lang in ("c", "cpp"):
+        clean = module_text.strip("<>\"")
+        if module_text.startswith('"'):
+            return "internal", clean
+        return "external", clean
     else:
-        # Swift, Kotlin: always external
         return "external", module_text.split(".")[0]
 
 
@@ -338,8 +499,7 @@ def extract_deep(
     calls: list[CallEdge] = []
     inherits: list[InheritsEdge] = []
 
-    # tsx uses same queries/noise as typescript
-    query_lang = "typescript" if lang in _TS_FAMILY else lang
+    query_lang = _QUERY_ALIASES.get(lang, lang)
 
     # ── Imports ──
     import_query_str = _IMPORT_QUERIES.get(query_lang)
