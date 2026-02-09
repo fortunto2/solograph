@@ -34,11 +34,15 @@ pip install solograph
 
 ### MCP Server (for Claude Code)
 
-Add to `.mcp.json`:
+```bash
+claude mcp add -s project solograph -- uvx solograph
+```
+
+Or add manually to `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "codegraph": {
+    "solograph": {
       "command": "uvx",
       "args": ["solograph"]
     }
