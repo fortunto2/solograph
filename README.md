@@ -110,6 +110,19 @@ Smart engine routing auto-selects search engines by query type:
 - **KB vectors:** `{KB_PATH}/.codegraph/kb/graph.db` (FalkorDB)
 - **Project vectors:** `{project_path}/.codegraph/falkordb/graph.db` (per-project FalkorDB)
 
+## Part of Solo Factory
+
+Solograph is the MCP backend for [**Solo Factory**](https://github.com/fortunto2/solo-factory) — a Claude Code plugin with 9 skills and 3 agents for shipping startups faster.
+
+Install the plugin and solograph auto-starts:
+```bash
+claude plugin marketplace add fortunto2/solo-factory
+claude plugin install solo --scope user
+# restart Claude Code → solograph MCP is running
+```
+
+Or use solograph standalone — just add to `.mcp.json` as shown above.
+
 ## License
 
 MIT
