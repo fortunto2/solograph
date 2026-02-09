@@ -2,12 +2,10 @@
 
 Each project gets its own FalkorDBLite instance at {project_path}/.codegraph/falkordb/graph.db.
 Stores chunks as graph nodes with vector embeddings — enables hybrid graph+vector queries.
-Uses same chunking as project_index.py (semantic-text-splitter + tree-sitter).
+Uses semantic-text-splitter (Rust core) with tree-sitter for AST-aware chunking.
 
-Comparison with ChromaDB approach (project_index.py):
-  - ChromaDB: pure vector search, separate from structural graph
-  - FalkorDB: vectors live on graph nodes, hybrid queries possible
-    e.g. "find similar code → show its imports → find other files using same packages"
+Vectors live on graph nodes, enabling hybrid queries:
+  e.g. "find similar code -> show its imports -> find other files using same packages"
 """
 
 import shutil
@@ -15,18 +13,16 @@ from pathlib import Path
 
 from redislite.falkordb_client import FalkorDB
 
-from .project_index import (
+from .common import (
     VECTORS_ROOT,
-    _get_code_splitter,
-    _get_markdown_splitter,
-    _init_embedding_function,
-    _scan_project_files,
-    _TS_GRAMMAR_MAP,
+    get_code_splitter,
+    get_markdown_splitter,
+    init_embedding_function,
+    scan_project_files,
+    TS_GRAMMAR_MAP,
     CHUNK_CAPACITY,
+    EMBEDDING_DIM,
 )
-
-# Embedding dimension (all-MiniLM-L6-v2 and multilingual-e5-small both use 384)
-EMBEDDING_DIM = 384
 
 # Registry path from env or ~/.codegraph/
 import os
@@ -38,7 +34,7 @@ class ProjectGraphIndex:
     """Per-project FalkorDBLite vector index for source code and documentation."""
 
     def __init__(self, backend: str | None = None):
-        self._ef = _init_embedding_function(backend)
+        self._ef = init_embedding_function(backend)
         self._dbs: dict[str, FalkorDB] = {}
         self._paths: dict[str, Path] = {}  # name → project_path
         self._md_splitter = None
@@ -103,7 +99,7 @@ class ProjectGraphIndex:
         return [[float(x) for x in emb] for emb in raw]
 
     def _chunk_file(self, file_path: Path, lang: str, rel_path: str) -> list[dict]:
-        """Chunk a single file (reuses same logic as ChromaDB version)."""
+        """Chunk a single file into documents with metadata."""
         try:
             content = file_path.read_text(encoding="utf-8", errors="ignore")
         except Exception:
@@ -120,10 +116,10 @@ class ProjectGraphIndex:
 
         if lang == "markdown":
             if self._md_splitter is None:
-                self._md_splitter = _get_markdown_splitter()
+                self._md_splitter = get_markdown_splitter()
             raw_chunks = self._md_splitter.chunks(content)
-        elif lang in _TS_GRAMMAR_MAP:
-            splitter = _get_code_splitter(lang)
+        elif lang in TS_GRAMMAR_MAP:
+            splitter = get_code_splitter(lang)
             if splitter:
                 try:
                     raw_chunks = splitter.chunks(content)
@@ -171,7 +167,7 @@ class ProjectGraphIndex:
         except Exception:
             pass
 
-        files = _scan_project_files(project_path)
+        files = scan_project_files(project_path)
         file_count = 0
         total_chunks = 0
         code_chunks = 0
@@ -180,7 +176,7 @@ class ProjectGraphIndex:
         # Process file by file, embed + insert in small batches
         batch: list[dict] = []
         batch_file: str | None = None
-        batch_size = 16  # smaller than ChromaDB — FalkorDB inserts are heavier
+        batch_size = 16
 
         for abs_path, lang in files:
             rel = str(abs_path.relative_to(project_path))
@@ -347,7 +343,7 @@ class ProjectGraphIndex:
         """Hybrid search: vector similarity + graph traversal.
 
         Finds similar chunks, then returns neighboring chunks from the same files.
-        This is the key advantage over ChromaDB — structural context for free.
+        Structural context via graph traversal — finds neighboring chunks from same files.
         """
         query_emb = self._embed([query])[0]
 

@@ -11,10 +11,9 @@ authors = [
 keywords = ["mcp", "code-intelligence", "codegraph", "semantic-search", "claude-code"]
 
 dependencies = [
-    # Graph Database
+    # Graph Database + Vector Search
     "falkordblite>=0.4",
-    # Vector Search & Embeddings
-    "chromadb>=1.4.1",
+    # Embeddings
     "sentence-transformers>=5.2.2",
     "semantic-text-splitter>=0.29.0",
     # Code Analysis

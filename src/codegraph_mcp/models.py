@@ -85,7 +85,7 @@ class SessionFileEdge(BaseModel):
 
 
 class SessionSummary(BaseModel):
-    """Summary text for ChromaDB indexing."""
+    """Summary text for vector indexing."""
 
     session_id: str
     project_name: str

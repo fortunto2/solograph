@@ -6,7 +6,6 @@ CodeGraph MCP Server — code intelligence, knowledge base, sessions, web search
   CODEGRAPH_DB_PATH     — FalkorDB path (default: ~/.codegraph/codegraph.db)
   CODEGRAPH_REGISTRY    — registry.yaml path (default: auto-detect)
   KB_PATH               — Knowledge base root (markdown files)
-  KB_CHROMA_PATH        — ChromaDB path for KB (default: {KB_PATH}/.embeddings/chroma_db)
   TAVILY_API_URL        — Tavily-compatible search URL (default: http://localhost:8013)
   TAVILY_API_KEY        — API key for Tavily (ignored for SearXNG)
 
@@ -33,7 +32,6 @@ _real_stdout = sys.stdout
 CODEGRAPH_DB_PATH = os.environ.get("CODEGRAPH_DB_PATH", str(Path.home() / ".codegraph" / "codegraph.db"))
 CODEGRAPH_REGISTRY = os.environ.get("CODEGRAPH_REGISTRY", "")
 KB_PATH = os.environ.get("KB_PATH", "")
-KB_CHROMA_PATH = os.environ.get("KB_CHROMA_PATH", "")
 TAVILY_API_URL = os.environ.get("TAVILY_API_URL", "http://localhost:8013")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 
@@ -52,10 +50,9 @@ def _get_kb():
         if not KB_PATH:
             return None
         from codegraph_mcp.kb import KnowledgeEmbeddings
-        chroma_path = KB_CHROMA_PATH or str(Path(KB_PATH) / ".embeddings" / "chroma_db")
         sys.stdout = sys.stderr
         try:
-            _kb = KnowledgeEmbeddings(KB_PATH, chroma_path)
+            _kb = KnowledgeEmbeddings(KB_PATH)
         finally:
             sys.stdout = _real_stdout
     return _kb

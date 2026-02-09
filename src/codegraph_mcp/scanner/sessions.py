@@ -3,7 +3,7 @@
 Reads ~/.claude/projects/*/uuid.jsonl files, extracts:
 - Session metadata (project, dates, model, branch)
 - File interactions (Read→TOUCHED, Edit→EDITED, Write→CREATED)
-- Summary text for ChromaDB indexing
+- Summary text for vector indexing
 """
 
 import json

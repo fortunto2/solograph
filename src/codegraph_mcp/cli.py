@@ -271,8 +271,8 @@ def scan_sessions(ctx, project, backend):
     project_links = link_sessions_to_projects(graph)
     click.echo(f"  Linked to Project nodes: {project_links}")
 
-    # Index into ChromaDB
-    click.echo(f"\nIndexing {len(all_summaries)} summaries into ChromaDB...")
+    # Index into FalkorDB vectors
+    click.echo(f"\nIndexing {len(all_summaries)} summaries into FalkorDB...")
     idx = SessionIndex(backend=backend)
     indexed = idx.upsert(all_summaries)
     click.echo(f"  Indexed: {indexed}")
