@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CodeGraph MCP Server — code intelligence, knowledge base, sessions, web search.
+Solograph MCP Server — code intelligence, knowledge base, sessions, web search.
 
 11 tools for Claude Code. Configure via environment variables:
   CODEGRAPH_DB_PATH     — FalkorDB path (default: ~/.codegraph/codegraph.db)
@@ -10,9 +10,9 @@ CodeGraph MCP Server — code intelligence, knowledge base, sessions, web search
   TAVILY_API_KEY        — API key for Tavily (ignored for SearXNG)
 
 Run:
-  codegraph-mcp                     # via entry point
-  uvx codegraph-mcp                 # via uvx
-  uv run codegraph-mcp              # via uv
+  solograph                         # via entry point
+  uvx solograph                     # via uvx
+  uv run solograph                  # via uv
 """
 
 import os
@@ -22,7 +22,7 @@ from pathlib import Path
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("codegraph")
+mcp = FastMCP("solograph")
 
 # Redirect print() to stderr — MCP uses stdout for JSON-RPC
 _real_stdout = sys.stdout
