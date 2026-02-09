@@ -1,0 +1,777 @@
+"""Click CLI for CodeGraph."""
+
+from pathlib import Path
+
+import click
+
+from . import db as cg_db
+from .output.console import (
+    console,
+    print_explain,
+    print_scan_progress,
+    print_scan_summary,
+    print_shared_packages,
+    print_stats,
+    print_xray_table,
+)
+
+import os
+
+# Registry path: env var > solopreneur default > ~/.codegraph/
+_REGISTRY_ENV = os.environ.get("CODEGRAPH_REGISTRY", "")
+if _REGISTRY_ENV:
+    DEFAULT_REGISTRY = Path(_REGISTRY_ENV)
+else:
+    _SOLOPRENEUR = Path.home() / "projects" / "solopreneur" / "4-active-projects" / "registry.yaml"
+    _DOTCODEGRAPH = Path.home() / ".codegraph" / "registry.yaml"
+    DEFAULT_REGISTRY = _SOLOPRENEUR if _SOLOPRENEUR.exists() else _DOTCODEGRAPH
+
+
+@click.group()
+@click.option("--db-path", type=click.Path(), default=None, help="Path to FalkorDB file")
+@click.pass_context
+def cli(ctx, db_path):
+    """CodeGraph — multi-project code intelligence graph."""
+    ctx.ensure_object(dict)
+    ctx.obj["db_path"] = Path(db_path) if db_path else None
+
+
+@cli.command()
+@click.option("--project", "-p", default=None, help="Scan only this project")
+@click.option("--registry", "-r", type=click.Path(exists=True), default=None, help="Registry YAML path")
+@click.option("--deep", is_flag=True, help="Extract imports, calls, inheritance (tree-sitter deep analysis)")
+@click.pass_context
+def scan(ctx, project, registry, deep):
+    """Scan projects and build the code graph."""
+    from .scanner.code import ingest_files, ingest_symbols, extract_symbols, scan_files
+    from .scanner.deps import ingest_packages, scan_deps
+    from .scanner.git import ingest_modifications, scan_git_log
+    from .scanner.registry import ingest_projects, scan_registry
+
+    registry_path = Path(registry) if registry else DEFAULT_REGISTRY
+    if not registry_path.exists():
+        console.print(f"[red]Registry not found:[/red] {registry_path}")
+        raise SystemExit(1)
+
+    fdb = cg_db.get_db(ctx.obj["db_path"])
+    graph = cg_db.get_graph(fdb)
+    cg_db.init_schema(graph)
+
+    projects = scan_registry(registry_path)
+    if project:
+        projects = [p for p in projects if p.name == project]
+        if not projects:
+            console.print(f"[red]Project not found:[/red] {project}")
+            raise SystemExit(1)
+
+    mode = "deep" if deep else "standard"
+    console.print(f"Scanning [bold]{len(projects)}[/bold] project(s) [dim][{mode}][/dim]\n")
+
+    # Deep analysis imports (lazy)
+    if deep:
+        from .scanner.code import extract_deep, ingest_calls, ingest_imports, ingest_inherits
+
+    for proj in projects:
+        proj_path = Path(proj.path)
+        if not proj_path.exists():
+            console.print(f"  [yellow]Skipping {proj.name}[/yellow] (path not found)")
+            continue
+
+        # Clear old data for this project
+        cg_db.clear_project(graph, proj.name)
+
+        # Projects
+        ingest_projects(graph, [proj])
+
+        # Files
+        files = scan_files(proj_path, proj.name)
+        ingest_files(graph, files)
+
+        # Symbols (tree-sitter)
+        all_symbols = []
+        for f in files:
+            syms = extract_symbols(proj_path / f.path, proj.name, f.lang, rel_path=f.path)
+            all_symbols.extend(syms)
+        if all_symbols:
+            ingest_symbols(graph, all_symbols)
+
+        # Dependencies
+        packages = scan_deps(proj_path)
+        if packages:
+            ingest_packages(graph, packages, proj.name)
+
+        # Git modifications
+        mods = scan_git_log(proj_path, proj.name)
+        if mods:
+            ingest_modifications(graph, mods)
+
+        print_scan_progress(proj.name, proj.stack, len(files), len(all_symbols), len(packages))
+
+        # Deep analysis (optional)
+        if deep:
+            all_imports = []
+            all_calls = []
+            all_inherits = []
+            for f in files:
+                if not f.lang:
+                    continue
+                imp, cal, inh = extract_deep(
+                    proj_path / f.path, proj.name, f.lang, rel_path=f.path
+                )
+                all_imports.extend(imp)
+                all_calls.extend(cal)
+                all_inherits.extend(inh)
+
+            int_imp, ext_imp = ingest_imports(graph, all_imports)
+            calls_created = ingest_calls(graph, all_calls)
+            inherits_created = ingest_inherits(graph, all_inherits)
+
+            console.print(
+                f"    [dim]Deep: {len(all_imports)} imports "
+                f"({int_imp} int + {ext_imp} ext), "
+                f"{len(all_calls)} calls ({calls_created} edges), "
+                f"{len(all_inherits)} inherits ({inherits_created} edges)[/dim]"
+            )
+
+    # Summary
+    stats = cg_db.graph_stats(graph)
+    print_scan_summary(stats)
+
+
+@cli.command()
+@click.argument("cypher_query")
+@click.pass_context
+def query(ctx, cypher_query):
+    """Execute a raw Cypher query."""
+    fdb = cg_db.get_db(ctx.obj["db_path"])
+    graph = cg_db.get_graph(fdb)
+
+    result = graph.query(cypher_query)
+    if not result.result_set:
+        click.echo("(no results)")
+        return
+
+    # Print header from column names if available
+    if result.header:
+        headers = [h[1] for h in result.header]
+        click.echo(" | ".join(str(h) for h in headers))
+        click.echo("-" * 60)
+
+    for row in result.result_set:
+        click.echo(" | ".join(str(v) for v in row))
+
+
+@cli.command()
+@click.argument("project_name")
+@click.pass_context
+def files(ctx, project_name):
+    """List files in a project."""
+    from .query.search import files_by_project
+
+    fdb = cg_db.get_db(ctx.obj["db_path"])
+    graph = cg_db.get_graph(fdb)
+
+    results = files_by_project(graph, project_name)
+    if not results:
+        click.echo(f"No files found for {project_name}")
+        return
+
+    click.echo(f"\nFiles in {project_name} ({len(results)}):\n")
+    for f in results:
+        click.echo(f"  {f['path']} ({f['lang']}, {f['lines']} lines)")
+
+
+@cli.command()
+@click.argument("project_name")
+@click.pass_context
+def deps(ctx, project_name):
+    """Show project dependencies."""
+    from .query.search import deps_by_project
+
+    fdb = cg_db.get_db(ctx.obj["db_path"])
+    graph = cg_db.get_graph(fdb)
+
+    results = deps_by_project(graph, project_name)
+    if not results:
+        click.echo(f"No dependencies found for {project_name}")
+        return
+
+    click.echo(f"\nDependencies of {project_name} ({len(results)}):\n")
+    for d in results:
+        ver = f" v{d['version']}" if d["version"] else ""
+        click.echo(f"  [{d['source']}] {d['name']}{ver}")
+
+
+@cli.command()
+@click.pass_context
+def stats(ctx):
+    """Show graph statistics."""
+    fdb = cg_db.get_db(ctx.obj["db_path"])
+    graph = cg_db.get_graph(fdb)
+
+    s = cg_db.graph_stats(graph)
+    print_stats(s)
+
+
+@cli.command("shared")
+@click.pass_context
+def shared_cmd(ctx):
+    """Show packages shared across projects."""
+    from .query.search import shared_packages
+
+    fdb = cg_db.get_db(ctx.obj["db_path"])
+    graph = cg_db.get_graph(fdb)
+
+    results = shared_packages(graph)
+    if not results:
+        console.print("[yellow]No shared packages found[/yellow]")
+        return
+
+    print_shared_packages(results)
+
+
+@cli.command("scan-sessions")
+@click.option("--project", "-p", default=None, help="Filter by project name")
+@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.pass_context
+def scan_sessions(ctx, project, backend):
+    """Scan Claude Code chat history into graph + vectors."""
+    from .scanner.sessions import (
+        ingest_session_files,
+        ingest_sessions,
+        link_sessions_to_projects,
+        scan_all_sessions,
+    )
+    from .vectors.session_index import SessionIndex
+
+    fdb = cg_db.get_db(ctx.obj["db_path"])
+    graph = cg_db.get_graph(fdb)
+    cg_db.init_schema(graph)
+
+    click.echo("Scanning Claude Code sessions...\n")
+
+    all_sessions = []
+    all_edges = []
+    all_summaries = []
+    project_counts: dict[str, int] = {}
+
+    for session, edges, summary in scan_all_sessions(project_filter=project):
+        all_sessions.append(session)
+        all_edges.extend(edges)
+        all_summaries.append(summary)
+        project_counts[session.project_name] = project_counts.get(session.project_name, 0) + 1
+
+    if not all_sessions:
+        click.echo("No sessions found.")
+        return
+
+    # Ingest into graph
+    click.echo(f"Sessions: {len(all_sessions)}")
+    ingest_sessions(graph, all_sessions)
+
+    click.echo(f"File edges: {len(all_edges)}")
+    linked = ingest_session_files(graph, all_edges)
+    click.echo(f"  Linked to existing File nodes: {linked}")
+
+    project_links = link_sessions_to_projects(graph)
+    click.echo(f"  Linked to Project nodes: {project_links}")
+
+    # Index into ChromaDB
+    click.echo(f"\nIndexing {len(all_summaries)} summaries into ChromaDB...")
+    idx = SessionIndex(backend=backend)
+    indexed = idx.upsert(all_summaries)
+    click.echo(f"  Indexed: {indexed}")
+
+    # Summary
+    click.echo(f"\nProjects ({len(project_counts)}):")
+    for pname, cnt in sorted(project_counts.items(), key=lambda x: -x[1]):
+        click.echo(f"  {pname}: {cnt} sessions")
+
+
+@cli.command("sessions")
+@click.argument("project_name")
+@click.pass_context
+def sessions_cmd(ctx, project_name):
+    """List sessions for a project."""
+    from .query.search import sessions_by_project
+
+    fdb = cg_db.get_db(ctx.obj["db_path"])
+    graph = cg_db.get_graph(fdb)
+
+    results = sessions_by_project(graph, project_name)
+    if not results:
+        click.echo(f"No sessions found for {project_name}")
+        return
+
+    click.echo(f"\nSessions for {project_name} ({len(results)}):\n")
+    for r in results:
+        date = r["started_at"][:10] if r["started_at"] else "?"
+        slug = r["slug"] or ""
+        dur = ""
+        if r["duration_ms"]:
+            dur = f" ({r['duration_ms'] // 1000}s)"
+        click.echo(
+            f"  {date} {r['session_id'][:8]}.. "
+            f"[{r['user_prompts']}p/{r['tool_uses']}t]{dur} {slug}"
+        )
+
+
+@cli.command("session-files")
+@click.argument("session_id")
+@click.pass_context
+def session_files_cmd(ctx, session_id):
+    """Show files touched in a session."""
+    from .query.search import files_in_session
+
+    fdb = cg_db.get_db(ctx.obj["db_path"])
+    graph = cg_db.get_graph(fdb)
+
+    results = files_in_session(graph, session_id)
+    if not results:
+        click.echo(f"No files found for session {session_id[:8]}..")
+        return
+
+    click.echo(f"\nFiles in session {session_id[:8]}.. ({len(results)}):\n")
+    for r in results:
+        click.echo(f"  [{r['action']}] {r['path']} (x{r['count']})")
+
+
+@cli.command("file-sessions")
+@click.argument("file_path")
+@click.pass_context
+def file_sessions_cmd(ctx, file_path):
+    """Find sessions that touched a file."""
+    from .query.search import sessions_for_file
+
+    fdb = cg_db.get_db(ctx.obj["db_path"])
+    graph = cg_db.get_graph(fdb)
+
+    results = sessions_for_file(graph, file_path)
+    if not results:
+        click.echo(f"No sessions found for {file_path}")
+        return
+
+    click.echo(f"\nSessions for {file_path} ({len(results)}):\n")
+    for r in results:
+        date = r["started_at"][:10] if r["started_at"] else "?"
+        click.echo(
+            f"  {date} {r['session_id'][:8]}.. [{r['action']} x{r['count']}] "
+            f"{r['project_name']} {r.get('slug', '')}"
+        )
+
+
+@cli.command("session-search")
+@click.argument("query")
+@click.option("--project", "-p", default=None, help="Filter by project")
+@click.option("--limit", "-n", default=5, help="Number of results")
+@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.pass_context
+def session_search_cmd(ctx, query, project, limit, backend):
+    """Semantic search across session summaries."""
+    from .vectors.session_index import SessionIndex
+
+    idx = SessionIndex(backend=backend)
+    results = idx.search(query, n_results=limit, project=project)
+
+    if not results:
+        click.echo("No sessions found.")
+        return
+
+    click.echo(f"\nSearch: '{query}' ({len(results)} results):\n")
+    for i, r in enumerate(results, 1):
+        date = r["started_at"][:10] if r["started_at"] else "?"
+        click.echo(
+            f"{i}. [{r['project_name']}] {date} "
+            f"(relevance: {r['relevance']:.0%})"
+        )
+        click.echo(f"   {r['session_id'][:8]}..")
+        # Show first line of summary
+        summary_line = r["summary"].split("\n")[0] if r["summary"] else ""
+        click.echo(f"   {summary_line}")
+        click.echo()
+
+
+# ── FalkorDB Graph Vector Commands ──────────────────────────────
+
+
+@cli.command("index-projects")
+@click.option("--project", "-p", default=None, help="Index only this project")
+@click.option("--registry", "-r", type=click.Path(exists=True), default=None, help="Registry YAML path")
+@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.pass_context
+def index_projects_cmd(ctx, project, registry, backend):
+    """Index project source code and docs into per-project FalkorDB vector DBs."""
+    from .scanner.registry import scan_registry
+    from .vectors.project_graph_index import ProjectGraphIndex
+
+    registry_path = Path(registry) if registry else DEFAULT_REGISTRY
+    if not registry_path.exists():
+        click.echo(f"Registry not found: {registry_path}")
+        raise SystemExit(1)
+
+    projects = scan_registry(registry_path)
+    if project:
+        projects = [p for p in projects if p.name == project]
+        if not projects:
+            click.echo(f"Project not found: {project}")
+            raise SystemExit(1)
+
+    idx = ProjectGraphIndex(backend=backend)
+    click.echo(f"Indexing {len(projects)} project(s) into FalkorDB...\n")
+
+    total_chunks = 0
+    for proj in projects:
+        proj_path = Path(proj.path)
+        if not proj_path.exists():
+            click.echo(f"  Skipping {proj.name} (path not found)")
+            continue
+
+        click.echo(f"  {proj.name}...", nl=False)
+        stats = idx.index_project(proj_path, proj.name)
+        click.echo(
+            f" {stats['files']} files, {stats['chunks']} chunks "
+            f"({stats['code_chunks']} code + {stats['doc_chunks']} doc)"
+        )
+        total_chunks += stats["chunks"]
+
+    click.echo(f"\nTotal: {total_chunks} chunks indexed (FalkorDB)")
+
+
+@cli.command("project-search")
+@click.argument("query")
+@click.option("--project", "-p", default=None, help="Search in one project")
+@click.option("--limit", "-n", default=5, help="Number of results")
+@click.option("--type", "chunk_type", type=click.Choice(["code", "doc"]), default=None, help="Filter by chunk type")
+@click.option("--hybrid", is_flag=True, default=False, help="Hybrid search (show sibling chunks)")
+@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.pass_context
+def project_search_cmd(ctx, query, project, limit, chunk_type, hybrid, backend):
+    """Semantic search over project source code and docs (FalkorDB)."""
+    from .vectors.project_graph_index import ProjectGraphIndex
+
+    idx = ProjectGraphIndex(backend=backend)
+
+    if hybrid and project:
+        results = idx.search_hybrid(query, project=project, n_results=limit)
+    else:
+        results = idx.search(query, project=project, n_results=limit, chunk_type=chunk_type)
+
+    if not results:
+        click.echo("No results found.")
+        return
+
+    engine = "FalkorDB"
+    scope = f"[{project}]" if project else "[all projects]"
+    click.echo(f"\nSearch: '{query}' {scope} ({len(results)} results, {engine}):\n")
+
+    for i, r in enumerate(results, 1):
+        click.echo(
+            f"{i}. [{r['project']}] {r['file']} "
+            f"({r['language']}, {r['chunk_type']}) "
+            f"relevance: {r['relevance']:.0%}"
+        )
+        if r.get("sibling_chunks"):
+            click.echo(f"   siblings: chunks {r['sibling_chunks']}")
+        lines = r["snippet"].strip().split("\n")[:2]
+        for line in lines:
+            click.echo(f"   {line[:120]}")
+        click.echo()
+
+
+@cli.command("project-collections")
+@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.pass_context
+def project_collections_cmd(ctx, backend):
+    """List indexed project vector databases (FalkorDB)."""
+    from .vectors.project_graph_index import ProjectGraphIndex
+
+    idx = ProjectGraphIndex(backend=backend)
+    projects = idx.list_projects()
+
+    if not projects:
+        click.echo("No projects indexed (FalkorDB). Run: codegraph index-projects-graph")
+        return
+
+    click.echo(f"\nFalkorDB-indexed projects ({len(projects)}):\n")
+    total_chunks = 0
+    total_size = 0.0
+    for p in projects:
+        click.echo(f"  {p['name']}: {p['chunks']} chunks ({p['size_mb']} MB)")
+        total_chunks += p["chunks"]
+        total_size += p["size_mb"]
+
+    click.echo(f"\nTotal: {total_chunks} chunks, {total_size:.2f} MB")
+
+
+@cli.command("project-delete")
+@click.argument("project_name")
+@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.pass_context
+def project_delete_cmd(ctx, project_name, backend):
+    """Delete a project's FalkorDB vector database."""
+    from .vectors.project_graph_index import ProjectGraphIndex
+
+    idx = ProjectGraphIndex(backend=backend)
+    if idx.delete_project(project_name):
+        click.echo(f"Deleted FalkorDB vectors for {project_name}")
+    else:
+        click.echo(f"No FalkorDB vectors found for {project_name}")
+
+
+# ── Deep Analysis Commands ────────────────────────────────────────
+
+
+# ── Wow Features ─────────────────────────────────────────────────
+
+
+@cli.command()
+@click.argument("directory", type=click.Path(exists=True))
+@click.option("--deep", is_flag=True, help="Extract imports, calls, inheritance")
+@click.pass_context
+def xray(ctx, directory, deep):
+    """Portfolio X-Ray — zero-config scan of a directory of projects."""
+    import sys
+
+    from .scanner.code import (
+        ingest_files,
+        ingest_symbols,
+        extract_symbols,
+        scan_files,
+    )
+    from .scanner.deps import ingest_packages, scan_deps
+    from .scanner.registry import ingest_projects
+    from .models import ProjectNode
+
+    from .registry import detect_stacks
+
+    fdb = cg_db.get_db(ctx.obj["db_path"])
+    graph = cg_db.get_graph(fdb)
+    cg_db.init_schema(graph)
+
+    directory_path = Path(directory).resolve()
+    subdirs = sorted(
+        [d for d in directory_path.iterdir() if d.is_dir() and not d.name.startswith(".")],
+        key=lambda d: d.name,
+    )
+
+    if not subdirs:
+        console.print(f"[yellow]No subdirectories found in {directory_path}[/yellow]")
+        return
+
+    if deep:
+        from .scanner.code import extract_deep, ingest_calls, ingest_imports, ingest_inherits
+
+    mode = "deep" if deep else "standard"
+    console.print(f"X-Ray scanning [bold]{directory_path}[/bold] [dim][{mode}][/dim]\n")
+
+    xray_results = []
+    total_files = 0
+    total_symbols = 0
+    total_packages = 0
+
+    for subdir in subdirs:
+        stacks = detect_stacks(subdir)
+        stack_str = ",".join(stacks) if stacks else ""
+        proj = ProjectNode(name=subdir.name, path=str(subdir), stack=stack_str)
+
+        # Clear old data and ingest project
+        cg_db.clear_project(graph, proj.name)
+        ingest_projects(graph, [proj])
+
+        # Files
+        files = scan_files(subdir, proj.name)
+        if files:
+            ingest_files(graph, files)
+
+        # Symbols
+        all_symbols = []
+        for f in files:
+            syms = extract_symbols(subdir / f.path, proj.name, f.lang, rel_path=f.path)
+            all_symbols.extend(syms)
+        if all_symbols:
+            ingest_symbols(graph, all_symbols)
+
+        # Dependencies
+        packages = scan_deps(subdir)
+        if packages:
+            ingest_packages(graph, packages, proj.name)
+
+        # Deep analysis
+        if deep:
+            all_imports = []
+            all_calls = []
+            all_inherits = []
+            for f in files:
+                if not f.lang:
+                    continue
+                imp, cal, inh = extract_deep(
+                    subdir / f.path, proj.name, f.lang, rel_path=f.path
+                )
+                all_imports.extend(imp)
+                all_calls.extend(cal)
+                all_inherits.extend(inh)
+            ingest_imports(graph, all_imports)
+            ingest_calls(graph, all_calls)
+            ingest_inherits(graph, all_inherits)
+
+        proj_files = len(files)
+        proj_symbols = len(all_symbols)
+        proj_packages = len(packages)
+        total_files += proj_files
+        total_symbols += proj_symbols
+        total_packages += proj_packages
+
+        xray_results.append({
+            "name": proj.name,
+            "stack": stack_str or None,
+            "files": proj_files,
+            "symbols": proj_symbols,
+            "packages": proj_packages,
+        })
+
+    # Shared packages
+    from .query.search import shared_packages
+
+    shared = shared_packages(graph)
+
+    print_xray_table(xray_results, total_files, total_symbols, total_packages, shared)
+
+    if not deep:
+        console.print(
+            f"\n[dim]Run 'codegraph xray {directory} --deep' for imports/calls/inheritance[/dim]"
+        )
+
+
+@cli.command()
+@click.argument("project_name")
+@click.option(
+    "--type", "diagram_type",
+    type=click.Choice(["inheritance", "imports", "calls", "deps"]),
+    default="inheritance",
+    help="Diagram type",
+)
+@click.option("--symbol", "-s", default=None, help="Filter calls diagram by symbol name")
+@click.option("--max-nodes", default=50, help="Maximum edges in diagram")
+@click.pass_context
+def diagram(ctx, project_name, diagram_type, symbol, max_nodes):
+    """Generate mermaid diagram from code graph."""
+    from .output.mermaid import (
+        calls_diagram,
+        deps_diagram,
+        imports_diagram,
+        inheritance_diagram,
+    )
+
+    fdb = cg_db.get_db(ctx.obj["db_path"])
+    graph = cg_db.get_graph(fdb)
+
+    generators = {
+        "inheritance": lambda: inheritance_diagram(graph, project_name, max_nodes),
+        "imports": lambda: imports_diagram(graph, project_name, max_nodes),
+        "calls": lambda: calls_diagram(graph, project_name, symbol, max_nodes),
+        "deps": lambda: deps_diagram(graph, project_name),
+    }
+
+    result = generators[diagram_type]()
+    if not result:
+        hint = " Run: codegraph scan --deep" if diagram_type != "deps" else ""
+        click.echo(f"No {diagram_type} data found for {project_name}.{hint}")
+        return
+
+    click.echo(f"```mermaid\n{result}\n```")
+
+
+@cli.command()
+@click.argument("project_name")
+@click.pass_context
+def explain(ctx, project_name):
+    """Architecture overview of a project."""
+    from .output.explain import explain_project
+
+    fdb = cg_db.get_db(ctx.obj["db_path"])
+    graph = cg_db.get_graph(fdb)
+
+    result = explain_project(graph, project_name)
+    if isinstance(result, str):
+        console.print(f"[red]{result}[/red]")
+        return
+    print_explain(result)
+
+
+# ── Deep Analysis Commands ────────────────────────────────────────
+
+
+@cli.command("imports")
+@click.argument("project_name")
+@click.pass_context
+def imports_cmd(ctx, project_name):
+    """Show import graph for a project."""
+    from .query.search import import_graph
+
+    fdb = cg_db.get_db(ctx.obj["db_path"])
+    graph = cg_db.get_graph(fdb)
+
+    results = import_graph(graph, project_name)
+    if not results:
+        click.echo(f"No import edges found for {project_name}. Run: codegraph scan --deep")
+        return
+
+    click.echo(f"\nImport graph for {project_name} ({len(results)} edges):\n")
+    for r in results:
+        arrow = "→" if r["target_type"] == "File" else "⇒"
+        click.echo(f"  {r['source']} {arrow} {r['target']}")
+
+
+@cli.command("callers")
+@click.argument("symbol_name")
+@click.option("--project", "-p", default=None, help="Filter by project")
+@click.pass_context
+def callers_cmd(ctx, symbol_name, project):
+    """Show files that call a symbol."""
+    from .query.search import callers_of
+
+    fdb = cg_db.get_db(ctx.obj["db_path"])
+    graph = cg_db.get_graph(fdb)
+
+    results = callers_of(graph, symbol_name, project=project)
+    if not results:
+        click.echo(f"No callers found for '{symbol_name}'. Run: codegraph scan --deep")
+        return
+
+    click.echo(f"\nCallers of '{symbol_name}' ({len(results)}):\n")
+    for r in results:
+        click.echo(f"  [{r['project']}] {r['caller']}  (defined in {r['defined_in']})")
+
+
+@cli.command("hierarchy")
+@click.argument("class_name")
+@click.option("--project", "-p", default=None, help="Filter by project")
+@click.pass_context
+def hierarchy_cmd(ctx, class_name, project):
+    """Show class hierarchy (parents and children)."""
+    from .query.search import class_hierarchy
+
+    fdb = cg_db.get_db(ctx.obj["db_path"])
+    graph = cg_db.get_graph(fdb)
+
+    result = class_hierarchy(graph, class_name, project=project)
+    parents = result["parents"]
+    children = result["children"]
+
+    if not parents and not children:
+        click.echo(f"No hierarchy found for '{class_name}'. Run: codegraph scan --deep")
+        return
+
+    click.echo(f"\nHierarchy for '{class_name}':\n")
+    if parents:
+        click.echo("  Parents:")
+        for p in parents:
+            click.echo(f"    ↑ {p['name']}  ({p['file']}, {p['project']})")
+    if children:
+        click.echo("  Children:")
+        for c in children:
+            click.echo(f"    ↓ {c['name']}  ({c['file']}, {c['project']})")
+
+
+if __name__ == "__main__":
+    cli()

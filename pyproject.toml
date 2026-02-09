@@ -1,0 +1,52 @@
+[project]
+name = "codegraph-mcp"
+version = "0.1.0"
+description = "Code intelligence MCP server — multi-project code graph, semantic search, session history, knowledge base"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+license = "MIT"
+authors = [
+    { name = "Rustam Salavatov", email = "rustam@fortunto2.com" },
+]
+keywords = ["mcp", "code-intelligence", "codegraph", "semantic-search", "claude-code"]
+
+dependencies = [
+    # Graph Database
+    "falkordblite>=0.4",
+    # Vector Search & Embeddings
+    "chromadb>=1.4.1",
+    "sentence-transformers>=5.2.2",
+    "semantic-text-splitter>=0.29.0",
+    # Code Analysis
+    "tree-sitter>=0.24",
+    "tree-sitter-python>=0.23",
+    "tree-sitter-swift>=0.0.1",
+    "tree-sitter-typescript>=0.23",
+    "tree-sitter-kotlin>=1.0",
+    # Schema & Config
+    "pydantic>=2.12.5",
+    "pyyaml>=6.0",
+    "python-frontmatter>=1.1.0",
+    # CLI & Output
+    "click>=8.1",
+    "rich>=13.0.0",
+    # MCP
+    "mcp>=1.26.0",
+    # HTTP (web search)
+    "httpx>=0.28.1",
+]
+
+[project.optional-dependencies]
+mlx = ["mlx-embeddings>=0.0.3"]
+dev = ["pre-commit>=4.5.1"]
+
+[project.scripts]
+codegraph = "codegraph_mcp.cli:cli"
+codegraph-mcp = "codegraph_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codegraph_mcp"]
