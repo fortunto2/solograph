@@ -112,13 +112,16 @@ Smart engine routing auto-selects search engines by query type:
 
 ## Part of Solo Factory
 
-Solograph is the MCP backend for [**Solo Factory**](https://github.com/fortunto2/solo-factory) — a Claude Code plugin with 9 skills and 3 agents for shipping startups faster. [PyPI](https://pypi.org/project/solograph/)
+Solograph is the MCP backend for [**Solo Factory**](https://github.com/fortunto2/solo-factory) — 9 skills and 3 agents for shipping startups faster. [PyPI](https://pypi.org/project/solograph/)
 
-Install the plugin and solograph auto-starts:
+Install skills + MCP together:
 ```bash
+# Option 1: Skills for any agent (Claude Code, Cursor, Copilot, Gemini CLI, etc.)
+npx skills add fortunto2/solo-factory --all
+
+# Option 2: Claude Code plugin (skills + agents + MCP auto-start)
 claude plugin marketplace add fortunto2/solo-factory
 claude plugin install solo --scope user
-# restart Claude Code → solograph MCP is running
 ```
 
 Or use solograph standalone — just add to `.mcp.json` as shown above.
