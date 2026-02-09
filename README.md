@@ -1,6 +1,8 @@
-# codegraph-mcp
+# solograph
 
 Code intelligence MCP server for Claude Code. Multi-project code graph, semantic search, session history, knowledge base, web search.
+
+> PyPI: `pip install solograph` / `uvx solograph`
 
 All vector search powered by **FalkorDB** (embedded, no Docker). No ChromaDB dependency.
 
@@ -17,15 +19,15 @@ Auto-detects Apple Silicon → uses MLX. Falls back to sentence-transformers on 
 
 Install MLX support (optional):
 ```bash
-uv add codegraph-mcp[mlx]
+uv add solograph[mlx]
 ```
 
 ## Install
 
 ```bash
-uv add codegraph-mcp
+uv add solograph
 # or
-pip install codegraph-mcp
+pip install solograph
 ```
 
 ## Usage
@@ -38,7 +40,7 @@ Add to `.mcp.json`:
   "mcpServers": {
     "codegraph": {
       "command": "uvx",
-      "args": ["codegraph-mcp"]
+      "args": ["solograph"]
     }
   }
 }

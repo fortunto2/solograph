@@ -1,14 +1,14 @@
 [project]
-name = "codegraph-mcp"
+name = "solograph"
 version = "0.1.0"
-description = "Code intelligence MCP server — multi-project code graph, semantic search, session history, knowledge base"
+description = "Code intelligence MCP server — multi-project code graph, semantic search, session history, knowledge base, web search"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 license = "MIT"
 authors = [
     { name = "Rustam Salavatov" },
 ]
-keywords = ["mcp", "code-intelligence", "codegraph", "semantic-search", "claude-code"]
+keywords = ["mcp", "code-intelligence", "codegraph", "semantic-search", "claude-code", "solograph"]
 
 dependencies = [
     # Graph Database + Vector Search
@@ -41,7 +41,7 @@ dev = ["pre-commit>=4.5.1"]
 
 [project.scripts]
 codegraph = "codegraph_mcp.cli:cli"
-codegraph-mcp = "codegraph_mcp.server:main"
+solograph = "codegraph_mcp.server:main"
 
 [build-system]
 requires = ["hatchling"]
