@@ -1,6 +1,6 @@
 [project]
 name = "solograph"
-version = "0.1.0"
+version = "0.1.1"
 description = "Code intelligence MCP server — multi-project code graph, semantic search, session history, knowledge base, web search"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -9,12 +9,6 @@ authors = [
     { name = "Rustam Salavatov" },
 ]
 keywords = ["mcp", "code-intelligence", "codegraph", "semantic-search", "claude-code", "solograph"]
-
-[project.urls]
-Homepage = "https://github.com/fortunto2/solograph"
-Repository = "https://github.com/fortunto2/solograph"
-Plugin = "https://github.com/fortunto2/solo-factory"
-
 dependencies = [
     # Graph Database + Vector Search
     "falkordblite>=0.4",
@@ -43,6 +37,11 @@ dependencies = [
 [project.optional-dependencies]
 mlx = ["mlx-embeddings>=0.0.3"]
 dev = ["pre-commit>=4.5.1"]
+
+[project.urls]
+Homepage = "https://github.com/fortunto2/solograph"
+Repository = "https://github.com/fortunto2/solograph"
+"Solo Factory Plugin" = "https://github.com/fortunto2/solo-factory"
 
 [project.scripts]
 codegraph = "codegraph_mcp.cli:cli"
