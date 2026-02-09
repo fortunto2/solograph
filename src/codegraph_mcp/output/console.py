@@ -1,4 +1,4 @@
-"""Rich console output for CodeGraph CLI."""
+"""Rich console output for Solograph CLI."""
 
 from rich.console import Console
 from rich.panel import Panel
@@ -107,7 +107,7 @@ def print_explain(data: dict) -> None:
 def print_stats(stats: dict) -> None:
     """Render graph statistics as Rich tables."""
     # Node counts
-    node_table = Table(title="CodeGraph Statistics", show_lines=False)
+    node_table = Table(title="Solograph Statistics", show_lines=False)
     node_table.add_column("Node type", style="cyan")
     node_table.add_column("Count", justify="right", style="bold")
 

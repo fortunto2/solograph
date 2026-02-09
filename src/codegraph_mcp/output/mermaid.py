@@ -1,4 +1,4 @@
-"""Mermaid diagram generators from CodeGraph data."""
+"""Mermaid diagram generators from Solograph data."""
 
 import re
 

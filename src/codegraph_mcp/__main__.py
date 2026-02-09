@@ -1,4 +1,4 @@
-"""Allow running as: python -m codegraph_mcp"""
+"""Allow running as: python -m solograph"""
 from .cli import cli
 
 cli()

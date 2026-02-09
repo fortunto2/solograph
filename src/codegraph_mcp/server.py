@@ -302,7 +302,7 @@ def project_info(name: str | None = None) -> list[dict] | dict:
 
     registry_path = _get_registry_path()
     if not registry_path:
-        return {"error": "Registry not found. Set CODEGRAPH_REGISTRY env var or run: codegraph scan"}
+        return {"error": "Registry not found. Set CODEGRAPH_REGISTRY env var or run: solograph-cli scan"}
 
     with open(registry_path, encoding="utf-8") as f:
         data = yaml.safe_load(f)

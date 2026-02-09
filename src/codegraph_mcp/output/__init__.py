@@ -1,1 +1,1 @@
-"""Output formatters for CodeGraph (mermaid diagrams, explain)."""
+"""Output formatters for Solograph (mermaid diagrams, explain)."""

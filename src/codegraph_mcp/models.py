@@ -1,4 +1,4 @@
-"""Pydantic schemas for CodeGraph entities.
+"""Pydantic schemas for Solograph entities.
 
 SGR-first: these schemas are the source of truth.
 All scanners produce data conforming to these models.

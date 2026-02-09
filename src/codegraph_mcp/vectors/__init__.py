@@ -1,1 +1,1 @@
-"""Vector index for CodeGraph sessions."""
+"""Vector index for Solograph sessions."""

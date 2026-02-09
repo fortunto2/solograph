@@ -1,4 +1,4 @@
-"""Click CLI for CodeGraph."""
+"""Click CLI for Solograph."""
 
 from pathlib import Path
 
@@ -26,7 +26,7 @@ DEFAULT_REGISTRY = Path(_REGISTRY_ENV) if _REGISTRY_ENV else Path.home() / ".cod
 @click.option("--db-path", type=click.Path(), default=None, help="Path to FalkorDB file")
 @click.pass_context
 def cli(ctx, db_path):
-    """CodeGraph — multi-project code intelligence graph."""
+    """Solograph — multi-project code intelligence graph."""
     ctx.ensure_object(dict)
     ctx.obj["db_path"] = Path(db_path) if db_path else None
 
@@ -484,7 +484,7 @@ def project_collections_cmd(ctx, backend):
     projects = idx.list_projects()
 
     if not projects:
-        click.echo("No projects indexed (FalkorDB). Run: codegraph index-projects-graph")
+        click.echo("No projects indexed (FalkorDB). Run: solograph-cli index-projects")
         return
 
     click.echo(f"\nFalkorDB-indexed projects ({len(projects)}):\n")
@@ -633,7 +633,7 @@ def xray(ctx, directory, deep):
 
     if not deep:
         console.print(
-            f"\n[dim]Run 'codegraph xray {directory} --deep' for imports/calls/inheritance[/dim]"
+            f"\n[dim]Run 'solograph-cli xray {directory} --deep' for imports/calls/inheritance[/dim]"
         )
 
 
@@ -669,7 +669,7 @@ def diagram(ctx, project_name, diagram_type, symbol, max_nodes):
 
     result = generators[diagram_type]()
     if not result:
-        hint = " Run: codegraph scan --deep" if diagram_type != "deps" else ""
+        hint = " Run: solograph-cli scan --deep" if diagram_type != "deps" else ""
         click.echo(f"No {diagram_type} data found for {project_name}.{hint}")
         return
 
@@ -708,7 +708,7 @@ def imports_cmd(ctx, project_name):
 
     results = import_graph(graph, project_name)
     if not results:
-        click.echo(f"No import edges found for {project_name}. Run: codegraph scan --deep")
+        click.echo(f"No import edges found for {project_name}. Run: solograph-cli scan --deep")
         return
 
     click.echo(f"\nImport graph for {project_name} ({len(results)} edges):\n")
@@ -730,7 +730,7 @@ def callers_cmd(ctx, symbol_name, project):
 
     results = callers_of(graph, symbol_name, project=project)
     if not results:
-        click.echo(f"No callers found for '{symbol_name}'. Run: codegraph scan --deep")
+        click.echo(f"No callers found for '{symbol_name}'. Run: solograph-cli scan --deep")
         return
 
     click.echo(f"\nCallers of '{symbol_name}' ({len(results)}):\n")
@@ -754,7 +754,7 @@ def hierarchy_cmd(ctx, class_name, project):
     children = result["children"]
 
     if not parents and not children:
-        click.echo(f"No hierarchy found for '{class_name}'. Run: codegraph scan --deep")
+        click.echo(f"No hierarchy found for '{class_name}'. Run: solograph-cli scan --deep")
         return
 
     click.echo(f"\nHierarchy for '{class_name}':\n")
