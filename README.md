@@ -53,10 +53,33 @@ Or add manually to `.mcp.json`:
 ### CLI
 
 ```bash
-codegraph scan              # Build code graph
-codegraph stats             # Graph statistics
-codegraph explain my-app    # Architecture overview
-codegraph query "MATCH ..." # Raw Cypher
+solograph-cli scan                     # Scan ~/projects and build code graph
+solograph-cli scan --deep              # + imports, calls, inheritance (tree-sitter)
+solograph-cli stats                    # Graph statistics
+solograph-cli explain my-app           # Architecture overview
+solograph-cli xray ~/my-projects       # Portfolio X-Ray (all projects at once)
+solograph-cli diagram my-app           # Mermaid diagram
+solograph-cli query "MATCH (n) RETURN n LIMIT 5"
+```
+
+Install globally:
+```bash
+uv tool install solograph              # → solograph + solograph-cli in PATH
+```
+
+### Quick Start
+
+```bash
+# 1. Install
+uv tool install solograph
+
+# 2. Scan your projects
+CODEGRAPH_SCAN_PATH=~/my-projects solograph-cli scan --deep
+
+# 3. Add MCP to Claude Code
+claude mcp add -s project solograph -- uvx solograph
+
+# 4. Done — MCP tools available in Claude Code
 ```
 
 ## Configuration
@@ -66,7 +89,8 @@ Environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CODEGRAPH_DB_PATH` | `~/.codegraph/codegraph.db` | FalkorDB code graph path |
-| `CODEGRAPH_REGISTRY` | auto-detect | registry.yaml path |
+| `CODEGRAPH_REGISTRY` | `~/.codegraph/registry.yaml` | Project registry path |
+| `CODEGRAPH_SCAN_PATH` | `~/projects` | Where to scan for projects |
 | `KB_PATH` | (none) | Knowledge base root (markdown files with YAML frontmatter) |
 | `TAVILY_API_URL` | `http://localhost:8013` | Tavily-compatible search URL |
 | `TAVILY_API_KEY` | (none) | API key for Tavily |
