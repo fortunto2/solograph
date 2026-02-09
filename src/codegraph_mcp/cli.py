@@ -768,5 +768,58 @@ def hierarchy_cmd(ctx, class_name, project):
             click.echo(f"    ↓ {c['name']}  ({c['file']}, {c['project']})")
 
 
+@cli.command("web-search")
+@click.argument("query")
+@click.option("--limit", "-n", default=10, help="Number of results")
+@click.option("--engines", "-e", default=None, help="Override engines (e.g. 'reddit', 'arxiv,google scholar')")
+@click.option("--raw", is_flag=True, help="Include raw page content (up to 5000 chars)")
+def web_search_cmd(query, limit, engines, raw):
+    """Search the web via SearXNG / Tavily API."""
+    import httpx
+
+    url = os.environ.get("TAVILY_API_URL", "http://localhost:8013")
+    key = os.environ.get("TAVILY_API_KEY", "")
+
+    payload = {"query": query, "max_results": limit, "include_raw_content": raw}
+    if engines:
+        payload["engines"] = engines
+
+    headers = {}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+
+    try:
+        resp = httpx.post(f"{url}/search", json=payload, headers=headers, timeout=30)
+    except httpx.ConnectError:
+        console.print(f"[red]Cannot connect to {url}[/red]")
+        console.print("[dim]Start SearXNG or set TAVILY_API_URL[/dim]")
+        raise SystemExit(1)
+
+    if resp.status_code != 200:
+        console.print(f"[red]Search error {resp.status_code}:[/red] {resp.text[:300]}")
+        raise SystemExit(1)
+
+    data = resp.json()
+    results = data.get("results", [])
+
+    if not results:
+        console.print("[yellow]No results found.[/yellow]")
+        return
+
+    console.print(f"\n[bold]Web search:[/bold] '{query}' ({len(results)} results)\n")
+    for i, r in enumerate(results, 1):
+        title = r.get("title", "")
+        link = r.get("url", "")
+        snippet = r.get("content", "")[:200]
+        console.print(f"[bold]{i}.[/bold] {title}")
+        console.print(f"   [dim]{link}[/dim]")
+        if snippet:
+            console.print(f"   {snippet}")
+        if raw and r.get("raw_content"):
+            console.print(f"   [dim]--- raw ({len(r['raw_content'])} chars) ---[/dim]")
+            console.print(f"   {r['raw_content'][:500]}")
+        console.print()
+
+
 if __name__ == "__main__":
     cli()
