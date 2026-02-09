@@ -78,6 +78,29 @@ Environment variables:
 - `kb_search` — knowledge base semantic search
 - `web_search` — web search (Tavily/SearXNG)
 
+## Web Search
+
+The `web_search` tool connects to any **Tavily-compatible API**. Works great with self-hosted [SearXNG + Tavily Adapter](https://github.com/fortunto2/searxng-docker-tavily-adapter) — private, no API keys, smart engine routing.
+
+```bash
+# Self-hosted (Docker, 1 minute setup)
+git clone https://github.com/fortunto2/searxng-docker-tavily-adapter.git
+cd searxng-docker-tavily-adapter
+cp config.example.yaml config.yaml
+docker compose up -d
+# → http://localhost:8013/search (Tavily API)
+# → http://localhost:8999 (SearXNG UI)
+```
+
+Or use [Tavily API](https://tavily.com) directly — set `TAVILY_API_URL=https://api.tavily.com` and `TAVILY_API_KEY`.
+
+Smart engine routing auto-selects search engines by query type:
+- **tech**: github, stackoverflow (keywords: python, react, code)
+- **academic**: arxiv, google scholar (keywords: research, paper)
+- **product**: brave, reddit, app stores (keywords: app, competitor, pricing)
+- **news**: google news (keywords: news, latest, trend)
+- **general**: google, duckduckgo, brave (default)
+
 ## Storage
 
 - **Code graph:** `~/.codegraph/codegraph.db` (FalkorDB)
