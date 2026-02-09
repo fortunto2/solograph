@@ -31,7 +31,7 @@ Add to `.mcp.json`:
 ```bash
 codegraph scan              # Build code graph
 codegraph stats             # Graph statistics
-codegraph explain FaceAlarm # Architecture overview
+codegraph explain my-app    # Architecture overview
 codegraph query "MATCH ..." # Raw Cypher
 ```
 

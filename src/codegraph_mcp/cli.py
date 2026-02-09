@@ -17,14 +17,9 @@ from .output.console import (
 
 import os
 
-# Registry path: env var > solopreneur default > ~/.codegraph/
+# Registry path: env var > ~/.codegraph/registry.yaml
 _REGISTRY_ENV = os.environ.get("CODEGRAPH_REGISTRY", "")
-if _REGISTRY_ENV:
-    DEFAULT_REGISTRY = Path(_REGISTRY_ENV)
-else:
-    _SOLOPRENEUR = Path.home() / "projects" / "solopreneur" / "4-active-projects" / "registry.yaml"
-    _DOTCODEGRAPH = Path.home() / ".codegraph" / "registry.yaml"
-    DEFAULT_REGISTRY = _SOLOPRENEUR if _SOLOPRENEUR.exists() else _DOTCODEGRAPH
+DEFAULT_REGISTRY = Path(_REGISTRY_ENV) if _REGISTRY_ENV else Path.home() / ".codegraph" / "registry.yaml"
 
 
 @click.group()

@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13,<3.14"
 license = "MIT"
 authors = [
-    { name = "Rustam Salavatov", email = "rustam@fortunto2.com" },
+    { name = "Rustam Salavatov" },
 ]
 keywords = ["mcp", "code-intelligence", "codegraph", "semantic-search", "claude-code"]
 

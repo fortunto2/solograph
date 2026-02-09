@@ -19,12 +19,11 @@ from pydantic import BaseModel, Field
 
 import os
 
-# Configurable via env vars, fallback to solopreneur defaults
-_SOLOPRENEUR_ROOT = Path.home() / "projects" / "solopreneur"
-STACKS_DIR = Path(os.environ.get("CODEGRAPH_STACKS_DIR", str(_SOLOPRENEUR_ROOT / "1-methodology" / "stacks")))
-REGISTRY_PATH = Path(os.environ.get("CODEGRAPH_REGISTRY", str(_SOLOPRENEUR_ROOT / "4-active-projects" / "registry.yaml")))
-SCAN_PATH = Path(os.environ.get("CODEGRAPH_SCAN_PATH", str(Path.home() / "startups" / "active")))
-OLD_PATH = Path.home() / "startups" / "old"
+# Configurable via env vars
+STACKS_DIR = Path(os.environ.get("CODEGRAPH_STACKS_DIR", str(Path.home() / ".codegraph" / "stacks")))
+REGISTRY_PATH = Path(os.environ.get("CODEGRAPH_REGISTRY", str(Path.home() / ".codegraph" / "registry.yaml")))
+SCAN_PATH = Path(os.environ.get("CODEGRAPH_SCAN_PATH", str(Path.home() / "projects")))
+OLD_PATH = Path(os.environ.get("CODEGRAPH_OLD_PATH", str(Path.home() / "projects" / "archive")))
 
 
 class ProjectInfo(BaseModel):
@@ -204,18 +203,6 @@ def _scan_dir(scan_dir: Path, status: str = "active") -> list[ProjectInfo]:
             last_commit=get_last_commit(project_dir),
             description=get_description(project_dir),
         )
-
-        # Check for PRD in solopreneur KB (if available)
-        if _SOLOPRENEUR_ROOT.exists():
-            prd_candidates = list(
-                (_SOLOPRENEUR_ROOT / "3-opportunities").rglob(f"*{project_dir.name.lower()}*")
-            ) + list(
-                (_SOLOPRENEUR_ROOT / "4-active-projects").rglob(
-                    f"*{project_dir.name.lower()}*"
-                )
-            )
-            if prd_candidates:
-                info.prd_path = str(prd_candidates[0].relative_to(_SOLOPRENEUR_ROOT))
 
         projects.append(info)
 

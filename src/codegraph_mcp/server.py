@@ -97,7 +97,6 @@ def _get_registry_path() -> Path | None:
         return p if p.exists() else None
     # Auto-detect common locations
     candidates = [
-        Path.home() / "projects" / "solopreneur" / "4-active-projects" / "registry.yaml",
         Path.home() / ".codegraph" / "registry.yaml",
     ]
     for c in candidates:
@@ -159,16 +158,16 @@ def kb_search(
     doc_type: str | None = None,
     expand_graph: bool = False,
 ) -> list[dict]:
-    """Semantic search over the solopreneur knowledge base.
+    """Semantic search over the knowledge base.
 
-    Searches principles, methodology, opportunities, PRDs, research docs.
+    Searches markdown documents with YAML frontmatter.
     Understands Russian and English. Use expand_graph=true to include
     knowledge graph neighbors (structurally related docs).
 
     Args:
-        query: Search query (e.g. "privacy architecture", "ПОТОК framework")
+        query: Search query (e.g. "privacy architecture", "API design patterns")
         n_results: Number of results (default 5)
-        doc_type: Filter by type: principle, methodology, opportunity, agent, capture, research
+        doc_type: Filter by type (depends on your KB schema)
         expand_graph: Expand results with knowledge graph neighbors (1-hop)
     """
     kb = _get_kb()
@@ -215,7 +214,7 @@ def session_search(
     Args:
         query: Search query (e.g. "knowledge graph implementation", "OCR receipt scanning")
         n_results: Number of results (default 5)
-        project: Filter by project name (e.g. "solopreneur", "FaceAlarm")
+        project: Filter by project name (e.g. "my-app", "backend")
     """
     idx = _get_session_index()
     return idx.search(query, n_results=n_results, project=project)
@@ -231,7 +230,7 @@ def codegraph_query(query: str) -> list[dict]:
 
     Example queries:
       - MATCH (p:Project) RETURN p.name, p.path LIMIT 10
-      - MATCH (f:File {project: 'FaceAlarm'}) RETURN f.path, f.lang LIMIT 20
+      - MATCH (f:File {project: 'my-app'}) RETURN f.path, f.lang LIMIT 20
       - MATCH (p:Project)-[:DEPENDS_ON]->(pkg:Package) WHERE pkg.name = 'react' RETURN p.name
       - MATCH (s:Session)-[:EDITED]->(f:File) RETURN f.path, COUNT(s) ORDER BY COUNT(s) DESC LIMIT 10
 
@@ -269,7 +268,7 @@ def codegraph_explain(project: str) -> dict:
     (mixins, base classes, CRUD schemas), top dependencies, and hub files.
 
     Args:
-        project: Project name (e.g. "FaceAlarm", "SuperDuperApi")
+        project: Project name (e.g. "my-app", "backend-api")
     """
     graph = _get_graph()
     from codegraph_mcp.output.explain import explain_project
@@ -300,7 +299,7 @@ def project_info(name: str | None = None) -> list[dict] | dict:
     With name: returns detailed info for one project.
 
     Args:
-        name: Project name (e.g. "FaceAlarm"). Omit for full list.
+        name: Project name (e.g. "my-app"). Omit for full list.
     """
     import yaml
 
@@ -391,7 +390,7 @@ def project_code_search(
     Args:
         query: Search query (e.g. "authentication middleware", "API route handler")
         n_results: Number of results (default 5)
-        project: Search in one project (e.g. "FaceAlarm"). Omit to search all.
+        project: Search in one project (e.g. "my-app"). Omit to search all.
         chunk_type: Filter by "code" or "doc"
     """
     idx = _get_project_index()
@@ -416,7 +415,7 @@ def project_code_reindex(
     Uses sentence-transformers backend (safe for memory).
 
     Args:
-        project: Project name (e.g. "FaceAlarm", "visa-checker")
+        project: Project name (e.g. "my-app", "backend-api")
     """
     proj_path = _resolve_project_path(project)
     if not proj_path:

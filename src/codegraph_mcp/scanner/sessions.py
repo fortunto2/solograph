@@ -35,10 +35,10 @@ _SUMMARY_LIMIT = 2000
 def _derive_project_name(project_dir_name: str) -> str:
     """Derive human-readable project name from Claude project dir name.
 
-    '-Users-rustam-projects-FaceAlarm-ios-app' → 'FaceAlarm/ios-app'
-    '-Users-rustam-projects-solopreneur' → 'solopreneur'
-    '-Users-rustam-projects' → 'projects'
-    '-Users-rustam' → 'rustam'
+    '-Users-john-projects-MyApp-ios' → 'MyApp/ios'
+    '-Users-john-projects-backend' → 'backend'
+    '-Users-john-projects' → 'projects'
+    '-Users-john' → 'john'
     """
     # Replace leading dashes with slashes to reconstruct path
     parts = project_dir_name.lstrip("-").split("-")

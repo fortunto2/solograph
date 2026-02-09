@@ -28,8 +28,10 @@ from .project_index import (
 # Embedding dimension (all-MiniLM-L6-v2 and multilingual-e5-small both use 384)
 EMBEDDING_DIM = 384
 
-# Registry path (solopreneur project root)
-_REGISTRY_PATH = Path(__file__).resolve().parent.parent.parent.parent / "4-active-projects" / "registry.yaml"
+# Registry path from env or ~/.codegraph/
+import os
+_REGISTRY_ENV = os.environ.get("CODEGRAPH_REGISTRY", "")
+_REGISTRY_PATH = Path(_REGISTRY_ENV) if _REGISTRY_ENV else Path.home() / ".codegraph" / "registry.yaml"
 
 
 class ProjectGraphIndex:

@@ -4,6 +4,7 @@ Knowledge Base Embeddings Manager
 Uses MLX (Apple Silicon) or Sentence Transformers + ChromaDB for semantic search
 Auto-detects best backend for current hardware
 """
+import os
 import chromadb
 from chromadb.utils import embedding_functions
 from pathlib import Path
@@ -50,21 +51,24 @@ class KnowledgeEmbeddings:
         # ChromaDB persistent client (SQLite backend, no Docker needed)
         self.client = chromadb.PersistentClient(path=chroma_path)
 
+        # Collection name from env or default
+        collection_name = os.environ.get("KB_COLLECTION", "knowledge_base")
+
         # Get or create collection (handle backend switch)
         try:
             self.collection = self.client.get_or_create_collection(
-                name="solopreneur_kb",
+                name=collection_name,
                 embedding_function=self.embedding_function,
-                metadata={"description": "Solopreneur knowledge base - principles, methodology, ideas"}
+                metadata={"description": "Knowledge base semantic search"}
             )
         except ValueError:
             # Embedding function changed — must reindex
             print("⚠️  Embedding backend changed, rebuilding collection...")
-            self.client.delete_collection("solopreneur_kb")
+            self.client.delete_collection(collection_name)
             self.collection = self.client.create_collection(
-                name="solopreneur_kb",
+                name=collection_name,
                 embedding_function=self.embedding_function,
-                metadata={"description": "Solopreneur knowledge base - principles, methodology, ideas"}
+                metadata={"description": "Knowledge base semantic search"}
             )
 
         print(f"✓ ChromaDB collection ready: {self.collection.count()} documents")
