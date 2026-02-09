@@ -32,6 +32,61 @@ def cli(ctx, db_path):
 
 
 @cli.command()
+@click.argument("projects_dir", required=False, type=click.Path())
+@click.option("--deep", is_flag=True, help="Also run deep analysis (imports, calls, inheritance)")
+@click.pass_context
+def init(ctx, projects_dir, deep):
+    """Initialize solograph — create ~/.codegraph/, scan projects, build graph.
+
+    \b
+    Examples:
+      solograph-cli init ~/startups/active    # scan this directory
+      solograph-cli init                      # interactive prompt
+      solograph-cli init ~/projects --deep    # with deep analysis
+    """
+    from .registry import scan_projects, save_registry, SCAN_PATH, REGISTRY_PATH
+
+    codegraph_dir = Path.home() / ".codegraph"
+
+    # 1. Ask for projects dir if not provided
+    if not projects_dir:
+        default = str(SCAN_PATH)
+        projects_dir = click.prompt("Where are your projects?", default=default)
+
+    projects_path = Path(projects_dir).expanduser().resolve()
+    if not projects_path.exists():
+        console.print(f"[red]Directory not found:[/red] {projects_path}")
+        raise SystemExit(1)
+
+    # 2. Create ~/.codegraph/
+    codegraph_dir.mkdir(parents=True, exist_ok=True)
+    console.print(f"[green]✓[/green] {codegraph_dir}")
+
+    # 3. Scan projects → registry.yaml
+    os.environ["CODEGRAPH_SCAN_PATH"] = str(projects_path)
+    # Re-import to pick up new env
+    from . import registry as reg
+    reg.SCAN_PATH = projects_path
+
+    registry = scan_projects()
+    save_registry(registry)
+    n = len(registry.projects)
+    console.print(f"[green]✓[/green] {n} projects found → {REGISTRY_PATH}")
+
+    for p in registry.projects:
+        stacks = ", ".join(p.stacks) if p.stacks else "?"
+        console.print(f"  {p.name} [dim]({stacks})[/dim]")
+
+    # 4. Build code graph
+    console.print(f"\nBuilding code graph...")
+    ctx.invoke(scan, project=None, registry=str(REGISTRY_PATH), deep=deep)
+
+    console.print(f"\n[bold green]Done![/bold green] Run [bold]solograph-cli stats[/bold] to verify.")
+    if not deep:
+        console.print(f"[dim]Tip: solograph-cli init {projects_path} --deep  for imports/calls/inheritance[/dim]")
+
+
+@cli.command()
 @click.option("--project", "-p", default=None, help="Scan only this project")
 @click.option("--registry", "-r", type=click.Path(exists=True), default=None, help="Registry YAML path")
 @click.option("--deep", is_flag=True, help="Extract imports, calls, inheritance (tree-sitter deep analysis)")

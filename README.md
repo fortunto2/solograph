@@ -53,13 +53,16 @@ Or add manually to `.mcp.json`:
 ### CLI
 
 ```bash
-solograph-cli scan                     # Scan ~/projects and build code graph
+solograph-cli init ~/my-projects       # First-time setup (scan + build graph)
+solograph-cli init ~/my-projects --deep # + imports, calls, inheritance
+solograph-cli scan                     # Re-scan projects into graph
 solograph-cli scan --deep              # + imports, calls, inheritance (tree-sitter)
 solograph-cli stats                    # Graph statistics
 solograph-cli explain my-app           # Architecture overview
 solograph-cli xray ~/my-projects       # Portfolio X-Ray (all projects at once)
 solograph-cli diagram my-app           # Mermaid diagram
 solograph-cli query "MATCH (n) RETURN n LIMIT 5"
+solograph-cli web-search "query"       # Web search via SearXNG/Tavily
 ```
 
 Install globally:
@@ -73,8 +76,8 @@ uv tool install solograph              # → solograph + solograph-cli in PATH
 # 1. Install
 uv tool install solograph
 
-# 2. Scan your projects
-CODEGRAPH_SCAN_PATH=~/my-projects solograph-cli scan --deep
+# 2. Init — creates ~/.codegraph/, scans projects, builds graph
+solograph-cli init ~/my-projects
 
 # 3. Add MCP to Claude Code
 claude mcp add -s project solograph -- uvx solograph
