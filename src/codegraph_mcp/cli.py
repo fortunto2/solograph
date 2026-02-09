@@ -19,7 +19,7 @@ import os
 
 # Registry path: env var > ~/.codegraph/registry.yaml
 _REGISTRY_ENV = os.environ.get("CODEGRAPH_REGISTRY", "")
-DEFAULT_REGISTRY = Path(_REGISTRY_ENV) if _REGISTRY_ENV else Path.home() / ".codegraph" / "registry.yaml"
+DEFAULT_REGISTRY = Path(_REGISTRY_ENV).expanduser() if _REGISTRY_ENV else Path.home() / ".codegraph" / "registry.yaml"
 
 
 @click.group()

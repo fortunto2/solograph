@@ -23,8 +23,8 @@ except ImportError:
 
 class KnowledgeEmbeddings:
     def __init__(self, kb_path, db_path=None, backend: str | None = None):
-        self.kb_path = Path(kb_path)
-        self._db_path = Path(db_path) if db_path else self.kb_path / ".codegraph" / "kb"
+        self.kb_path = Path(kb_path).expanduser()
+        self._db_path = Path(db_path).expanduser() if db_path else self.kb_path / ".codegraph" / "kb"
         self._db_path.mkdir(parents=True, exist_ok=True)
 
         self._ef = init_embedding_function(backend)

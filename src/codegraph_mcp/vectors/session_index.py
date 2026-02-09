@@ -19,7 +19,7 @@ class SessionIndex:
 
     def __init__(self, backend: str | None = None, db_path: str | None = None):
         self._ef = init_embedding_function(backend)
-        path = Path(db_path or _DB_PATH)
+        path = Path(db_path or _DB_PATH).expanduser()
         path.mkdir(parents=True, exist_ok=True)
         self._fdb = FalkorDB(str(path / "graph.db"))
         self._graph = self._fdb.select_graph("sessions")

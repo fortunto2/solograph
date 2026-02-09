@@ -1,6 +1,6 @@
 [project]
 name = "solograph"
-version = "0.1.4"
+version = "0.1.5"
 description = "Code intelligence MCP server — multi-project code graph, semantic search, session history, knowledge base, web search"
 readme = "README.md"
 requires-python = ">=3.12"

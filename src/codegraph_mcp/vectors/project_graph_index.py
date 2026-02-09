@@ -27,7 +27,7 @@ from .common import (
 # Registry path from env or ~/.codegraph/
 import os
 _REGISTRY_ENV = os.environ.get("CODEGRAPH_REGISTRY", "")
-_REGISTRY_PATH = Path(_REGISTRY_ENV) if _REGISTRY_ENV else Path.home() / ".codegraph" / "registry.yaml"
+_REGISTRY_PATH = Path(_REGISTRY_ENV).expanduser() if _REGISTRY_ENV else Path.home() / ".codegraph" / "registry.yaml"
 
 
 class ProjectGraphIndex:

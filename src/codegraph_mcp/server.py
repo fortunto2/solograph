@@ -82,7 +82,7 @@ def _get_graph():
     global _graph, _graph_db
     if _graph is None:
         from codegraph_mcp.db import get_db, get_graph
-        _graph_db = get_db(Path(CODEGRAPH_DB_PATH))
+        _graph_db = get_db(Path(CODEGRAPH_DB_PATH).expanduser())
         _graph = get_graph(_graph_db)
     return _graph
 
@@ -90,7 +90,7 @@ def _get_graph():
 def _get_registry_path() -> Path | None:
     """Find registry.yaml from env or auto-detect."""
     if CODEGRAPH_REGISTRY:
-        p = Path(CODEGRAPH_REGISTRY)
+        p = Path(CODEGRAPH_REGISTRY).expanduser()
         return p if p.exists() else None
     # Auto-detect common locations
     candidates = [
