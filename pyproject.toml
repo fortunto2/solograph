@@ -10,6 +10,11 @@ authors = [
 ]
 keywords = ["mcp", "code-intelligence", "codegraph", "semantic-search", "claude-code", "solograph"]
 
+[project.urls]
+Homepage = "https://github.com/fortunto2/solograph"
+Repository = "https://github.com/fortunto2/solograph"
+Plugin = "https://github.com/fortunto2/solo-factory"
+
 dependencies = [
     # Graph Database + Vector Search
     "falkordblite>=0.4",

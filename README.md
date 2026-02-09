@@ -112,7 +112,7 @@ Smart engine routing auto-selects search engines by query type:
 
 ## Part of Solo Factory
 
-Solograph is the MCP backend for [**Solo Factory**](https://github.com/fortunto2/solo-factory) — a Claude Code plugin with 9 skills and 3 agents for shipping startups faster.
+Solograph is the MCP backend for [**Solo Factory**](https://github.com/fortunto2/solo-factory) — a Claude Code plugin with 9 skills and 3 agents for shipping startups faster. [PyPI](https://pypi.org/project/solograph/)
 
 Install the plugin and solograph auto-starts:
 ```bash
