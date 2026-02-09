@@ -103,7 +103,19 @@ def _get_registry_path() -> Path | None:
 
 
 def _resolve_project_path(name: str) -> Path | None:
-    """Look up project path from registry by name."""
+    """Look up project path by name (registry) or by direct path.
+
+    Accepts:
+      - Project name: "my-app" → looks up in registry.yaml
+      - Absolute path: "/Users/x/projects/my-app" → uses directly
+      - Home-relative: "~/projects/my-app" → expands and uses
+    """
+    # Direct path — bypass registry entirely
+    if "/" in name or name.startswith("~"):
+        p = Path(name).expanduser().resolve()
+        return p if p.is_dir() else None
+
+    # Registry lookup
     import yaml
 
     registry_path = _get_registry_path()
@@ -122,10 +134,20 @@ def _resolve_project_path(name: str) -> Path | None:
 
 def _auto_index_if_needed(idx, project: str) -> bool:
     """Auto-index a project if it has no vector index."""
-    db_dir = idx._db_dir(project)
+    # Resolve name for path-based projects
+    proj_name = project
+    if "/" in project or project.startswith("~"):
+        p = Path(project).expanduser().resolve()
+        if p.is_dir():
+            proj_name = p.name
+            idx._paths[proj_name] = p
+        else:
+            return False
+
+    db_dir = idx._db_dir(proj_name)
     if db_dir.exists():
         try:
-            graph = idx._get_graph(project)
+            graph = idx._get_graph(proj_name)
             result = graph.query("MATCH (c:Chunk) RETURN count(c)")
             if result.result_set and result.result_set[0][0] > 0:
                 return False
@@ -138,8 +160,8 @@ def _auto_index_if_needed(idx, project: str) -> bool:
 
     sys.stdout = sys.stderr
     try:
-        print(f"Auto-indexing {project}...", file=sys.stderr)
-        idx.index_project(proj_path, project)
+        print(f"Auto-indexing {proj_name}...", file=sys.stderr)
+        idx.index_project(proj_path, proj_name)
     finally:
         sys.stdout = _real_stdout
     return True
@@ -387,17 +409,25 @@ def project_code_search(
     Args:
         query: Search query (e.g. "authentication middleware", "API route handler")
         n_results: Number of results (default 5)
-        project: Search in one project (e.g. "my-app"). Omit to search all.
+        project: Project name or path (e.g. "my-app", "~/projects/my-app"). Omit to search all.
         chunk_type: Filter by "code" or "doc"
     """
     idx = _get_project_index()
 
-    if project:
+    # Resolve path-based project to name
+    proj_name = project
+    if project and ("/" in project or project.startswith("~")):
+        p = Path(project).expanduser().resolve()
+        if p.is_dir():
+            proj_name = p.name
+            idx._paths[proj_name] = p
+
+    if proj_name:
         _auto_index_if_needed(idx, project)
 
     sys.stdout = sys.stderr
     try:
-        return idx.search(query, project=project, n_results=n_results, chunk_type=chunk_type)
+        return idx.search(query, project=proj_name, n_results=n_results, chunk_type=chunk_type)
     finally:
         sys.stdout = _real_stdout
 
@@ -412,18 +442,23 @@ def project_code_reindex(
     Uses sentence-transformers backend (safe for memory).
 
     Args:
-        project: Project name (e.g. "my-app", "backend-api")
+        project: Project name or path (e.g. "my-app", "~/projects/my-app")
     """
     proj_path = _resolve_project_path(project)
     if not proj_path:
-        return {"error": f"Project '{project}' not found in registry"}
+        return {"error": f"Project '{project}' not found in registry. Pass an absolute path to index any project."}
+
+    # Use directory name as project key when path is passed directly
+    proj_name = proj_path.name if "/" in project or project.startswith("~") else project
 
     idx = _get_project_index()
     sys.stdout = sys.stderr
     try:
-        stats = idx.index_project(proj_path, project)
+        stats = idx.index_project(proj_path, proj_name)
     finally:
         sys.stdout = _real_stdout
+    stats["project"] = proj_name
+    stats["path"] = str(proj_path)
     return stats
 
 
