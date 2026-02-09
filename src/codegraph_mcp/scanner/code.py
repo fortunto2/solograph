@@ -12,9 +12,12 @@ LANG_MAP = {
     ".py": "python",
     ".swift": "swift",
     ".ts": "typescript",
-    ".tsx": "typescript",
+    ".tsx": "tsx",
     ".kt": "kotlin",
 }
+
+# TSX uses same queries as TypeScript
+_TS_FAMILY = {"typescript", "tsx"}
 
 # Directories to skip during scan
 SKIP_DIRS = {
@@ -36,6 +39,32 @@ SKIP_DIRS = {
 
 # File patterns to skip
 SKIP_FILES = {".DS_Store", "package-lock.json", "yarn.lock", "uv.lock"}
+
+
+def _get_ts_language(lang: str):
+    """Get tree-sitter Language object, handling typescript API differences.
+
+    tree-sitter-typescript v0.23+ uses language_typescript()/language_tsx()
+    instead of language(). Other grammars use language().
+    """
+    import importlib
+    from tree_sitter import Language
+
+    grammar_map = {
+        "python": ("tree_sitter_python", "language"),
+        "swift": ("tree_sitter_swift", "language"),
+        "typescript": ("tree_sitter_typescript", "language_typescript"),
+        "tsx": ("tree_sitter_typescript", "language_tsx"),
+        "kotlin": ("tree_sitter_kotlin", "language"),
+    }
+
+    if lang not in grammar_map:
+        return None
+
+    module_name, func_name = grammar_map[lang]
+    grammar_mod = importlib.import_module(module_name)
+    lang_func = getattr(grammar_mod, func_name)
+    return Language(lang_func())
 
 
 def scan_files(project_path: Path, project_name: str) -> list[FileNode]:
@@ -67,24 +96,12 @@ def scan_files(project_path: Path, project_name: str) -> list[FileNode]:
 
 def extract_symbols(file_path: Path, project_name: str, lang: str, rel_path: str = "") -> list[SymbolNode]:
     """Extract function/class definitions from a file using tree-sitter."""
-    ext_to_grammar = {
-        "python": ("tree_sitter_python", "python"),
-        "swift": ("tree_sitter_swift", "swift"),
-        "typescript": ("tree_sitter_typescript", "typescript"),
-        "kotlin": ("tree_sitter_kotlin", "kotlin"),
-    }
-
-    if lang not in ext_to_grammar:
-        return []
-
     try:
-        import importlib
+        from tree_sitter import Parser, Query, QueryCursor
 
-        from tree_sitter import Language, Parser, Query, QueryCursor
-
-        module_name, _ = ext_to_grammar[lang]
-        grammar_mod = importlib.import_module(module_name)
-        ts_lang = Language(grammar_mod.language())
+        ts_lang = _get_ts_language(lang)
+        if ts_lang is None:
+            return []
         parser = Parser(ts_lang)
     except (ImportError, Exception):
         return []
@@ -120,7 +137,9 @@ def extract_symbols(file_path: Path, project_name: str, lang: str, rel_path: str
         """,
     }
 
-    query_str = queries_by_lang.get(lang)
+    # tsx uses same queries as typescript
+    query_lang = "typescript" if lang in _TS_FAMILY else lang
+    query_str = queries_by_lang.get(query_lang)
     if not query_str:
         return []
 
@@ -298,22 +317,12 @@ def extract_deep(
 
     Returns (imports, calls, inherits) lists.
     """
-    ext_to_grammar = {
-        "python": ("tree_sitter_python", "python"),
-        "swift": ("tree_sitter_swift", "swift"),
-        "typescript": ("tree_sitter_typescript", "typescript"),
-        "kotlin": ("tree_sitter_kotlin", "kotlin"),
-    }
-
-    if lang not in ext_to_grammar:
-        return [], [], []
-
     try:
-        import importlib
-        from tree_sitter import Language, Parser, Query, QueryCursor
-        module_name, _ = ext_to_grammar[lang]
-        grammar_mod = importlib.import_module(module_name)
-        ts_lang = Language(grammar_mod.language())
+        from tree_sitter import Parser, Query, QueryCursor
+
+        ts_lang = _get_ts_language(lang)
+        if ts_lang is None:
+            return [], [], []
         parser = Parser(ts_lang)
     except (ImportError, Exception):
         return [], [], []
@@ -329,8 +338,11 @@ def extract_deep(
     calls: list[CallEdge] = []
     inherits: list[InheritsEdge] = []
 
+    # tsx uses same queries/noise as typescript
+    query_lang = "typescript" if lang in _TS_FAMILY else lang
+
     # ── Imports ──
-    import_query_str = _IMPORT_QUERIES.get(lang)
+    import_query_str = _IMPORT_QUERIES.get(query_lang)
     if import_query_str:
         try:
             query = Query(ts_lang, import_query_str)
@@ -340,7 +352,7 @@ def extract_deep(
             for _capture_name, nodes in captures.items():
                 for node in nodes:
                     module_text = node.text.decode("utf-8")
-                    kind, module_name = _classify_import(module_text, lang)
+                    kind, module_name = _classify_import(module_text, query_lang)
                     if module_name not in seen_modules:
                         seen_modules.add(module_name)
                         imports.append(ImportEdge(
@@ -353,8 +365,8 @@ def extract_deep(
             pass
 
     # ── Calls ──
-    call_query_str = _CALL_QUERIES.get(lang)
-    noise = NOISE_CALLS.get(lang, set())
+    call_query_str = _CALL_QUERIES.get(query_lang)
+    noise = NOISE_CALLS.get(query_lang, set())
     if call_query_str:
         try:
             query = Query(ts_lang, call_query_str)
@@ -375,7 +387,7 @@ def extract_deep(
             pass
 
     # ── Inheritance ──
-    inherit_query_str = _INHERIT_QUERIES.get(lang)
+    inherit_query_str = _INHERIT_QUERIES.get(query_lang)
     if inherit_query_str:
         try:
             query = Query(ts_lang, inherit_query_str)
