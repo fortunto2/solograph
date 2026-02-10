@@ -84,7 +84,22 @@ def _get_graph():
         from codegraph_mcp.db import get_db, get_graph
         _graph_db = get_db(Path(CODEGRAPH_DB_PATH).expanduser())
         _graph = get_graph(_graph_db)
+        # Auto-refresh registry → project stacks always current
+        _auto_refresh_registry()
     return _graph
+
+
+def _auto_refresh_registry():
+    """Ingest registry.yaml into graph so project stacks are always current."""
+    registry_path = _get_registry_path()
+    if not registry_path:
+        return
+    try:
+        from codegraph_mcp.scanner.registry import ingest_projects, scan_registry
+        projects = scan_registry(registry_path)
+        ingest_projects(_graph, projects)
+    except Exception as exc:
+        print(f"Auto-refresh registry error: {exc}", file=sys.stderr)
 
 
 def _get_registry_path() -> Path | None:
@@ -236,7 +251,53 @@ def session_search(
         project: Filter by project name (e.g. "my-app", "backend")
     """
     idx = _get_session_index()
+    _auto_scan_sessions_if_empty(idx)
     return idx.search(query, n_results=n_results, project=project)
+
+
+_sessions_auto_scanned = False
+
+
+def _auto_scan_sessions_if_empty(idx):
+    """Scan all Claude Code sessions into graph + vectors if index is empty."""
+    global _sessions_auto_scanned
+    if _sessions_auto_scanned:
+        return
+    _sessions_auto_scanned = True
+
+    try:
+        if idx.count() > 0:
+            return
+    except Exception:
+        return
+
+    try:
+        graph = _get_graph()
+        from codegraph_mcp.scanner.sessions import (
+            ingest_session_files,
+            ingest_sessions,
+            link_sessions_to_projects,
+            scan_all_sessions,
+        )
+
+        sessions, edges, summaries = [], [], []
+        for s, e, sm in scan_all_sessions():
+            sessions.append(s)
+            edges.extend(e)
+            summaries.append(sm)
+
+        if sessions:
+            sys.stdout = sys.stderr
+            try:
+                print(f"Auto-scanning {len(sessions)} sessions...", file=sys.stderr)
+                ingest_sessions(graph, sessions)
+                ingest_session_files(graph, edges)
+                link_sessions_to_projects(graph)
+                idx.upsert(summaries)
+            finally:
+                sys.stdout = _real_stdout
+    except Exception as exc:
+        print(f"Auto-scan sessions error: {exc}", file=sys.stderr)
 
 
 @mcp.tool()
