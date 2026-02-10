@@ -134,6 +134,60 @@ Smart engine routing auto-selects search engines by query type:
 - **news**: google news (keywords: news, latest, trend)
 - **general**: google, duckduckgo, brave (default)
 
+## Graph Schema
+
+### Nodes
+
+| Node | Key Properties | Source |
+|------|---------------|--------|
+| `Project` | name, stack, path | `registry.yaml` |
+| `File` | path, lang, lines, project | tree-sitter scan |
+| `Symbol` | name, kind (class/function/method), file, line | tree-sitter AST |
+| `Package` | name, version, source (npm/pip/spm/gradle) | manifest files |
+| `Session` | session_id, project_name, started_at, slug | `.claude/` history |
+
+### Edges
+
+| Edge | From → To | Description |
+|------|-----------|-------------|
+| `HAS_FILE` | Project → File | Project contains file |
+| `DEFINES` | File → Symbol | File defines symbol |
+| `IMPORTS` | File → File/Package | Import relationship |
+| `CALLS` | File → Symbol | File calls symbol |
+| `INHERITS` | Symbol → Symbol | Class inheritance |
+| `DEPENDS_ON` | Project → Package | Package dependency |
+| `MODIFIED` | Session → File | Git history (lines added/removed) |
+| `TOUCHED` / `EDITED` / `CREATED` | Session → File | Session file operations |
+| `IN_PROJECT` | Session → Project | Session belongs to project |
+
+### Example Cypher Queries
+
+```cypher
+-- Hub files (most imported)
+MATCH (f:File)<-[:IMPORTS]-(other:File)
+RETURN f.path, COUNT(other) AS importers
+ORDER BY importers DESC LIMIT 10
+
+-- Shared packages across projects
+MATCH (p1:Project)-[:DEPENDS_ON]->(pkg:Package)<-[:DEPENDS_ON]-(p2:Project)
+WHERE p1.name <> p2.name
+RETURN pkg.name, COLLECT(DISTINCT p1.name) AS projects
+
+-- Impact analysis: what breaks if I change this file?
+MATCH (f:File {path: 'lib/utils.ts'})<-[:IMPORTS*1..3]-(dep:File)
+RETURN dep.path
+
+-- Most edited files (from session history)
+MATCH (s:Session)-[:EDITED]->(f:File)
+RETURN f.path, COUNT(s) AS sessions
+ORDER BY sessions DESC LIMIT 10
+
+-- Files touched by sessions in a project
+MATCH (s:Session {project_name: 'my-app'})-[r]->(f:File)
+RETURN f.path, type(r) AS action, COUNT(s) AS times
+ORDER BY times DESC
+```
+
 ## Storage
 
 - **Code graph:** `~/.codegraph/codegraph.db` (FalkorDB)
