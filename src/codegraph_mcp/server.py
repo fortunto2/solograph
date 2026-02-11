@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Solograph MCP Server — code intelligence, knowledge base, sessions, web search.
+Solograph MCP Server — code intelligence, knowledge base, sessions, sources, web search.
 
-11 tools for Claude Code. Configure via environment variables:
+13 tools for Claude Code. Configure via environment variables:
   CODEGRAPH_DB_PATH     — FalkorDB path (default: ~/.solo/codegraph.db)
   CODEGRAPH_REGISTRY    — registry.yaml path (default: auto-detect)
   KB_PATH               — Knowledge base root (markdown files)
@@ -39,6 +39,7 @@ TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 
 _kb = None
 _session_idx = None
+_source_idx = None
 _project_idx = None
 _graph = None
 _graph_db = None
@@ -64,6 +65,14 @@ def _get_session_index():
         from codegraph_mcp.vectors.session_index import SessionIndex
         _session_idx = SessionIndex()
     return _session_idx
+
+
+def _get_source_index():
+    global _source_idx
+    if _source_idx is None:
+        from codegraph_mcp.vectors.source_index import SourceIndex
+        _source_idx = SourceIndex()
+    return _source_idx
 
 
 def _get_project_index():
@@ -521,6 +530,36 @@ def project_code_reindex(
     stats["project"] = proj_name
     stats["path"] = str(proj_path)
     return stats
+
+
+@mcp.tool()
+def source_search(
+    query: str,
+    source: str | None = None,
+    n_results: int = 5,
+) -> list[dict]:
+    """Search indexed external sources (Telegram, YouTube, etc.).
+
+    Each source is stored in its own FalkorDB graph.
+    Without source filter, searches all sources and merges by relevance.
+
+    Args:
+        query: Search query (e.g. "startup idea", "revenue growth")
+        source: Filter by source name (e.g. "telegram", "youtube"). Omit to search all.
+        n_results: Number of results (default 5)
+    """
+    idx = _get_source_index()
+    return idx.search(query, source=source, n_results=n_results)
+
+
+@mcp.tool()
+def source_list() -> list[dict]:
+    """List indexed external sources with document counts.
+
+    Shows all source graphs under ~/.solo/sources/ with their sizes.
+    """
+    idx = _get_source_index()
+    return idx.list_sources()
 
 
 # ── Entry point ──────────────────────────────────────────────────

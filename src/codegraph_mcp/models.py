@@ -120,6 +120,20 @@ class InheritsEdge(BaseModel):
     project: str
 
 
+class SourceDoc(BaseModel):
+    """A document from an external source (Telegram, YouTube, etc.)."""
+
+    doc_id: str = Field(..., description="md5 hash (e.g. tg:channel:post_id)")
+    source_type: str = Field(..., description="telegram-post, youtube-transcript")
+    source_name: str = Field(..., description="Channel or source name")
+    title: str = ""
+    content: str = Field("", description="Preview text (up to 500 chars)")
+    url: str = ""
+    created: str = ""
+    tags: str = Field("", description="Comma-separated tags")
+    embed_text: str = Field("", description="Full text for embedding (up to 3000 chars)")
+
+
 class ScanResult(BaseModel):
     """Aggregated result from scanning a project."""
 
