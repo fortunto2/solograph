@@ -134,6 +134,30 @@ class SourceDoc(BaseModel):
     embed_text: str = Field("", description="Full text for embedding (up to 3000 chars)")
 
 
+class VideoChapter(BaseModel):
+    """A chapter marker from a YouTube video description."""
+
+    title: str
+    start_time: str = ""  # "5:30" or "1:05:20"
+    start_seconds: int = 0
+
+
+class VideoDoc(BaseModel):
+    """A YouTube video with metadata for chunked indexing."""
+
+    video_id: str  # YouTube 11-char ID
+    doc_id: str  # md5("yt:{video_id}")
+    source_name: str  # channel handle
+    title: str = ""
+    description: str = ""  # full YouTube description (up to 5000 chars)
+    url: str = ""
+    created: str = ""
+    tags: str = ""
+    duration_seconds: int = 0
+    chapters: list[VideoChapter] = []
+    transcript: str = ""  # transient — used during indexing, not stored on node
+
+
 class ScanResult(BaseModel):
     """Aggregated result from scanning a project."""
 

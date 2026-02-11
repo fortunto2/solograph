@@ -541,6 +541,7 @@ def source_search(
     """Search indexed external sources (Telegram, YouTube, etc.).
 
     Each source is stored in its own FalkorDB graph.
+    YouTube videos are chunked by chapters — results include chapter name and timecode.
     Without source filter, searches all sources and merges by relevance.
 
     Args:
@@ -553,10 +554,48 @@ def source_search(
 
 
 @mcp.tool()
+def source_tags(source: str = "youtube") -> list[dict]:
+    """List all auto-detected topics with video counts.
+
+    Tags are assigned automatically via zero-shot embedding similarity
+    during video indexing. Shared across videos — enables topic clustering.
+
+    Args:
+        source: Source name (default: "youtube")
+    """
+    idx = _get_source_index()
+    return idx.list_tags(source)
+
+
+@mcp.tool()
+def source_related(video_url: str, source: str = "youtube") -> list[dict]:
+    """Find related videos by shared tags.
+
+    Given a video URL, finds other videos that share auto-detected topics.
+    Returns videos sorted by number of shared tags (most related first).
+
+    Args:
+        video_url: YouTube video URL or video ID
+        source: Source name (default: "youtube")
+    """
+    import re
+
+    # Extract video ID from URL or use as-is
+    video_id = video_url
+    m = re.search(r"(?:v=|/v/|youtu\.be/)([a-zA-Z0-9_-]{11})", video_url)
+    if m:
+        video_id = m.group(1)
+
+    idx = _get_source_index()
+    return idx.related_videos(source, video_id)
+
+
+@mcp.tool()
 def source_list() -> list[dict]:
     """List indexed external sources with document counts.
 
     Shows all source graphs under ~/.solo/sources/ with their sizes.
+    YouTube sources include video/chunk breakdown (videos, video_chunks fields).
     """
     idx = _get_source_index()
     return idx.list_sources()

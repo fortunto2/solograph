@@ -843,14 +843,25 @@ def source_search_cmd(query, source, limit, backend):
     click.echo(f"\nSearch: '{query}' {scope} ({len(results)} results):\n")
     for i, r in enumerate(results, 1):
         src = r.get("source_type", "?")
+        # Show chapter + timecode for video chunks
+        chapter_info = ""
+        if r.get("chapter"):
+            chapter_info = f" [{r['chapter']}"
+            if r.get("start_time"):
+                chapter_info += f" @ {r['start_time']}"
+            chapter_info += "]"
         click.echo(
-            f"{i}. [{src}] {r['title'][:80]}"
+            f"{i}. [{src}] {r['title'][:80]}{chapter_info}"
             f"  (relevance: {r['relevance']:.0%})"
         )
         if r.get("url"):
             click.echo(f"   {r['url']}")
+        if r.get("tags"):
+            click.echo(f"   Tags: {r['tags']}")
         if r.get("content"):
             click.echo(f"   {r['content'][:120]}")
+        if r.get("context"):
+            click.echo(f"   Context: {r['context'][:200]}...")
         click.echo()
 
 
@@ -870,9 +881,66 @@ def source_list_cmd(backend):
     click.echo(f"\nIndexed sources ({len(sources)}):\n")
     total = 0
     for s in sources:
-        click.echo(f"  {s['source']:12s} {s['count']:4d} docs  {s['path']}")
+        extra = ""
+        if s.get("videos"):
+            extra = f"  ({s['videos']} videos, {s.get('video_chunks', 0)} chunks)"
+        click.echo(f"  {s['source']:12s} {s['count']:4d} docs{extra}  {s['path']}")
         total += s["count"]
     click.echo(f"\n  Total: {total} documents")
+
+
+@cli.command("source-tags")
+@click.option("--source", "-s", default="youtube", help="Source name (default: youtube)")
+@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+def source_tags_cmd(source, backend):
+    """List all auto-detected topics with video counts."""
+    from .vectors.source_index import SourceIndex
+
+    idx = SourceIndex(backend=backend)
+    tags = idx.list_tags(source)
+
+    if not tags:
+        click.echo("No tags found. Re-index videos to generate auto-tags.")
+        return
+
+    click.echo(f"\nTopics in [{source}] ({len(tags)} tags):\n")
+    for t in tags:
+        conf = f"  (avg {t['avg_confidence']:.0%})" if t.get("avg_confidence") else ""
+        click.echo(f"  {t['count']:3d}  {t['name']}{conf}")
+
+
+@cli.command("source-related")
+@click.argument("video_id")
+@click.option("--source", "-s", default="youtube", help="Source name (default: youtube)")
+@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+def source_related_cmd(video_id, source, backend):
+    """Find related videos by shared tags."""
+    import re
+
+    from .vectors.source_index import SourceIndex
+
+    # Extract video ID from URL if needed
+    m = re.search(r"(?:v=|/v/|youtu\.be/)([a-zA-Z0-9_-]{11})", video_id)
+    if m:
+        video_id = m.group(1)
+
+    idx = SourceIndex(backend=backend)
+    results = idx.related_videos(source, video_id)
+
+    if not results:
+        click.echo(f"No related videos found for {video_id}")
+        return
+
+    click.echo(f"\nRelated videos for {video_id} ({len(results)}):\n")
+    for r in results:
+        tags = ", ".join(r["shared_tags"]) if r["shared_tags"] else ""
+        rel = f" relevance: {r['relevance']:.2f}" if r.get("relevance") else ""
+        click.echo(f"  [{r['overlap']} shared{rel}] {r['title'][:70]}")
+        if tags:
+            click.echo(f"    Tags: {tags}")
+        if r.get("url"):
+            click.echo(f"    {r['url']}")
+        click.echo()
 
 
 @cli.command("source-delete")
