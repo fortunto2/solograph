@@ -823,6 +823,72 @@ def hierarchy_cmd(ctx, class_name, project):
             click.echo(f"    ↓ {c['name']}  ({c['file']}, {c['project']})")
 
 
+@cli.command("source-search")
+@click.argument("query")
+@click.option("--source", "-s", default=None, help="Filter by source name (telegram, youtube)")
+@click.option("--limit", "-n", default=5, help="Number of results")
+@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+def source_search_cmd(query, source, limit, backend):
+    """Search indexed external sources (Telegram, YouTube, etc.)."""
+    from .vectors.source_index import SourceIndex
+
+    idx = SourceIndex(backend=backend)
+    results = idx.search(query, source=source, n_results=limit)
+
+    if not results:
+        click.echo("No results found.")
+        return
+
+    scope = f"[{source}]" if source else "[all sources]"
+    click.echo(f"\nSearch: '{query}' {scope} ({len(results)} results):\n")
+    for i, r in enumerate(results, 1):
+        src = r.get("source_type", "?")
+        click.echo(
+            f"{i}. [{src}] {r['title'][:80]}"
+            f"  (relevance: {r['relevance']:.0%})"
+        )
+        if r.get("url"):
+            click.echo(f"   {r['url']}")
+        if r.get("content"):
+            click.echo(f"   {r['content'][:120]}")
+        click.echo()
+
+
+@cli.command("source-list")
+@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+def source_list_cmd(backend):
+    """List indexed external sources with document counts."""
+    from .vectors.source_index import SourceIndex
+
+    idx = SourceIndex(backend=backend)
+    sources = idx.list_sources()
+
+    if not sources:
+        click.echo("No sources indexed. Run: index-telegram or index-youtube")
+        return
+
+    click.echo(f"\nIndexed sources ({len(sources)}):\n")
+    total = 0
+    for s in sources:
+        click.echo(f"  {s['source']:12s} {s['count']:4d} docs  {s['path']}")
+        total += s["count"]
+    click.echo(f"\n  Total: {total} documents")
+
+
+@cli.command("source-delete")
+@click.argument("source_name")
+@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+def source_delete_cmd(source_name, backend):
+    """Delete a source's FalkorDB vector database."""
+    from .vectors.source_index import SourceIndex
+
+    idx = SourceIndex(backend=backend)
+    if idx.delete_source(source_name):
+        click.echo(f"Deleted source: {source_name}")
+    else:
+        click.echo(f"Source not found: {source_name}")
+
+
 @cli.command("web-search")
 @click.argument("query")
 @click.option("--limit", "-n", default=10, help="Number of results")
