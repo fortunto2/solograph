@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ..scanner.code import LANG_MAP, SKIP_DIRS, SKIP_FILES
 
-VECTORS_ROOT = Path.home() / ".codegraph" / "vectors"
+VECTORS_ROOT = Path.home() / ".solo" / "vectors"
 
 # Extensions for markdown docs
 DOC_EXTENSIONS = {".md", ".mdx", ".rst", ".txt"}

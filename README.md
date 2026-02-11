@@ -76,7 +76,7 @@ uv tool install solograph              # → solograph + solograph-cli in PATH
 # 1. Install
 uv tool install solograph
 
-# 2. Init — creates ~/.codegraph/, scans projects, builds graph
+# 2. Init — creates ~/.solo/, scans projects, builds graph
 solograph-cli init ~/my-projects
 
 # 3. Add MCP to Claude Code
@@ -91,8 +91,8 @@ Environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CODEGRAPH_DB_PATH` | `~/.codegraph/codegraph.db` | FalkorDB code graph path |
-| `CODEGRAPH_REGISTRY` | `~/.codegraph/registry.yaml` | Project registry path |
+| `CODEGRAPH_DB_PATH` | `~/.solo/codegraph.db` | FalkorDB code graph path |
+| `CODEGRAPH_REGISTRY` | `~/.solo/registry.yaml` | Project registry path |
 | `CODEGRAPH_SCAN_PATH` | `~/projects` | Where to scan for projects |
 | `KB_PATH` | (none) | Knowledge base root (markdown files with YAML frontmatter) |
 | `TAVILY_API_URL` | `http://localhost:8013` | Tavily-compatible search URL |
@@ -190,10 +190,10 @@ ORDER BY times DESC
 
 ## Storage
 
-- **Code graph:** `~/.codegraph/codegraph.db` (FalkorDB)
-- **Session vectors:** `~/.codegraph/sessions_vectors/graph.db` (FalkorDB)
-- **KB vectors:** `{KB_PATH}/.codegraph/kb/graph.db` (FalkorDB)
-- **Project vectors:** `{project_path}/.codegraph/falkordb/graph.db` (per-project FalkorDB)
+- **Code graph:** `~/.solo/codegraph.db` (FalkorDB)
+- **Session vectors:** `~/.solo/sessions/graph.db` (FalkorDB)
+- **KB vectors:** `{KB_PATH}/.solo/kb/graph.db` (FalkorDB)
+- **Project vectors:** `{project_path}/.solo/vectors/graph.db` (per-project FalkorDB)
 
 ## Part of Solo Factory
 

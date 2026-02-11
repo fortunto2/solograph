@@ -1,6 +1,6 @@
 """Per-project FalkorDBLite vector databases for code and documentation.
 
-Each project gets its own FalkorDBLite instance at {project_path}/.codegraph/falkordb/graph.db.
+Each project gets its own FalkorDBLite instance at {project_path}/.solo/vectors/graph.db.
 Stores chunks as graph nodes with vector embeddings — enables hybrid graph+vector queries.
 Uses semantic-text-splitter (Rust core) with tree-sitter for AST-aware chunking.
 
@@ -24,10 +24,10 @@ from .common import (
     EMBEDDING_DIM,
 )
 
-# Registry path from env or ~/.codegraph/
+# Registry path from env or ~/.solo/
 import os
 _REGISTRY_ENV = os.environ.get("CODEGRAPH_REGISTRY", "")
-_REGISTRY_PATH = Path(_REGISTRY_ENV).expanduser() if _REGISTRY_ENV else Path.home() / ".codegraph" / "registry.yaml"
+_REGISTRY_PATH = Path(_REGISTRY_ENV).expanduser() if _REGISTRY_ENV else Path.home() / ".solo" / "registry.yaml"
 
 
 class ProjectGraphIndex:
@@ -57,12 +57,12 @@ class ProjectGraphIndex:
                 self._paths[name] = path
 
     def _db_dir(self, project_name: str) -> Path:
-        """DB directory: {project_path}/.codegraph/falkordb/ or legacy fallback."""
+        """DB directory: {project_path}/.solo/vectors/ or legacy fallback."""
         self._ensure_registry()
         if project_name in self._paths:
-            return self._paths[project_name] / ".codegraph" / "falkordb"
+            return self._paths[project_name] / ".solo" / "vectors"
         # Legacy fallback for projects not in registry
-        return VECTORS_ROOT / project_name / "falkordb"
+        return VECTORS_ROOT / project_name
 
     def _get_graph(self, project_name: str):
         """Get or create a FalkorDBLite graph for a project (lazy)."""
@@ -156,7 +156,7 @@ class ProjectGraphIndex:
         """
         import gc
 
-        # Register path so _db_dir resolves to {project_path}/.codegraph/
+        # Register path so _db_dir resolves to {project_path}/.solo/
         self._paths[project_name] = project_path
 
         graph = self._get_graph(project_name)
@@ -386,17 +386,17 @@ class ProjectGraphIndex:
         return output
 
     def _discover_projects(self) -> list[str]:
-        """Find all indexed projects (with .codegraph/falkordb/ in project dir)."""
+        """Find all indexed projects (with .solo/vectors/ in project dir)."""
         self._ensure_registry()
         found = []
-        # Check in-project .codegraph/ dirs (new location)
+        # Check in-project .solo/ dirs (new location)
         for name, path in self._paths.items():
-            if (path / ".codegraph" / "falkordb").exists():
+            if (path / ".solo" / "vectors").exists():
                 found.append(name)
-        # Legacy: check ~/.codegraph/vectors/
+        # Legacy: check ~/.solo/vectors/
         if VECTORS_ROOT.exists():
             for d in VECTORS_ROOT.iterdir():
-                if d.is_dir() and (d / "falkordb").exists() and d.name not in found:
+                if d.is_dir() and (d / "graph.db").exists() and d.name not in found:
                     found.append(d.name)
         return found
 

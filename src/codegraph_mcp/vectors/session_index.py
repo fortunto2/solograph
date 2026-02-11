@@ -11,7 +11,7 @@ from redislite.falkordb_client import FalkorDB
 from ..models import SessionSummary
 from .common import EMBEDDING_DIM, init_embedding_function
 
-_DB_PATH = os.environ.get("CODEGRAPH_SESSIONS_DB", str(Path.home() / ".codegraph" / "sessions_vectors"))
+_DB_PATH = os.environ.get("CODEGRAPH_SESSIONS_DB", str(Path.home() / ".solo" / "sessions"))
 
 
 class SessionIndex:

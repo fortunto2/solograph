@@ -17,9 +17,9 @@ from .output.console import (
 
 import os
 
-# Registry path: env var > ~/.codegraph/registry.yaml
+# Registry path: env var > ~/.solo/registry.yaml
 _REGISTRY_ENV = os.environ.get("CODEGRAPH_REGISTRY", "")
-DEFAULT_REGISTRY = Path(_REGISTRY_ENV).expanduser() if _REGISTRY_ENV else Path.home() / ".codegraph" / "registry.yaml"
+DEFAULT_REGISTRY = Path(_REGISTRY_ENV).expanduser() if _REGISTRY_ENV else Path.home() / ".solo" / "registry.yaml"
 
 
 @click.group()
@@ -36,7 +36,7 @@ def cli(ctx, db_path):
 @click.option("--deep", is_flag=True, help="Also run deep analysis (imports, calls, inheritance)")
 @click.pass_context
 def init(ctx, projects_dir, deep):
-    """Initialize solograph — create ~/.codegraph/, scan projects, build graph.
+    """Initialize solograph — create ~/.solo/, scan projects, build graph.
 
     \b
     Examples:
@@ -46,7 +46,7 @@ def init(ctx, projects_dir, deep):
     """
     from .registry import scan_projects, save_registry, SCAN_PATH, REGISTRY_PATH
 
-    codegraph_dir = Path.home() / ".codegraph"
+    codegraph_dir = Path.home() / ".solo"
 
     # 1. Ask for projects dir if not provided
     if not projects_dir:
@@ -58,7 +58,7 @@ def init(ctx, projects_dir, deep):
         console.print(f"[red]Directory not found:[/red] {projects_path}")
         raise SystemExit(1)
 
-    # 2. Create ~/.codegraph/
+    # 2. Create ~/.solo/
     codegraph_dir.mkdir(parents=True, exist_ok=True)
     console.print(f"[green]✓[/green] {codegraph_dir}")
 

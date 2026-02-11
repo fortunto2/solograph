@@ -20,8 +20,8 @@ from pydantic import BaseModel, Field
 import os
 
 # Configurable via env vars
-STACKS_DIR = Path(os.environ.get("CODEGRAPH_STACKS_DIR", str(Path.home() / ".codegraph" / "stacks"))).expanduser()
-REGISTRY_PATH = Path(os.environ.get("CODEGRAPH_REGISTRY", str(Path.home() / ".codegraph" / "registry.yaml"))).expanduser()
+STACKS_DIR = Path(os.environ.get("CODEGRAPH_STACKS_DIR", str(Path.home() / ".solo" / "stacks"))).expanduser()
+REGISTRY_PATH = Path(os.environ.get("CODEGRAPH_REGISTRY", str(Path.home() / ".solo" / "registry.yaml"))).expanduser()
 SCAN_PATH = Path(os.environ.get("CODEGRAPH_SCAN_PATH", str(Path.home() / "projects"))).expanduser()
 OLD_PATH = Path(os.environ.get("CODEGRAPH_OLD_PATH", str(Path.home() / "projects" / "archive"))).expanduser()
 

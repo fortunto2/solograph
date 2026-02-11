@@ -3,7 +3,7 @@
 Solograph MCP Server — code intelligence, knowledge base, sessions, web search.
 
 11 tools for Claude Code. Configure via environment variables:
-  CODEGRAPH_DB_PATH     — FalkorDB path (default: ~/.codegraph/codegraph.db)
+  CODEGRAPH_DB_PATH     — FalkorDB path (default: ~/.solo/codegraph.db)
   CODEGRAPH_REGISTRY    — registry.yaml path (default: auto-detect)
   KB_PATH               — Knowledge base root (markdown files)
   TAVILY_API_URL        — Tavily-compatible search URL (default: http://localhost:8013)
@@ -29,7 +29,7 @@ _real_stdout = sys.stdout
 
 # ── Config from env vars ──────────────────────────────────────────
 
-CODEGRAPH_DB_PATH = os.environ.get("CODEGRAPH_DB_PATH", str(Path.home() / ".codegraph" / "codegraph.db"))
+CODEGRAPH_DB_PATH = os.environ.get("CODEGRAPH_DB_PATH", str(Path.home() / ".solo" / "codegraph.db"))
 CODEGRAPH_REGISTRY = os.environ.get("CODEGRAPH_REGISTRY", "")
 KB_PATH = os.environ.get("KB_PATH", "")
 TAVILY_API_URL = os.environ.get("TAVILY_API_URL", "http://localhost:8013")
@@ -109,7 +109,7 @@ def _get_registry_path() -> Path | None:
         return p if p.exists() else None
     # Auto-detect common locations
     candidates = [
-        Path.home() / ".codegraph" / "registry.yaml",
+        Path.home() / ".solo" / "registry.yaml",
     ]
     for c in candidates:
         if c.exists():

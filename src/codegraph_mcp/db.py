@@ -4,7 +4,7 @@ from pathlib import Path
 
 from redislite.falkordb_client import FalkorDB
 
-DEFAULT_DB_PATH = Path.home() / ".codegraph" / "codegraph.db"
+DEFAULT_DB_PATH = Path.home() / ".solo" / "codegraph.db"
 
 
 def get_db(db_path: Path | None = None) -> FalkorDB:
