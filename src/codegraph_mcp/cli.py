@@ -876,5 +876,24 @@ def web_search_cmd(query, limit, engines, raw):
         console.print()
 
 
+@cli.command("index-kb")
+@click.option("--kb-path", type=click.Path(exists=True), default=None, help="Knowledge base path (default: KB_PATH env)")
+@click.option("--force", is_flag=True, help="Force re-indexing of all documents")
+@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+def index_kb_cmd(kb_path, force, backend):
+    """Index knowledge base markdown files into FalkorDB vectors."""
+    from .kb import KnowledgeEmbeddings
+
+    path = kb_path or os.environ.get("KB_PATH", "")
+    if not path:
+        console.print("[red]Set KB_PATH env var or pass --kb-path[/red]")
+        raise SystemExit(1)
+
+    kb = KnowledgeEmbeddings(path, backend=backend)
+    kb.index_all_markdown(force=force)
+    stats = kb.get_stats()
+    console.print(f"\n[bold green]KB indexed:[/bold green] {stats['total_documents']} documents ({stats['unique_tags']} unique tags)")
+
+
 if __name__ == "__main__":
     cli()
