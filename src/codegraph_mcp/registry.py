@@ -47,6 +47,7 @@ class ProjectRegistry(BaseModel):
 # Stack detection rules: (indicator_file_or_dir, max_depth, stack_name)
 STACK_DETECTORS: list[tuple[str, int, str]] = [
     ("*.xcodeproj", 3, "ios-swift"),
+    ("project.yml", 2, "ios-swift"),  # XcodeGen projects
     ("build.gradle.kts", 3, "kotlin-android"),
     ("astro.config.*", 2, "astro-static"),
     ("wrangler.toml", 2, "cloudflare-workers"),
