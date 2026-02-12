@@ -143,7 +143,7 @@ def check_searxng(searxng_url: str) -> bool:
     try:
         resp = httpx.get(f"{searxng_url}/health", timeout=3)
         return resp.is_success
-    except httpx.ConnectError:
+    except (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException):
         return False
 
 
