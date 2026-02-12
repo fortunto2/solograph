@@ -98,7 +98,7 @@ Environment variables:
 | `TAVILY_API_URL` | `http://localhost:8013` | Tavily-compatible search URL |
 | `TAVILY_API_KEY` | (none) | API key for Tavily |
 
-## 11 MCP Tools
+## 15 MCP Tools
 
 - `codegraph_query` — Cypher queries against code graph
 - `codegraph_stats` — graph statistics (projects, files, symbols, packages)
@@ -110,6 +110,10 @@ Environment variables:
 - `project_info` — project registry info
 - `kb_search` — knowledge base semantic search
 - `web_search` — web search (Tavily/SearXNG)
+- `source_search` — search indexed external sources (YouTube, Telegram)
+- `source_list` — list indexed sources with document counts
+- `source_tags` — auto-detected topics with video counts
+- `source_related` — find related videos by shared tags
 
 ## Web Search
 
@@ -188,12 +192,34 @@ RETURN f.path, type(r) AS action, COUNT(s) AS times
 ORDER BY times DESC
 ```
 
+### YouTube Source Graph
+
+Separate FalkorDB graph at `~/.solo/sources/youtube/graph.db`:
+
+| Node | Key Properties |
+|------|---------------|
+| `Channel` | name, handle, subscriber_count |
+| `Video` | video_id, title, duration, view_count, created |
+| `VideoChunk` | text, chapter, start_time, start_seconds, chunk_index, chunk_type, embedding (384-dim) |
+| `Tag` | name |
+
+| Edge | Description |
+|------|-------------|
+| `HAS_VIDEO` | Channel → Video |
+| `HAS_CHUNK` | Video → VideoChunk |
+| `TAGGED` | Video → Tag (weighted by confidence) |
+
+**Chunking:** VTT subtitles parsed into timestamped segments, grouped by chapter boundaries via `chunk_segments_by_chapters()`. Each chunk has accurate `start_seconds` from real VTT timestamps.
+
+**VTT cache:** `~/.solo/sources/youtube/vtt/{videoId}.vtt` — persistent, reused on re-index.
+
 ## Storage
 
 - **Code graph:** `~/.solo/codegraph.db` (FalkorDB)
 - **Session vectors:** `~/.solo/sessions/graph.db` (FalkorDB)
 - **KB vectors:** `{KB_PATH}/.solo/kb/graph.db` (FalkorDB)
 - **Project vectors:** `{project_path}/.solo/vectors/graph.db` (per-project FalkorDB)
+- **YouTube source:** `~/.solo/sources/youtube/graph.db` (FalkorDB) + `youtube/vtt/` (cached VTT files)
 
 ## Part of Solo Factory
 
