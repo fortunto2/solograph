@@ -97,8 +97,11 @@ def parse_vtt_segments(vtt_text: str) -> list[dict]:
                         prev_text = text
                 break
 
-    # Fallback: no snapshot blocks found
-    if not segments:
+    # Fallback: if too few snapshot blocks vs total, use all blocks instead.
+    # Manual/pro subs have normal-duration blocks; auto-subs use snapshot pattern.
+    total_timed = sum(1 for b in blocks if _TS_RE.search(b.strip()))
+    if not segments or (total_timed > 0 and len(segments) < total_timed * 0.1):
+        segments.clear()
         prev_text = ""
         for block in blocks:
             lines = block.strip().split("\n")
