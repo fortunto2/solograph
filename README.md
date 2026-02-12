@@ -63,6 +63,8 @@ solograph-cli xray ~/my-projects       # Portfolio X-Ray (all projects at once)
 solograph-cli diagram my-app           # Mermaid diagram
 solograph-cli query "MATCH (n) RETURN n LIMIT 5"
 solograph-cli web-search "query"       # Web search via SearXNG/Tavily
+solograph-cli index-youtube -c GregIsenberg -n 10  # Index YouTube channel
+solograph-cli index-youtube             # Index all channels from channels.yaml
 ```
 
 Install globally:
@@ -209,6 +211,10 @@ Separate FalkorDB graph at `~/.solo/sources/youtube/graph.db`:
 | `HAS_CHUNK` | Video → VideoChunk |
 | `TAGGED` | Video → Tag (weighted by confidence) |
 
+**Indexer:** `solograph-cli index-youtube` — discovers videos via SearXNG, fetches metadata + VTT via yt-dlp, chunks by chapters, embeds, upserts into graph.
+
+**Channels:** `~/.solo/sources/youtube/channels.yaml` — YAML list of YouTube handles to index. Symlink from your project's `channels.yaml`.
+
 **Chunking:** VTT subtitles parsed into timestamped segments, grouped by chapter boundaries via `chunk_segments_by_chapters()`. Each chunk has accurate `start_seconds` from real VTT timestamps.
 
 **VTT cache:** `~/.solo/sources/youtube/vtt/{videoId}.vtt` — persistent, reused on re-index.
@@ -219,7 +225,7 @@ Separate FalkorDB graph at `~/.solo/sources/youtube/graph.db`:
 - **Session vectors:** `~/.solo/sessions/graph.db` (FalkorDB)
 - **KB vectors:** `{KB_PATH}/.solo/kb/graph.db` (FalkorDB)
 - **Project vectors:** `{project_path}/.solo/vectors/graph.db` (per-project FalkorDB)
-- **YouTube source:** `~/.solo/sources/youtube/graph.db` (FalkorDB) + `youtube/vtt/` (cached VTT files)
+- **YouTube source:** `~/.solo/sources/youtube/graph.db` (FalkorDB) + `youtube/vtt/` (cached VTT files) + `youtube/channels.yaml`
 
 ## Part of Solo Factory
 
