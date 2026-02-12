@@ -197,7 +197,7 @@ def fetch_video_metadata(video_id: str) -> dict:
     """Fetch video metadata + transcript via yt-dlp.
 
     Two yt-dlp calls: -j for metadata, --skip-download --write-auto-sub for transcript.
-    Returns dict with keys: description, duration, chapters, tags, transcript, segments, upload_date.
+    Returns dict with keys: title, channel, channel_handle, description, duration, chapters, tags, transcript, segments, upload_date.
     Falls back to empty values on failure.
     """
     import json
@@ -205,7 +205,7 @@ def fetch_video_metadata(video_id: str) -> dict:
     import tempfile
 
     url = f"https://www.youtube.com/watch?v={video_id}"
-    empty = {"description": "", "duration": 0, "chapters": [], "tags": [], "transcript": "", "segments": [], "upload_date": ""}
+    empty = {"title": "", "channel": "", "channel_handle": "", "description": "", "duration": 0, "chapters": [], "tags": [], "transcript": "", "segments": [], "upload_date": ""}
 
     # 1. Metadata via --dump-json
     try:
@@ -219,6 +219,9 @@ def fetch_video_metadata(video_id: str) -> dict:
     except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
         return empty
 
+    title = data.get("title") or ""
+    channel = data.get("channel") or ""
+    channel_handle = (data.get("uploader_id") or "").lstrip("@") or channel
     description = (data.get("description") or "")[:5000]
     duration = int(data.get("duration") or 0)
     tags = data.get("tags") or []
@@ -277,6 +280,9 @@ def fetch_video_metadata(video_id: str) -> dict:
     segments = parse_vtt_segments(vtt_raw) if vtt_raw else []
 
     return {
+        "title": title,
+        "channel": channel,
+        "channel_handle": channel_handle,
         "description": description,
         "duration": duration,
         "chapters": chapters,
@@ -585,6 +591,135 @@ class YouTubeIndexer:
         print(f"{'='*60}")
 
         return stats
+
+    def index_url(self, urls: list[str], dry_run: bool = False) -> dict:
+        """Index specific videos by URL. No SearXNG needed — uses yt-dlp directly."""
+        from ..models import VideoChapter, VideoDoc
+        from ..vectors.common import (
+            chunk_segments_by_chapters,
+            chunk_transcript_by_chapters,
+            get_text_splitter,
+            parse_chapters,
+        )
+        from ..vectors.source_index import SourceIndex
+
+        if not check_ytdlp():
+            print("yt-dlp not found. Install: brew install yt-dlp", file=sys.stderr)
+            sys.exit(1)
+
+        print("Loading embedding model...")
+        idx = SourceIndex(backend=self.backend)
+        splitter = get_text_splitter()
+
+        total_indexed = 0
+        total_chunks = 0
+
+        for url in urls:
+            video_id = extract_video_id(url)
+            if not video_id:
+                print(f"  Cannot parse video ID from: {url}", file=sys.stderr)
+                continue
+
+            if not dry_run and idx.video_exists("youtube", video_id):
+                print(f"  Already indexed: {video_id}")
+                continue
+
+            print(f"  Fetching: {video_id}...")
+            meta = fetch_video_metadata(video_id)
+            title = meta.get("title") or video_id
+            channel_name = meta.get("channel", "")
+            channel_handle = meta.get("channel_handle", "") or channel_name
+            transcript = meta["transcript"]
+            segments = meta.get("segments", [])
+            description = meta["description"]
+            duration_seconds = meta["duration"]
+            chapters_raw = meta["chapters"]
+            yt_tags = meta["tags"]
+            upload_date = meta.get("upload_date", "")
+
+            if not transcript or len(transcript) < 200:
+                # Try SearXNG fallback
+                if check_searxng(self.searxng_url):
+                    transcript = fetch_transcript(self.searxng_url, video_id) or ""
+
+            if not transcript or len(transcript) < 200:
+                print(f"    No transcript for {video_id}")
+                continue
+
+            print(f"  Title: {title[:70]}")
+            print(f"  Channel: {channel_handle}")
+            print(f"  Transcript: {len(transcript)} chars, {len(segments)} segments, {duration_seconds}s")
+
+            if not chapters_raw and description:
+                chapters_raw = parse_chapters(description)
+
+            chunks: list[dict] = []
+            if segments and duration_seconds > 0:
+                chunks = chunk_segments_by_chapters(segments, chapters_raw, duration_seconds)
+
+            if not chunks and chapters_raw and duration_seconds > 0:
+                chunks = chunk_transcript_by_chapters(transcript, chapters_raw, duration_seconds)
+
+            if not chunks:
+                raw_chunks = splitter.chunks(transcript)
+                for i, text in enumerate(raw_chunks):
+                    if text.strip():
+                        chunks.append({
+                            "text": text.strip(),
+                            "chapter": "",
+                            "start_time": "",
+                            "start_seconds": 0.0,
+                            "chunk_index": i,
+                        })
+
+            if description and len(description) > 50:
+                chunks.append({
+                    "text": description[:1500],
+                    "chapter": "",
+                    "start_time": "",
+                    "start_seconds": 0.0,
+                    "chunk_index": len(chunks),
+                    "chunk_type": "description",
+                })
+
+            video_chapters = [
+                VideoChapter(
+                    title=c["title"],
+                    start_time=c["start_time"],
+                    start_seconds=c["start_seconds"],
+                )
+                for c in chapters_raw
+            ]
+
+            doc_id = hashlib.md5(f"yt:{video_id}".encode()).hexdigest()
+            video_doc = VideoDoc(
+                video_id=video_id,
+                doc_id=doc_id,
+                source_name=channel_handle,
+                title=title,
+                description=description,
+                url=f"https://youtube.com/watch?v={video_id}",
+                created=upload_date,
+                tags=",".join([channel_handle, "youtube"] + yt_tags[:5]),
+                duration_seconds=duration_seconds,
+                chapters=video_chapters,
+                transcript=transcript,
+            )
+
+            if dry_run:
+                print(f"    [DRY] {len(chunks)} chunks")
+                total_indexed += 1
+                total_chunks += len(chunks)
+                continue
+
+            n_chunks = idx.upsert_video("youtube", video_doc, chunks,
+                                         channel_name=channel_name or channel_handle)
+            total_indexed += 1
+            total_chunks += n_chunks
+            print(f"    Indexed: {n_chunks} chunks")
+
+        print(f"\nIndexed {total_indexed} videos, {total_chunks} chunks")
+        return {"videos_indexed": total_indexed, "total_chunks": total_chunks}
 
     def import_file(self, filepath: str, dry_run: bool = False) -> int:
         """Import pre-processed video summaries from a markdown file."""

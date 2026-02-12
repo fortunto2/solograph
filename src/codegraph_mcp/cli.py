@@ -947,10 +947,11 @@ def source_related_cmd(video_id, source, backend):
 @click.option("--channels", "-c", multiple=True, help="Channel handles to index")
 @click.option("--channels-file", type=click.Path(exists=True), help="Path to channels.yaml")
 @click.option("--limit", "-n", type=int, default=10, help="Max videos per channel (default: 10)")
+@click.option("--url", "-u", multiple=True, help="Index specific video URLs (no SearXNG needed)")
 @click.option("--import-file", "import_path", type=click.Path(exists=True), help="Import pre-processed data file")
 @click.option("--dry-run", is_flag=True, help="Parse only, don't insert into DB")
 @click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
-def index_youtube_cmd(channels, channels_file, limit, import_path, dry_run, backend):
+def index_youtube_cmd(channels, channels_file, limit, url, import_path, dry_run, backend):
     """Index YouTube transcripts into FalkorDB source graph."""
     from .indexers.youtube import YouTubeIndexer
 
@@ -965,6 +966,8 @@ def index_youtube_cmd(channels, channels_file, limit, import_path, dry_run, back
 
     if import_path:
         indexer.import_file(import_path, dry_run=dry_run)
+    elif url:
+        indexer.index_url(list(url), dry_run=dry_run)
     else:
         indexer.run(
             channels=list(channels) if channels else None,

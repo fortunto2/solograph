@@ -64,6 +64,7 @@ solograph-cli diagram my-app           # Mermaid diagram
 solograph-cli query "MATCH (n) RETURN n LIMIT 5"
 solograph-cli web-search "query"       # Web search via SearXNG/Tavily
 solograph-cli index-youtube -c GregIsenberg -n 10  # Index YouTube channel
+solograph-cli index-youtube -u "https://youtube.com/watch?v=ID"  # Index specific video by URL
 solograph-cli index-youtube             # Index all channels from channels.yaml
 ```
 
