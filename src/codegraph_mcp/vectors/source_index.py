@@ -240,6 +240,7 @@ class SourceIndex:
                 "ci": chunk["chunk_index"],
                 "chapter": chunk.get("chapter", ""),
                 "start_time": chunk.get("start_time", ""),
+                "start_seconds": chunk.get("start_seconds", 0.0),
                 "chunk_type": chunk.get("chunk_type", "transcript"),
                 "emb": emb,
             })
@@ -250,7 +251,8 @@ class SourceIndex:
             "CREATE (c:VideoChunk {"
             "  chunk_id: item.cid, text: item.text,"
             "  chunk_index: item.ci, chapter: item.chapter,"
-            "  start_time: item.start_time, chunk_type: item.chunk_type,"
+            "  start_time: item.start_time, start_seconds: item.start_seconds,"
+            "  chunk_type: item.chunk_type,"
             "  embedding: vecf32(item.emb)"
             "}) "
             "WITH c, item "
@@ -355,7 +357,7 @@ class SourceIndex:
                 "OPTIONAL MATCH (v)-[:HAS_CHUNK]->(next:VideoChunk) "
                 "  WHERE next.chunk_index = node.chunk_index + 1 "
                 "RETURN node.chunk_id, v.title, v.url, v.source_name, "
-                "node.text, node.chapter, node.start_time, node.chunk_type, "
+                "node.text, node.chapter, node.start_time, node.start_seconds, node.chunk_type, "
                 "prev.text, next.text, "
                 "v.created, v.tags, score "
                 f"LIMIT {n_results}"
@@ -364,7 +366,7 @@ class SourceIndex:
                 result = graph.query(cypher, params={"q": query_emb})
                 for row in result.result_set:
                     (chunk_id, title, url, sname, text,
-                     chapter, start_time, chunk_type,
+                     chapter, start_time, start_seconds, chunk_type,
                      prev_text, next_text,
                      created, tags, score) = row
                     # Build context from siblings
@@ -381,6 +383,7 @@ class SourceIndex:
                         "tags": tags or "",
                         "chapter": chapter or "",
                         "start_time": start_time or "",
+                        "start_seconds": start_seconds or 0.0,
                         "relevance": round(1 - score, 4),
                     }
                     if context:
