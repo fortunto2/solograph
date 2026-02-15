@@ -32,6 +32,28 @@ _real_stdout = sys.stdout
 CODEGRAPH_DB_PATH = os.environ.get("CODEGRAPH_DB_PATH", str(Path.home() / ".solo" / "codegraph.db"))
 CODEGRAPH_REGISTRY = os.environ.get("CODEGRAPH_REGISTRY", "")
 KB_PATH = os.environ.get("KB_PATH", "")
+
+def _detect_kb_path() -> str:
+    """Auto-detect KB path if not set via env var.
+
+    Checks CWD for markdown files with YAML frontmatter (--- header).
+    Falls back to empty string (KB disabled).
+    """
+    if KB_PATH:
+        return KB_PATH
+    cwd = Path.cwd()
+    # Check if CWD has .solo/kb/ (indexed KB) or markdown files with frontmatter
+    if (cwd / ".solo" / "kb").exists():
+        return str(cwd)
+    # Quick check: any .md file with frontmatter in top-level dirs
+    for md in list(cwd.glob("*/*.md"))[:5]:
+        try:
+            text = md.read_text(encoding="utf-8", errors="ignore")[:50]
+            if text.startswith("---"):
+                return str(cwd)
+        except OSError:
+            continue
+    return ""
 TAVILY_API_URL = os.environ.get("TAVILY_API_URL", "http://localhost:8013")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 
@@ -48,12 +70,13 @@ _graph_db = None
 def _get_kb():
     global _kb
     if _kb is None:
-        if not KB_PATH:
+        kb_path = _detect_kb_path()
+        if not kb_path:
             return None
         from codegraph_mcp.kb import KnowledgeEmbeddings
         sys.stdout = sys.stderr
         try:
-            _kb = KnowledgeEmbeddings(KB_PATH)
+            _kb = KnowledgeEmbeddings(kb_path)
         finally:
             sys.stdout = _real_stdout
     return _kb
