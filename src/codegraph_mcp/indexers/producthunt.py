@@ -1,6 +1,6 @@
 """ProductHunt indexer — scrape leaderboard and index into FalkorDB vectors.
 
-Runs Playwright-based PH scraper → maps items to SourceDoc → embeds and upserts.
+Runs PH GraphQL API scraper → maps items to SourceDoc → embeds and upserts.
 After indexing, products are searchable via `source_search("AI productivity tool")`.
 
 Usage:
@@ -128,10 +128,14 @@ class ProductHuntIndexer:
         parts = [name]
         if item.get("tagline"):
             parts.append(item["tagline"])
+        if item.get("description"):
+            parts.append(item["description"][:500])
         if item.get("topics"):
             parts.append(f"Topics: {item['topics']}")
         if item.get("upvotes"):
             parts.append(f"Upvotes: {item['upvotes']}")
+        if item.get("makers"):
+            parts.append(f"Makers: {item['makers']}")
         if item.get("launch_date"):
             parts.append(f"Launched: {item['launch_date']}")
         embed_text = ". ".join(parts)
@@ -144,8 +148,12 @@ class ProductHuntIndexer:
             content_parts.append(f"{item['upvotes']}↑")
         if item.get("comments"):
             content_parts.append(f"{item['comments']} comments")
+        if item.get("rating"):
+            content_parts.append(f"★{item['rating']}")
         if item.get("topics"):
             content_parts.append(item["topics"])
+        if item.get("website"):
+            content_parts.append(item["website"])
         content = " | ".join(content_parts) if content_parts else ""
 
         # Tags

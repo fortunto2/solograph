@@ -1090,8 +1090,8 @@ def index_producthunt_cmd(days, limit, dry_run, force, backend):
     """Scrape ProductHunt leaderboard into FalkorDB source graph.
 
     \b
-    Requires: pip install playwright && playwright install chromium
-    PH is behind Cloudflare — uses headless Chrome via Playwright.
+    Uses PH GraphQL API v2 (no browser needed).
+    Set PH_TOKEN env var (developer token) or PH_CLIENT_ID + PH_CLIENT_SECRET.
 
     \b
     Examples:

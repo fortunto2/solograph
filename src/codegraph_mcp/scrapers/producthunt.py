@@ -1,72 +1,134 @@
-"""ProductHunt scraper — Playwright-based leaderboard scraper.
+"""ProductHunt scraper — GraphQL API based.
 
-PH is behind Cloudflare so Scrapy/HTTP approaches fail (403).
-Uses headless Chrome via Playwright to extract products from leaderboard pages.
+Uses PH GraphQL API v2 (api.producthunt.com) with OAuth client credentials.
+No Playwright/Chrome needed — pure HTTP requests.
+
+Rate limits: 450 requests / 15 min. We use 1 req/2 sec (safe).
+Each request fetches up to 20 posts.
 
 Data sources:
-  - /leaderboard/daily/YYYY/M/D — ~15 products per day (featured)
-  - Archive goes back to 2013
+  - posts query with postedAfter/Before date filtering
+  - Cursor-based pagination within each date range
 
 Usage:
     from codegraph_mcp.scrapers.producthunt import run_ph_scraper
     items = run_ph_scraper(days=30, limit=100)
 
-Requires: playwright (pip install playwright && playwright install chromium)
+    # Full dump (all posts since 2013):
+    items = run_ph_scraper(days=4000, limit=None)
+
+Env vars:
+    PH_TOKEN — Developer token (takes priority, never expires)
+    PH_CLIENT_ID / PH_CLIENT_SECRET — OAuth client credentials (fallback)
 """
 
+from __future__ import annotations
+
 import json
-import subprocess
+import os
 import sys
-import tempfile
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
-# JS to extract products from a leaderboard page.
-# Structure: main > SECTION[cursor=pointer] per product card.
-# Each card: IMG, DIV(SPAN[name], SPAN[tagline], DIV[topics]), BUTTON[comments], BUTTON[upvotes]
-EXTRACT_JS = """() => {
-  const products = [];
-  const main = document.querySelector('main');
-  if (!main) return [];
+GRAPHQL_URL = "https://api.producthunt.com/v2/api/graphql"
+OAUTH_TOKEN_URL = "https://api.producthunt.com/v2/oauth/token"
 
-  const productLinks = main.querySelectorAll('a[href^="/products/"]');
-  const seen = new Set();
+# Credentials — set via env vars PH_TOKEN, PH_CLIENT_ID, PH_CLIENT_SECRET
+# PH_TOKEN (developer token) takes priority over OAuth client credentials.
 
-  for (const link of productLinks) {
-    const href = link.getAttribute('href');
-    if (!href || href.includes('/reviews') || href.includes('?comment')) continue;
-    const slug = href.replace('/products/', '').split('/')[0].split('?')[0];
-    if (!slug || seen.has(slug)) continue;
-
-    // Card = SECTION = link -> SPAN -> DIV -> SECTION
-    const nameSpan = link.parentElement;
-    const infoDiv = nameSpan?.parentElement;
-    const card = infoDiv?.parentElement;
-    if (!card || card.tagName !== 'SECTION') continue;
-
-    seen.add(slug);
-    const name = link.textContent.trim();
-
-    // Tagline = next sibling SPAN after the name SPAN
-    const tagline = nameSpan.nextElementSibling?.textContent?.trim() || '';
-
-    // Topics from /topics/ links
-    const topicLinks = card.querySelectorAll('a[href^="/topics/"]');
-    const topics = [...topicLinks].map(t => t.textContent.trim()).filter(Boolean);
-
-    // Buttons: first = comments, second = upvotes
-    const buttons = [...card.querySelectorAll(':scope > button')];
-    let comments = 0, upvotes = 0;
-    if (buttons.length >= 2) {
-      comments = parseInt(buttons[0].textContent.replace(/,/g, '').trim()) || 0;
-      upvotes = parseInt(buttons[1].textContent.replace(/,/g, '').trim()) || 0;
+POSTS_QUERY = """
+query($first: Int!, $after: String, $postedAfter: DateTime, $postedBefore: DateTime, $featured: Boolean) {
+  posts(first: $first, after: $after, postedAfter: $postedAfter, postedBefore: $postedBefore, featured: $featured, order: VOTES) {
+    totalCount
+    pageInfo { hasNextPage endCursor }
+    edges {
+      node {
+        id slug name tagline description
+        votesCount commentsCount reviewsRating
+        website url
+        createdAt featuredAt
+        makers { username name }
+        topics(first: 5) { edges { node { name slug } } }
+        thumbnail { url }
+      }
     }
-
-    const promoted = card.querySelector('a[href="/sponsor"]') !== null;
-
-    products.push({ slug, name, tagline, topics: topics.join(', '), upvotes, comments, promoted });
   }
-  return products;
-}"""
+}
+"""
+
+# Token cache
+_token: str | None = None
+_token_expires: float = 0
+
+
+def _get_token(
+    client_id: str | None = None,
+    client_secret: str | None = None,
+    developer_token: str | None = None,
+) -> str:
+    """Get access token. Developer token takes priority, then OAuth client credentials."""
+    global _token, _token_expires
+
+    # Developer token (never expires)
+    dev_token = developer_token or os.environ.get("PH_TOKEN", "")
+    if dev_token:
+        return dev_token
+
+    # Cached OAuth token
+    if _token and time.time() < _token_expires:
+        return _token
+
+    cid = client_id or os.environ.get("PH_CLIENT_ID", "")
+    csecret = client_secret or os.environ.get("PH_CLIENT_SECRET", "")
+    if not cid or not csecret:
+        raise RuntimeError(
+            "PH credentials required. Set PH_TOKEN (developer token) "
+            "or both PH_CLIENT_ID + PH_CLIENT_SECRET env vars."
+        )
+
+    body = json.dumps({
+        "client_id": cid,
+        "client_secret": csecret,
+        "grant_type": "client_credentials",
+    }).encode()
+
+    req = Request(
+        OAUTH_TOKEN_URL,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urlopen(req, timeout=15) as resp:
+        data = json.loads(resp.read())
+
+    _token = data["access_token"]
+    # PH tokens don't have explicit expiry, refresh every 12 hours
+    _token_expires = time.time() + 43200
+    return _token
+
+
+def _graphql(query: str, variables: dict, token: str) -> dict:
+    """Execute a GraphQL query against PH API."""
+    body = json.dumps({"query": query, "variables": variables}).encode()
+    req = Request(
+        GRAPHQL_URL,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "SoloGraph/1.0",
+        },
+        method="POST",
+    )
+    with urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read())
+
+    if "errors" in data:
+        raise RuntimeError(f"PH API error: {data['errors']}")
+    return data["data"]
 
 
 def run_ph_scraper(
@@ -74,173 +136,175 @@ def run_ph_scraper(
     limit: int | None = None,
     skip_slugs: list[str] | None = None,
     timeout: int = 600,
+    client_id: str | None = None,
+    client_secret: str | None = None,
+    developer_token: str | None = None,
+    resume_path: str | None = None,
+    featured_only: bool = True,
 ) -> list[dict]:
-    """Scrape ProductHunt leaderboard via Playwright subprocess.
+    """Scrape ProductHunt posts via GraphQL API.
 
     Args:
         days: Number of days back from today to scrape (default: 30)
-        limit: Max total products to collect
+        limit: Max total products to collect (None = all)
         skip_slugs: Slugs to skip (already indexed)
-        timeout: Subprocess timeout in seconds
+        timeout: Not used (kept for API compat with old Playwright scraper)
+        client_id: PH OAuth client ID (or PH_CLIENT_ID env var)
+        client_secret: PH OAuth client secret (or PH_CLIENT_SECRET env var)
+        developer_token: PH developer token (or PH_TOKEN env var)
+        resume_path: Path to JSONL file for incremental saves / resume
+        featured_only: Only fetch featured posts (default: True)
 
     Returns:
         List of product dicts with keys:
-        slug, name, tagline, topics, upvotes, comments, promoted, launch_date, url
+        slug, name, tagline, description, topics, upvotes, comments,
+        rating, website, launch_date, url, makers, thumbnail
     """
-    with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False, mode="w") as f:
-        output_path = f.name
+    token = _get_token(client_id, client_secret, developer_token)
+    skip_set = set(skip_slugs or [])
 
-    config = {
-        "days": days,
-        "limit": limit,
-        "skip_slugs": skip_slugs or [],
-        "output_path": output_path,
-        "extract_js": EXTRACT_JS,
-    }
-    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as f:
-        json.dump(config, f)
-        config_path = f.name
+    # Resume support: load existing items
+    items: list[dict] = []
+    if resume_path:
+        resume_file = Path(resume_path)
+        if resume_file.exists():
+            for line in resume_file.read_text().splitlines():
+                line = line.strip()
+                if line:
+                    try:
+                        item = json.loads(line)
+                        items.append(item)
+                        skip_set.add(item.get("slug", ""))
+                    except json.JSONDecodeError:
+                        pass
+            if items:
+                print(f"  Resumed: {len(items)} products from {resume_path}", file=sys.stderr)
 
-    script = f"""
-import json
-import sys
-import time
-from datetime import datetime, timedelta
+    today = datetime.now(timezone.utc)
+    start_date = today - timedelta(days=days)
 
-try:
-    from playwright.sync_api import sync_playwright
-except ImportError:
-    print("playwright not installed. Run: pip install playwright && playwright install chromium", file=sys.stderr)
-    sys.exit(1)
+    # Scrape in weekly chunks (avoids hitting pagination limits)
+    chunk_days = 7
+    collected = len(items)
+    request_count = 0
 
-with open("{config_path}") as f:
-    config = json.load(f)
-
-days = config["days"]
-limit = config.get("limit")
-skip_slugs = set(config.get("skip_slugs", []))
-output_path = config["output_path"]
-extract_js = config["extract_js"]
-
-items = []
-today = datetime.now()
-
-with sync_playwright() as p:
-    browser = p.chromium.launch(
-        headless=True,
-        channel="chrome",
-        args=[
-            "--disable-blink-features=AutomationControlled",
-            "--no-first-run",
-            "--no-default-browser-check",
-        ],
-    )
-    context = browser.new_context(
-        user_agent=(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/133.0.0.0 Safari/537.36"
-        ),
-        viewport={{"width": 1440, "height": 900}},
-        locale="en-US",
-        timezone_id="America/New_York",
-    )
-    # Remove webdriver flag
-    page = context.new_page()
-    page.add_init_script("Object.defineProperty(navigator, 'webdriver', {{get: () => undefined}})")
-    collected = 0
-    consecutive_errors = 0
-
-    for day_offset in range(days):
+    current_start = start_date
+    while current_start < today:
         if limit and collected >= limit:
             break
-        if consecutive_errors >= 5:
-            print("Too many consecutive errors, stopping", file=sys.stderr)
-            break
 
-        date = today - timedelta(days=day_offset)
-        url = f"https://www.producthunt.com/leaderboard/daily/{{date.year}}/{{date.month}}/{{date.day}}"
+        current_end = min(current_start + timedelta(days=chunk_days), today)
+        cursor = None
+        chunk_count = 0
 
-        success = False
-        for attempt in range(3):
-            try:
-                page.goto(url, wait_until="networkidle", timeout=45000)
-                time.sleep(2)
-
-                products = page.evaluate(extract_js)
-                day_count = 0
-
-                for product in products:
-                    slug = product.get("slug", "")
-                    if not slug or slug in skip_slugs:
-                        continue
-                    if product.get("promoted"):
-                        continue
-
-                    product["launch_date"] = date.strftime("%Y-%m-%d")
-                    product["url"] = f"https://www.producthunt.com/posts/{{slug}}"
-                    items.append(product)
-                    collected += 1
-                    day_count += 1
-
-                    if limit and collected >= limit:
-                        break
-
-                print(f"  {{date.strftime('%Y-%m-%d')}}: {{day_count}} products", file=sys.stderr)
-                success = True
-                consecutive_errors = 0
+        while True:
+            if limit and collected >= limit:
                 break
 
-            except Exception as e:
-                if attempt < 2:
-                    time.sleep(3 * (attempt + 1))
+            variables = {
+                "first": 20,
+                "postedAfter": current_start.strftime("%Y-%m-%dT00:00:00Z"),
+                "postedBefore": current_end.strftime("%Y-%m-%dT23:59:59Z"),
+                "featured": True if featured_only else None,
+            }
+            if cursor:
+                variables["after"] = cursor
+
+            try:
+                data = _graphql(POSTS_QUERY, variables, token)
+                request_count += 1
+            except HTTPError as e:
+                if e.code == 429:
+                    print(f"  Rate limited, sleeping 60s...", file=sys.stderr)
+                    time.sleep(60)
                     continue
-                print(f"  {{date.strftime('%Y-%m-%d')}}: error — {{e}}", file=sys.stderr)
+                print(f"  HTTP {e.code} error, skipping chunk", file=sys.stderr)
+                break
+            except Exception as e:
+                print(f"  Error: {e}", file=sys.stderr)
+                break
 
-        if not success:
-            consecutive_errors += 1
+            posts_data = data.get("posts", {})
+            edges = posts_data.get("edges", [])
+            page_info = posts_data.get("pageInfo", {})
 
-        time.sleep(1.5)
+            for edge in edges:
+                node = edge["node"]
+                slug = node.get("slug", "")
+                if not slug or slug in skip_set:
+                    continue
 
-    browser.close()
+                # Extract topics
+                topic_names = []
+                for t in node.get("topics", {}).get("edges", []):
+                    topic_names.append(t["node"]["name"])
 
-with open(output_path, "w") as f:
-    for item in items:
-        f.write(json.dumps(item) + "\\n")
+                # Extract makers
+                makers = []
+                for m in node.get("makers", []):
+                    makers.append(m.get("name") or m.get("username", ""))
 
-print(f"Total: {{len(items)}} products scraped", file=sys.stderr)
-"""
+                # Parse date
+                created = node.get("createdAt", "")
+                launch_date = created[:10] if created else ""
 
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+                item = {
+                    "slug": slug,
+                    "name": node.get("name", ""),
+                    "tagline": node.get("tagline", ""),
+                    "description": node.get("description", ""),
+                    "topics": ", ".join(topic_names),
+                    "upvotes": node.get("votesCount", 0),
+                    "comments": node.get("commentsCount", 0),
+                    "rating": node.get("reviewsRating", 0),
+                    "website": node.get("website", ""),
+                    "url": node.get("url", f"https://www.producthunt.com/posts/{slug}"),
+                    "launch_date": launch_date,
+                    "makers": ", ".join(makers),
+                    "thumbnail": (node.get("thumbnail") or {}).get("url", ""),
+                    "promoted": False,
+                }
 
-    Path(config_path).unlink(missing_ok=True)
+                items.append(item)
+                skip_set.add(slug)
+                collected += 1
+                chunk_count += 1
 
-    if result.returncode != 0:
-        stderr = result.stderr.strip()
-        if stderr:
-            for line in stderr.splitlines()[-5:]:
-                print(f"  PH scraper: {line}", file=sys.stderr)
+                # Incremental save
+                if resume_path and collected % 100 == 0:
+                    _save_jsonl(items, resume_path)
 
-    if result.stderr:
-        for line in result.stderr.strip().splitlines():
-            if line.strip().startswith(("2", "T")):  # date lines + Total
-                print(f"  {line.strip()}", file=sys.stderr)
+                if limit and collected >= limit:
+                    break
 
-    items = []
-    output = Path(output_path)
-    if output.exists():
-        for line in output.read_text().splitlines():
-            line = line.strip()
-            if line:
-                try:
-                    items.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
-        output.unlink(missing_ok=True)
+            # Pagination
+            if page_info.get("hasNextPage") and page_info.get("endCursor"):
+                cursor = page_info["endCursor"]
+            else:
+                break
+
+            # Rate limit: 1 request per 2 seconds
+            time.sleep(2)
+
+        period = f"{current_start.strftime('%Y-%m-%d')} → {current_end.strftime('%Y-%m-%d')}"
+        print(f"  {period}: {chunk_count} products (total: {collected})", file=sys.stderr)
+
+        current_start = current_end
+
+    # Final save
+    if resume_path:
+        _save_jsonl(items, resume_path)
+
+    total = posts_data.get("totalCount", "?") if 'posts_data' in dir() else "?"
+    print(f"  Total: {collected} products scraped ({request_count} API calls, PH has ~{total})", file=sys.stderr)
 
     return items
+
+
+def _save_jsonl(items: list[dict], path: str):
+    """Save items to JSONL file (atomic write)."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        for item in items:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    Path(tmp).rename(path)
