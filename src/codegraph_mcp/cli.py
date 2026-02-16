@@ -1055,13 +1055,14 @@ def index_youtube_cmd(channels, channels_file, limit, url, import_path, dry_run,
 @click.option("--categories", "-c", multiple=True, help="Category slugs to scrape (default: all)")
 @click.option("--limit", "-n", type=int, default=None, help="Max startups to scrape")
 @click.option("--dry-run", is_flag=True, help="Scrape only, don't insert into DB")
+@click.option("--force", is_flag=True, help="Re-scrape all, ignore already-indexed")
 @click.option(
     "--backend",
     type=click.Choice(["mlx", "st"]),
     default=None,
     help="Embedding backend",
 )
-def index_trustmrr_cmd(categories, limit, dry_run, backend):
+def index_trustmrr_cmd(categories, limit, dry_run, force, backend):
     """Scrape TrustMRR verified startup revenues into FalkorDB source graph."""
     from .indexers.trustmrr import TrustMRRIndexer
 
@@ -1070,6 +1071,7 @@ def index_trustmrr_cmd(categories, limit, dry_run, backend):
         categories=list(categories) if categories else None,
         limit=limit,
         dry_run=dry_run,
+        force=force,
     )
 
 

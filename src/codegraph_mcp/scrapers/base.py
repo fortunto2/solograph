@@ -71,26 +71,32 @@ class BaseSourceSpider(scrapy.Spider):
         raise NotImplementedError
 
 
-def run_spider(spider_cls, **kwargs) -> list[dict]:
+def run_spider(spider_cls, timeout: int = 600, **kwargs) -> list[dict]:
     """Run a spider in a subprocess, return collected items as dicts.
 
     Uses subprocess + FEEDS JSON export to avoid Twisted reactor issues.
     Each call spawns a fresh Python process.
+    kwargs are passed via temp file (safe for large payloads like skip_slugs).
     """
     with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False, mode="w") as f:
         output_path = f.name
 
-    # Build a small runner script
+    # Write kwargs to temp file (avoids shell escaping issues with large data)
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as f:
+        json.dump(kwargs, f)
+        kwargs_path = f.name
+
     spider_module = spider_cls.__module__
     spider_name = spider_cls.__name__
-    kwargs_json = json.dumps(kwargs)
 
     script = f"""
-import json, sys
+import json
 from scrapy.crawler import CrawlerProcess
 from {spider_module} import {spider_name}
 
-kwargs = json.loads('{kwargs_json}')
+with open("{kwargs_path}") as f:
+    kwargs = json.load(f)
+
 settings = dict({spider_name}.custom_settings)
 settings["FEEDS"] = {{"{output_path}": {{"format": "jsonlines"}}}}
 settings["LOG_LEVEL"] = "WARNING"
@@ -105,13 +111,15 @@ process.start()
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=timeout,
     )
+
+    # Clean up kwargs file
+    Path(kwargs_path).unlink(missing_ok=True)
 
     if result.returncode != 0:
         stderr = result.stderr.strip()
         if stderr:
-            # Print last 5 lines of error
             lines = stderr.splitlines()[-5:]
             for line in lines:
                 print(f"  Spider error: {line}", file=sys.stderr)

@@ -86,6 +86,14 @@ class SourceIndex:
         )
         return bool(result.result_set)
 
+    def get_all_urls(self, source_name: str) -> set[str]:
+        """Return all SourceDoc URLs for a given source."""
+        graph = self._get_graph(source_name)
+        result = graph.query(
+            "MATCH (d:SourceDoc) RETURN d.url",
+        )
+        return {row[0] for row in result.result_set if row[0]}
+
     def video_exists(self, source_name: str, video_id: str) -> bool:
         """Check if a Video node already exists."""
         graph = self._get_graph(source_name)

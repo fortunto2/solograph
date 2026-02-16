@@ -69,23 +69,31 @@ class TrustMRRSpider(BaseSourceSpider):
     def __init__(
         self,
         categories: list[str] | None = None,
+        skip_slugs: list[str] | None = None,
         limit: int | None = None,
         *args,
         **kwargs,
     ):
         super().__init__(*args, limit=limit, **kwargs)
         self.filter_categories = set(categories) if categories else None
+        self.skip_slugs = set(skip_slugs) if skip_slugs else set()
 
     def parse(self, response):
         """Parse sitemap XML to discover all startup URLs."""
         urls = re.findall(r"<loc>(https://trustmrr\.com/startup/[^<]+)</loc>", response.text)
         queued = 0
+        skipped = 0
         for url in urls:
             if self.limit and queued >= self.limit:
                 return
             slug = url.rstrip("/").split("/")[-1]
+            if slug in self.skip_slugs:
+                skipped += 1
+                continue
             yield scrapy.Request(url, callback=self.parse_item, meta={"slug": slug})
             queued += 1
+        if skipped:
+            self.logger.warning("Skipped %d already-indexed slugs", skipped)
 
     def parse_item(self, response):
         """Extract startup data from OG tags + page content."""

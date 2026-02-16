@@ -34,6 +34,7 @@ class TrustMRRIndexer:
         categories: list[str] | None = None,
         limit: int | None = None,
         dry_run: bool = False,
+        force: bool = False,
     ):
         """Run full pipeline: scrape → map → embed → store."""
         from ..scrapers.base import run_spider
@@ -41,7 +42,16 @@ class TrustMRRIndexer:
 
         console.print(f"[bold]Scraping TrustMRR...[/bold] categories={categories or 'all'}, limit={limit}")
 
-        items = run_spider(TrustMRRSpider, categories=categories, limit=limit)
+        # Skip already-indexed slugs (unless --force)
+        skip_slugs: list[str] = []
+        if not force and not dry_run:
+            skip_slugs = self._get_existing_slugs()
+            if skip_slugs:
+                console.print(
+                    f"Skipping [yellow]{len(skip_slugs)}[/yellow] already-indexed startups (use --force to re-scrape)"
+                )
+
+        items = run_spider(TrustMRRSpider, categories=categories, limit=limit, skip_slugs=skip_slugs)
 
         console.print(f"Scraped [green]{len(items)}[/green] startups")
 
@@ -89,6 +99,22 @@ class TrustMRRIndexer:
             f"Done: [green]{new_count} new[/green], {len(items) - new_count - skip_count} updated, {skip_count} skipped"
         )
         return items
+
+    @staticmethod
+    def _get_existing_slugs() -> list[str]:
+        """Query FalkorDB for already-indexed TrustMRR slugs."""
+        try:
+            idx = SourceIndex()
+            urls = idx.get_all_urls(SOURCE_NAME)
+            slugs = []
+            for url in urls:
+                # https://trustmrr.com/startup/{slug}
+                parts = url.rstrip("/").split("/")
+                if len(parts) >= 2 and parts[-2] == "startup":
+                    slugs.append(parts[-1])
+            return slugs
+        except Exception:
+            return []
 
     @staticmethod
     def _to_source_doc(item: dict) -> SourceDoc | None:
