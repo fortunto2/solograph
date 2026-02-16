@@ -1128,6 +1128,187 @@ def web_search_cmd(query, limit, engines, raw):
         console.print()
 
 
+@cli.command("compact")
+@click.option("--min-chars", default=2000, help="Minimum content length to suggest compaction (default: 2000)")
+@click.option("--days", default=7, help="Minimum age in days (default: 7)")
+@click.option("--dir", "scan_dir", default=None, help="Directory to scan (default: 3-inbox)")
+@click.option("--all", "show_all", is_flag=True, help="Show all files, not just long/old ones")
+def compact_cmd(min_chars, days, scan_dir, show_all):
+    """List documents ready for LLM compaction (summarization).
+
+    Finds long or old capture/research documents that can be compressed
+    into short summaries. Works well with the distill workflow.
+
+    \b
+    Examples:
+      solograph-cli compact                        # inbox items > 2000 chars, > 7 days
+      solograph-cli compact --min-chars 1000       # lower threshold
+      solograph-cli compact --days 3               # more recent files too
+      solograph-cli compact --dir 4-opportunities  # scan different dir
+      solograph-cli compact --all                  # show everything
+    """
+    from datetime import datetime, timedelta
+
+    import frontmatter as fm
+
+    kb_path = os.environ.get("KB_PATH", "")
+    if not kb_path:
+        console.print("[red]Set KB_PATH env var[/red]")
+        raise SystemExit(1)
+
+    target = Path(kb_path) / (scan_dir or "3-inbox")
+    if not target.exists():
+        console.print(f"[red]Directory not found:[/red] {target}")
+        raise SystemExit(1)
+
+    cutoff = datetime.now() - timedelta(days=days)
+    candidates = []
+
+    for md_file in sorted(target.rglob("*.md")):
+        if md_file.name == "README.md":
+            continue
+        try:
+            post = fm.load(str(md_file))
+        except Exception:
+            continue
+
+        content = post.content or ""
+        char_count = len(content)
+        title = post.metadata.get("title", md_file.stem)
+        created_str = str(post.metadata.get("created", ""))
+        compacted = post.metadata.get("compacted", False)
+        distilled = post.metadata.get("distilled", False)
+        status = post.metadata.get("status", "draft")
+
+        if compacted:
+            continue
+
+        # Parse created date
+        created_date = None
+        if created_str:
+            for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    created_date = datetime.strptime(created_str, fmt)
+                    break
+                except ValueError:
+                    pass
+
+        is_old = created_date and created_date < cutoff
+        is_long = char_count >= min_chars
+
+        if not show_all and not (is_old or is_long):
+            continue
+
+        candidates.append(
+            {
+                "file": md_file,
+                "title": title,
+                "chars": char_count,
+                "created": created_str,
+                "is_old": is_old,
+                "is_long": is_long,
+                "distilled": distilled,
+                "status": status,
+            }
+        )
+
+    if not candidates:
+        console.print("[green]Nothing to compact.[/green] All inbox items are short and recent.")
+        return
+
+    console.print(f"[bold]Documents ready for compaction[/bold] ({len(candidates)} found)\n")
+
+    for c in candidates:
+        rel = c["file"].relative_to(Path(kb_path))
+        flags = []
+        if c["is_long"]:
+            flags.append(f"[yellow]{c['chars']} chars[/yellow]")
+        else:
+            flags.append(f"{c['chars']} chars")
+        if c["is_old"]:
+            flags.append(f"[yellow]{c['created']}[/yellow]")
+        else:
+            flags.append(c["created"] or "?")
+        if c["distilled"]:
+            flags.append("[green]distilled[/green]")
+        flag_str = " | ".join(flags)
+
+        console.print(f"  {c['title']}")
+        console.print(f"    [dim]{rel}[/dim]  ({flag_str})")
+        console.print()
+
+    console.print("[dim]To compact: ask Claude 'compact 3-inbox/filename.md'[/dim]")
+    console.print("[dim]Sets compacted: true, replaces content with LLM summary[/dim]")
+
+
+@cli.command("watch")
+@click.argument("paths", nargs=-1, type=click.Path(exists=True))
+@click.option(
+    "--debounce-ms",
+    default=1500,
+    help="Debounce delay in milliseconds (default: 1500)",
+)
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
+def watch_cmd(paths, debounce_ms, backend):
+    """Watch KB directories for markdown changes and auto-reindex.
+
+    \b
+    Examples:
+      solograph-cli watch .                        # watch current dir
+      solograph-cli watch ~/kb ~/notes             # watch multiple dirs
+      solograph-cli watch . --debounce-ms 3000     # slower debounce
+    """
+    import signal
+    import time
+
+    from .kb import KnowledgeEmbeddings
+    from .watcher import KBWatcher
+
+    kb_path = os.environ.get("KB_PATH", "")
+    if not kb_path:
+        console.print("[red]Set KB_PATH env var[/red]")
+        raise SystemExit(1)
+
+    watch_paths = list(paths) if paths else [kb_path]
+
+    kb = KnowledgeEmbeddings(kb_path, backend=backend)
+    change_count = {"n": 0}
+
+    def on_change(event_type: str, file_path):
+        rel = file_path.name
+        change_count["n"] += 1
+        console.print(f"  [dim]{event_type}:[/dim] {rel}")
+        if event_type == "deleted":
+            console.print("    [yellow]Deleted (stale index entry remains until reindex)[/yellow]")
+        else:
+            kb.index_all_markdown()
+
+    watcher = KBWatcher(watch_paths, on_change, debounce_ms=debounce_ms)
+
+    console.print(f"[bold]Watching {len(watch_paths)} path(s)[/bold] (debounce: {debounce_ms}ms)")
+    for p in watch_paths:
+        console.print(f"  {p}")
+    console.print("[dim]Press Ctrl+C to stop[/dim]\n")
+
+    watcher.start()
+
+    def _shutdown(sig, frame):
+        console.print(f"\n[bold]Stopped.[/bold] {change_count['n']} changes processed.")
+        watcher.stop()
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
+    while True:
+        time.sleep(1)
+
+
 @cli.command("index-kb")
 @click.option(
     "--kb-path",
