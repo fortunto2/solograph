@@ -2,6 +2,10 @@
 
 Indexes markdown files with YAML frontmatter into FalkorDB graph with vector embeddings.
 Supports MLX (Apple Silicon, multilingual-e5-small) and sentence-transformers (all-MiniLM-L6-v2) fallback.
+
+Features:
+  - SHA-256 content dedup: skip re-embedding unchanged documents
+  - Hybrid search: vector cosine + full-text TF-IDF with Reciprocal Rank Fusion
 """
 
 import hashlib
@@ -19,6 +23,21 @@ try:
     from redislite.falkordb_client import FalkorDB
 except ImportError:
     FalkorDB = None
+
+
+def _rrf(ranked_lists: list[list[str]], k: int = 60) -> list[tuple[str, float]]:
+    """Reciprocal Rank Fusion — merge multiple ranked ID lists into one.
+
+    Each list is ordered by relevance (best first). RRF score for doc d:
+        score(d) = sum(1 / (k + rank_i)) for each list where d appears.
+
+    Returns [(doc_id, rrf_score)] sorted descending.
+    """
+    scores: dict[str, float] = {}
+    for ranked in ranked_lists:
+        for rank, doc_id in enumerate(ranked):
+            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
+    return sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
 
 class KnowledgeEmbeddings:
@@ -45,12 +64,19 @@ class KnowledgeEmbeddings:
             f"OPTIONS {{dimension: {EMBEDDING_DIM}, similarityFunction: 'cosine'}}",
             "CREATE INDEX FOR (d:KBDoc) ON (d.doc_id)",
             "CREATE INDEX FOR (d:KBDoc) ON (d.doc_type)",
+            "CREATE INDEX FOR (d:KBDoc) ON (d.content_hash)",
         ]
         for idx in indexes:
             try:
                 self._graph.query(idx)
             except Exception:
                 pass
+
+        # Full-text index for hybrid search (TF-IDF on title + content)
+        try:
+            self._graph.query("CALL db.idx.fulltext.createNodeIndex('KBDoc', 'title', 'content')")
+        except Exception:
+            pass  # already exists
 
     def _count(self) -> int:
         result = self._graph.query("MATCH (d:KBDoc) RETURN count(d)")
@@ -63,11 +89,16 @@ class KnowledgeEmbeddings:
         return [[float(x) for x in emb] for emb in raw]
 
     def index_all_markdown(self, force=False):
-        """Index all markdown files in knowledge base."""
+        """Index all markdown files in knowledge base.
+
+        Uses SHA-256 content hashing to skip re-embedding unchanged documents.
+        Only new or modified content triggers embedding computation.
+        """
         print(f"\nScanning markdown files from {self.kb_path}...")
 
         indexed = 0
         skipped = 0
+        updated = 0
         errors = 0
 
         skip_patterns = [
@@ -91,25 +122,34 @@ class KnowledgeEmbeddings:
                 rel_path = str(md_file.relative_to(self.kb_path))
                 file_id = hashlib.md5(rel_path.encode()).hexdigest()
 
-                # Check if exists (unless force)
-                if not force:
-                    existing = self._graph.query(
-                        "MATCH (d:KBDoc {doc_id: $did}) RETURN d.doc_id",
-                        {"did": file_id},
-                    )
-                    if existing.result_set:
-                        skipped += 1
-                        continue
-
                 title = post.metadata.get("title", md_file.stem)
                 content_preview = post.content[:3000] if post.content else ""
                 text = f"{title}\n\n{content_preview}"
+
+                # SHA-256 content hash for dedup
+                content_hash = hashlib.sha256(text.encode()).hexdigest()
 
                 doc_type = post.metadata.get("type", "unknown")
                 status = post.metadata.get("status", "active")
                 tags = ",".join(post.metadata.get("tags", []))
                 created = str(post.metadata.get("created", ""))
-                updated = str(post.metadata.get("updated", str(datetime.now().date())))
+                updated_date = str(post.metadata.get("updated", str(datetime.now().date())))
+
+                # Check existing document
+                if not force:
+                    existing = self._graph.query(
+                        "MATCH (d:KBDoc {doc_id: $did}) RETURN d.content_hash",
+                        {"did": file_id},
+                    )
+                    if existing.result_set:
+                        old_hash = existing.result_set[0][0]
+                        if old_hash == content_hash:
+                            # Content unchanged — skip entirely
+                            skipped += 1
+                            continue
+                        # Content changed — update metadata + re-embed
+                        updated += 1
+                    # else: new document
 
                 embedding = self._embed([text])[0]
 
@@ -118,7 +158,8 @@ class KnowledgeEmbeddings:
                     "SET d.file = $file, d.title = $title, "
                     "d.doc_type = $dtype, d.status = $status, "
                     "d.tags = $tags, d.created = $created, d.updated = $updated, "
-                    "d.content = $content, d.embedding = vecf32($emb)",
+                    "d.content = $content, d.content_hash = $hash, "
+                    "d.embedding = vecf32($emb)",
                     {
                         "did": file_id,
                         "file": rel_path,
@@ -127,8 +168,9 @@ class KnowledgeEmbeddings:
                         "status": status,
                         "tags": tags,
                         "created": created,
-                        "updated": updated,
+                        "updated": updated_date,
                         "content": text[:500],
+                        "hash": content_hash,
                         "emb": embedding,
                     },
                 )
@@ -144,18 +186,19 @@ class KnowledgeEmbeddings:
                     )
 
                 indexed += 1
-                print(f"  Indexed: {md_file.name} ({len(content_preview)} chars)")
+                tag = "updated" if updated else "new"
+                print(f"  Indexed ({tag}): {md_file.name} ({len(content_preview)} chars)")
 
             except Exception as e:
                 errors += 1
                 print(f"  Error: {md_file.name}: {e}")
 
-        print(f"\nIndexing complete: {indexed} indexed, {skipped} skipped, {errors} errors")
+        print(f"\nIndexing complete: {indexed} indexed, {skipped} unchanged, {errors} errors")
         print(f"Total in DB: {self._count()}")
         return indexed
 
     def search(self, query, n_results=5, filter_dict=None, expand_graph=False):
-        """Semantic search across knowledge base.
+        """Hybrid search: vector cosine + full-text TF-IDF with RRF fusion.
 
         Args:
             query: Search query (Russian or English)
@@ -163,60 +206,112 @@ class KnowledgeEmbeddings:
             filter_dict: Optional metadata filter (e.g. {"type": "opportunity"})
             expand_graph: Expand top results with knowledge graph neighbors
         """
-        query_emb = self._embed([query])[0]
-
         count = self._count()
         if count == 0:
             return {"documents": [], "metadatas": [], "distances": []}
 
-        fetch_n = min(n_results * 2 if filter_dict else n_results, count)
+        fetch_n = min(n_results * 3, count)
+        dtype_filter = filter_dict.get("type") if filter_dict else None
 
-        cypher = f"CALL db.idx.vector.queryNodes('KBDoc', 'embedding', {fetch_n}, vecf32($q)) YIELD node, score "
-        if filter_dict and "type" in filter_dict:
-            cypher += "WHERE node.doc_type = $dtype "
+        # 1. Vector search
+        vec_ids = self._search_vector(query, fetch_n, dtype_filter)
 
-        cypher += (
-            "RETURN node.doc_id, node.file, node.title, node.doc_type, "
-            "node.tags, node.content, score "
-            f"LIMIT {n_results}"
-        )
+        # 2. Full-text search
+        ft_ids = self._search_fulltext(query, fetch_n, dtype_filter)
 
+        # 3. RRF fusion
+        if ft_ids:
+            fused = _rrf([vec_ids, ft_ids])
+            result_ids = [doc_id for doc_id, _ in fused[:n_results]]
+        else:
+            # Fallback to pure vector if full-text returns nothing
+            result_ids = vec_ids[:n_results]
+
+        if not result_ids:
+            return {"documents": [], "metadatas": [], "distances": []}
+
+        # 4. Fetch full documents by IDs (preserve RRF order)
+        output = self._fetch_docs(result_ids)
+
+        if expand_graph and output["metadatas"]:
+            output = self._expand_with_graph(output)
+
+        return output
+
+    def _search_vector(self, query: str, n: int, dtype: str | None = None) -> list[str]:
+        """Pure vector search. Returns ordered list of doc_ids."""
+        query_emb = self._embed([query])[0]
+
+        cypher = f"CALL db.idx.vector.queryNodes('KBDoc', 'embedding', {n}, vecf32($q)) YIELD node, score "
         params: dict = {"q": query_emb}
-        if filter_dict and "type" in filter_dict:
-            params["dtype"] = filter_dict["type"]
+        if dtype:
+            cypher += "WHERE node.doc_type = $dtype "
+            params["dtype"] = dtype
+        cypher += "RETURN node.doc_id, score ORDER BY score ASC"
 
         try:
             result = self._graph.query(cypher, params=params)
+            return [row[0] for row in result.result_set]
         except Exception:
+            return []
+
+    def _search_fulltext(self, query: str, n: int, dtype: str | None = None) -> list[str]:
+        """Full-text TF-IDF search. Returns ordered list of doc_ids."""
+        # Sanitize query for full-text: escape special chars, keep words
+        safe_query = " ".join(word for word in query.split() if not any(c in word for c in '(){}[]+-~*"\\'))
+        if not safe_query.strip():
+            return []
+
+        cypher = "CALL db.idx.fulltext.queryNodes('KBDoc', $q) YIELD node, score "
+        params: dict = {"q": safe_query}
+        if dtype:
+            cypher += "WHERE node.doc_type = $dtype "
+            params["dtype"] = dtype
+        cypher += f"RETURN node.doc_id, score ORDER BY score DESC LIMIT {n}"
+
+        try:
+            result = self._graph.query(cypher, params=params)
+            return [row[0] for row in result.result_set]
+        except Exception:
+            return []
+
+    def _fetch_docs(self, doc_ids: list[str]) -> dict:
+        """Fetch full document data for a list of doc_ids, preserving order."""
+        if not doc_ids:
             return {"documents": [], "metadatas": [], "distances": []}
 
-        documents = []
-        metadatas = []
-        distances = []
+        result = self._graph.query(
+            "UNWIND $ids AS did "
+            "MATCH (d:KBDoc {doc_id: did}) "
+            "RETURN d.doc_id, d.file, d.title, d.doc_type, d.tags, d.content",
+            {"ids": doc_ids},
+        )
 
+        # Build lookup for order preservation
+        lookup = {}
         for row in result.result_set:
-            _doc_id, file, title, dtype, tags, content, score = row
-            documents.append(content or "")
-            metadatas.append(
-                {
+            doc_id, file, title, dtype, tags, content = row
+            lookup[doc_id] = {
+                "content": content or "",
+                "meta": {
                     "file": file or "",
                     "title": title or "",
                     "type": dtype or "",
                     "tags": tags or "",
-                }
-            )
-            distances.append(score)
+                },
+            }
 
-        output = {
-            "documents": documents,
-            "metadatas": metadatas,
-            "distances": distances,
-        }
+        documents = []
+        metadatas = []
+        distances = []
+        for i, doc_id in enumerate(doc_ids):
+            if doc_id in lookup:
+                documents.append(lookup[doc_id]["content"])
+                metadatas.append(lookup[doc_id]["meta"])
+                # Synthetic distance: RRF rank as proxy (lower = better)
+                distances.append(i * 0.1)
 
-        if expand_graph and metadatas:
-            output = self._expand_with_graph(output)
-
-        return output
+        return {"documents": documents, "metadatas": metadatas, "distances": distances}
 
     def _expand_with_graph(self, results):
         """Expand search results with knowledge graph neighbors (1-hop)."""
@@ -288,6 +383,7 @@ class KnowledgeEmbeddings:
             "by_type": types,
             "unique_tags": len(tags),
             "model": "MLX multilingual-e5-small / ST all-MiniLM-L6-v2 (384 dim)",
+            "search": "hybrid (vector cosine + full-text TF-IDF + RRF)",
             "storage": str(self._db_path),
         }
 
@@ -328,11 +424,10 @@ def main():
             print("No results found")
             return
         print(f"\nFound {len(results['documents'])} results:\n")
-        for i, (_doc, meta, dist) in enumerate(
+        for i, (_doc, meta, _dist) in enumerate(
             zip(results["documents"], results["metadatas"], results["distances"]), 1
         ):
-            score = 1 - dist
-            print(f"{i}. {meta['title']} (relevance: {score:.2%})")
+            print(f"{i}. {meta['title']}")
             print(f"   File: {meta['file']} | Type: {meta['type']} | Tags: {meta.get('tags', 'none')}")
             print()
     elif args.command == "stats":
@@ -340,6 +435,7 @@ def main():
         print("\nKB Statistics:\n")
         print(f"Total documents: {stats['total_documents']}")
         print(f"Embedding model: {stats['model']}")
+        print(f"Search: {stats['search']}")
         print(f"Storage: {stats['storage']}")
         print(f"Unique tags: {stats['unique_tags']}")
         print("\nBy type:")
