@@ -151,8 +151,14 @@ class ProductHuntIndexer:
             parts.append(f"Topics: {item['topics']}")
         if item.get("upvotes"):
             parts.append(f"Upvotes: {item['upvotes']}")
-        if item.get("makers"):
-            parts.append(f"Makers: {item['makers']}")
+        # Makers: support both list[dict] (new) and string (legacy JSONL)
+        makers = item.get("makers", [])
+        if isinstance(makers, list) and makers:
+            maker_names = [m.get("name", m.get("username", "")) for m in makers if isinstance(m, dict)]
+            if maker_names:
+                parts.append(f"Makers: {', '.join(maker_names)}")
+        elif isinstance(makers, str) and makers:
+            parts.append(f"Makers: {makers}")
         if item.get("launch_date"):
             parts.append(f"Launched: {item['launch_date']}")
         embed_text = ". ".join(parts)

@@ -55,10 +55,12 @@ query($first: Int!, $after: String, $postedAfter: DateTime, $postedBefore: DateT
     edges {
       node {
         id slug name tagline description
-        votesCount commentsCount reviewsRating
+        votesCount commentsCount reviewsCount reviewsRating
         website url
         createdAt featuredAt
-        makers { username name }
+        dailyRank weeklyRank
+        makers { username name url followersCount }
+        productLinks { type url }
         topics(first: 5) { edges { node { name slug } } }
         thumbnail { url }
       }
@@ -248,10 +250,22 @@ def run_ph_scraper(
                 for t in node.get("topics", {}).get("edges", []):
                     topic_names.append(t["node"]["name"])
 
-                # Extract makers
-                makers = []
+                # Extract makers (structured)
+                makers_list = []
                 for m in node.get("makers", []):
-                    makers.append(m.get("name") or m.get("username", ""))
+                    makers_list.append({
+                        "username": m.get("username", ""),
+                        "name": m.get("name", ""),
+                        "url": m.get("url", ""),
+                        "followers": m.get("followersCount", 0),
+                    })
+
+                # Extract product links (LinkedIn, Twitter, Website, etc.)
+                links = {}
+                for pl in node.get("productLinks", []):
+                    link_type = pl.get("type", "").lower()
+                    if link_type and pl.get("url"):
+                        links[link_type] = pl["url"]
 
                 # Parse date
                 created = node.get("createdAt", "")
@@ -265,13 +279,16 @@ def run_ph_scraper(
                     "topics": ", ".join(topic_names),
                     "upvotes": node.get("votesCount", 0),
                     "comments": node.get("commentsCount", 0),
+                    "reviews_count": node.get("reviewsCount", 0),
                     "rating": node.get("reviewsRating", 0),
+                    "daily_rank": node.get("dailyRank"),
+                    "weekly_rank": node.get("weeklyRank"),
                     "website": node.get("website", ""),
                     "url": node.get("url", f"https://www.producthunt.com/posts/{slug}"),
                     "launch_date": launch_date,
-                    "makers": ", ".join(makers),
+                    "makers": makers_list,
+                    "product_links": links,
                     "thumbnail": (node.get("thumbnail") or {}).get("url", ""),
-                    "promoted": False,
                 }
 
                 items.append(item)
