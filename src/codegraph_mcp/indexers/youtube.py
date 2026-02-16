@@ -86,11 +86,7 @@ def parse_vtt_segments(vtt_text: str) -> list[dict]:
                 start = ts_to_sec(m.group(1))
                 end = ts_to_sec(m.group(2))
                 if (end - start) < 0.05:  # snapshot block
-                    text_lines = [
-                        _TAG_RE.sub("", l).strip()
-                        for l in lines[i + 1:]
-                        if l.strip()
-                    ]
+                    text_lines = [_TAG_RE.sub("", ln).strip() for ln in lines[i + 1 :] if ln.strip()]
                     text = " ".join(text_lines)
                     if text and text != prev_text:
                         segments.append({"start": round(start, 1), "text": text})
@@ -109,11 +105,7 @@ def parse_vtt_segments(vtt_text: str) -> list[dict]:
                 m = _TS_RE.match(line.strip())
                 if m:
                     start = ts_to_sec(m.group(1))
-                    text_lines = [
-                        _TAG_RE.sub("", l).strip()
-                        for l in lines[i + 1:]
-                        if l.strip()
-                    ]
+                    text_lines = [_TAG_RE.sub("", ln).strip() for ln in lines[i + 1 :] if ln.strip()]
                     text = " ".join(text_lines)
                     if text and text != prev_text:
                         segments.append({"start": round(start, 1), "text": text})
@@ -208,13 +200,26 @@ def fetch_video_metadata(video_id: str) -> dict:
     import tempfile
 
     url = f"https://www.youtube.com/watch?v={video_id}"
-    empty = {"title": "", "channel": "", "channel_handle": "", "description": "", "duration": 0, "chapters": [], "tags": [], "transcript": "", "segments": [], "upload_date": ""}
+    empty = {
+        "title": "",
+        "channel": "",
+        "channel_handle": "",
+        "description": "",
+        "duration": 0,
+        "chapters": [],
+        "tags": [],
+        "transcript": "",
+        "segments": [],
+        "upload_date": "",
+    }
 
     # 1. Metadata via --dump-json
     try:
         result = subprocess.run(
             ["yt-dlp", "-j", "--no-download", url],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if result.returncode != 0 or not result.stdout.strip():
             return empty
@@ -238,11 +243,13 @@ def fetch_video_metadata(video_id: str) -> dict:
         m, s = divmod(secs, 60)
         h, m = divmod(m, 60)
         timecode = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
-        chapters.append({
-            "title": ch.get("title", ""),
-            "start_time": timecode,
-            "start_seconds": secs,
-        })
+        chapters.append(
+            {
+                "title": ch.get("title", ""),
+                "start_time": timecode,
+                "start_seconds": secs,
+            }
+        )
 
     # 2. Transcript via VTT — reuse cached file or download fresh
     transcript = ""
@@ -258,11 +265,23 @@ def fetch_video_metadata(video_id: str) -> dict:
             out_path = f"{tmpdir}/vid"
             try:
                 subprocess.run(
-                    ["yt-dlp", "--write-auto-sub", "--write-sub",
-                     "--sub-lang", "en",
-                     "--sub-format", "vtt", "--skip-download",
-                     "--no-warnings", "-o", out_path, url],
-                    capture_output=True, text=True, timeout=30,
+                    [
+                        "yt-dlp",
+                        "--write-auto-sub",
+                        "--write-sub",
+                        "--sub-lang",
+                        "en",
+                        "--sub-format",
+                        "vtt",
+                        "--skip-download",
+                        "--no-warnings",
+                        "-o",
+                        out_path,
+                        url,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 for suffix in [".en.vtt", ".en-orig.vtt", ".en-US.vtt"]:
                     p = Path(f"{out_path}{suffix}")
@@ -309,7 +328,10 @@ def load_channels(channels_path: Path | None = None) -> list[dict]:
     path = channels_path or DEFAULT_CHANNELS_PATH
     if not path.exists():
         print(f"channels.yaml not found at {path}", file=sys.stderr)
-        print("Create it or symlink: ln -sf /path/to/channels.yaml ~/.solo/sources/youtube/channels.yaml", file=sys.stderr)
+        print(
+            "Create it or symlink: ln -sf /path/to/channels.yaml ~/.solo/sources/youtube/channels.yaml",
+            file=sys.stderr,
+        )
         return []
 
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -447,9 +469,9 @@ class YouTubeIndexer:
         splitter = get_text_splitter()
 
         for ch in channel_list:
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"Channel: @{ch['handle']} ({ch['name']})")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
 
             videos = search_youtube_videos(self.searxng_url, ch["handle"], limit=limit)
             print(f"  Found {len(videos)} videos")
@@ -484,10 +506,12 @@ class YouTubeIndexer:
 
                 if not transcript or len(transcript) < 200:
                     total_skipped_no_transcript += 1
-                    print(f"    No transcript available")
+                    print("    No transcript available")
                     continue
 
-                print(f"    Transcript: {len(transcript)} chars, {len(segments)} VTT segments, Duration: {duration_seconds}s")
+                print(
+                    f"    Transcript: {len(transcript)} chars, {len(segments)} VTT segments, Duration: {duration_seconds}s"
+                )
 
                 # 2. If yt-dlp didn't return chapters, try parsing from description
                 if not chapters_raw and description:
@@ -496,9 +520,7 @@ class YouTubeIndexer:
                 # 3. Build chunks
                 chunks: list[dict] = []
                 if segments and duration_seconds > 0:
-                    chunks = chunk_segments_by_chapters(
-                        segments, chapters_raw, duration_seconds
-                    )
+                    chunks = chunk_segments_by_chapters(segments, chapters_raw, duration_seconds)
                     if chunks and chapters_raw:
                         total_with_chapters += 1
                         print(f"    Chapters: {len(chapters_raw)}, Chunks: {len(chunks)} (VTT timestamps)")
@@ -506,9 +528,7 @@ class YouTubeIndexer:
                         print(f"    No chapters, Chunks: {len(chunks)} (VTT timestamps)")
 
                 if not chunks and chapters_raw and duration_seconds > 0:
-                    chunks = chunk_transcript_by_chapters(
-                        transcript, chapters_raw, duration_seconds
-                    )
+                    chunks = chunk_transcript_by_chapters(transcript, chapters_raw, duration_seconds)
                     if chunks:
                         total_with_chapters += 1
                         print(f"    Chapters: {len(chapters_raw)}, Chunks: {len(chunks)} (proportional)")
@@ -517,25 +537,29 @@ class YouTubeIndexer:
                     raw_chunks = splitter.chunks(transcript)
                     for i, text in enumerate(raw_chunks):
                         if text.strip():
-                            chunks.append({
-                                "text": text.strip(),
-                                "chapter": "",
-                                "start_time": "",
-                                "start_seconds": 0.0,
-                                "chunk_index": i,
-                            })
+                            chunks.append(
+                                {
+                                    "text": text.strip(),
+                                    "chapter": "",
+                                    "start_time": "",
+                                    "start_seconds": 0.0,
+                                    "chunk_index": i,
+                                }
+                            )
                     print(f"    No chapters, TextSplitter: {len(chunks)} chunks")
 
                 # 4. Add description as extra chunk if substantial
                 if description and len(description) > 50:
-                    chunks.append({
-                        "text": description[:1500],
-                        "chapter": "",
-                        "start_time": "",
-                        "start_seconds": 0.0,
-                        "chunk_index": len(chunks),
-                        "chunk_type": "description",
-                    })
+                    chunks.append(
+                        {
+                            "text": description[:1500],
+                            "chapter": "",
+                            "start_time": "",
+                            "start_seconds": 0.0,
+                            "chunk_index": len(chunks),
+                            "chunk_type": "description",
+                        }
+                    )
 
                 # 5. Build VideoDoc
                 video_chapters = [
@@ -556,7 +580,7 @@ class YouTubeIndexer:
                     description=description,
                     url=f"https://youtube.com/watch?v={video_id}",
                     created=upload_date or video.get("publishedDate", "")[:10],
-                    tags=",".join([ch["handle"], "youtube"] + yt_tags[:5]),
+                    tags=",".join([ch["handle"], "youtube", *yt_tags[:5]]),
                     duration_seconds=duration_seconds,
                     chapters=video_chapters,
                     transcript=transcript,
@@ -569,8 +593,7 @@ class YouTubeIndexer:
                     continue
 
                 # 6. Upsert into graph
-                n_chunks = idx.upsert_video("youtube", video_doc, chunks,
-                                             channel_name=ch["name"])
+                n_chunks = idx.upsert_video("youtube", video_doc, chunks, channel_name=ch["name"])
                 total_indexed += 1
                 total_chunks += n_chunks
                 print(f"    Indexed: {n_chunks} chunks")
@@ -584,14 +607,14 @@ class YouTubeIndexer:
             "skipped_no_transcript": total_skipped_no_transcript,
         }
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("Summary:")
         print(f"  Videos indexed:          {total_indexed}")
         print(f"  Total chunks:            {total_chunks}")
         print(f"  With chapters:           {total_with_chapters}")
         print(f"  Skipped (exists):        {total_skipped_exists}")
         print(f"  Skipped (no transcript): {total_skipped_no_transcript}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         return stats
 
@@ -667,23 +690,27 @@ class YouTubeIndexer:
                 raw_chunks = splitter.chunks(transcript)
                 for i, text in enumerate(raw_chunks):
                     if text.strip():
-                        chunks.append({
-                            "text": text.strip(),
-                            "chapter": "",
-                            "start_time": "",
-                            "start_seconds": 0.0,
-                            "chunk_index": i,
-                        })
+                        chunks.append(
+                            {
+                                "text": text.strip(),
+                                "chapter": "",
+                                "start_time": "",
+                                "start_seconds": 0.0,
+                                "chunk_index": i,
+                            }
+                        )
 
             if description and len(description) > 50:
-                chunks.append({
-                    "text": description[:1500],
-                    "chapter": "",
-                    "start_time": "",
-                    "start_seconds": 0.0,
-                    "chunk_index": len(chunks),
-                    "chunk_type": "description",
-                })
+                chunks.append(
+                    {
+                        "text": description[:1500],
+                        "chapter": "",
+                        "start_time": "",
+                        "start_seconds": 0.0,
+                        "chunk_index": len(chunks),
+                        "chunk_type": "description",
+                    }
+                )
 
             video_chapters = [
                 VideoChapter(
@@ -703,7 +730,7 @@ class YouTubeIndexer:
                 description=description,
                 url=f"https://youtube.com/watch?v={video_id}",
                 created=upload_date,
-                tags=",".join([channel_handle, "youtube"] + yt_tags[:5]),
+                tags=",".join([channel_handle, "youtube", *yt_tags[:5]]),
                 duration_seconds=duration_seconds,
                 chapters=video_chapters,
                 transcript=transcript,
@@ -715,8 +742,12 @@ class YouTubeIndexer:
                 total_chunks += len(chunks)
                 continue
 
-            n_chunks = idx.upsert_video("youtube", video_doc, chunks,
-                                         channel_name=channel_name or channel_handle)
+            n_chunks = idx.upsert_video(
+                "youtube",
+                video_doc,
+                chunks,
+                channel_name=channel_name or channel_handle,
+            )
             total_indexed += 1
             total_chunks += n_chunks
             print(f"    Indexed: {n_chunks} chunks")

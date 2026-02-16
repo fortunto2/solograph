@@ -7,10 +7,9 @@ Reads ~/.claude/projects/*/uuid.jsonl files, extracts:
 """
 
 import json
-import re
 from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from ..models import SessionFileEdge, SessionNode, SessionSummary
 

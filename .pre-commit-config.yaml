@@ -1,0 +1,36 @@
+# Pre-commit hooks for solograph
+# Install: uvx pre-commit install
+# Run all: uvx pre-commit run --all-files
+
+repos:
+  # Standard file hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+
+  # Ruff — lint + format (single tool, Rust-fast)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.12
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # ty — type checking (local hook via uvx)
+  # Informational only: shows errors but does not block commits.
+  # Remove "|| true" once all type errors are resolved.
+  - repo: local
+    hooks:
+      - id: ty-check
+        name: ty type-check (informational)
+        entry: bash -c 'uvx ty check src/ || true'
+        language: system
+        types: [python]
+        pass_filenames: false
+        verbose: true

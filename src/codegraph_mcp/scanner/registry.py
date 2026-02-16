@@ -36,7 +36,7 @@ def ingest_projects(graph, projects: list[ProjectNode]) -> int:
             f"MERGE (p:Project {{name: '{p.name}'}}) "
             f"SET p.stack = '{p.stack}', p.path = '{p.path}', "
             f"p.status = '{p.status}', p.has_claude_md = {str(p.has_claude_md).lower()}, "
-            f"p.description = \"{desc}\""
+            f'p.description = "{desc}"'
         )
         count += 1
     return count

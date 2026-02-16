@@ -1,5 +1,6 @@
 """Click CLI for Solograph."""
 
+import os
 from pathlib import Path
 
 import click
@@ -14,8 +15,6 @@ from .output.console import (
     print_stats,
     print_xray_table,
 )
-
-import os
 
 # Registry path: env var > ~/.solo/registry.yaml
 _REGISTRY_ENV = os.environ.get("CODEGRAPH_REGISTRY", "")
@@ -44,7 +43,7 @@ def init(ctx, projects_dir, deep):
       solograph-cli init                      # interactive prompt
       solograph-cli init ~/projects --deep    # with deep analysis
     """
-    from .registry import scan_projects, save_registry, SCAN_PATH, REGISTRY_PATH
+    from .registry import REGISTRY_PATH, SCAN_PATH, save_registry, scan_projects
 
     codegraph_dir = Path.home() / ".solo"
 
@@ -66,6 +65,7 @@ def init(ctx, projects_dir, deep):
     os.environ["CODEGRAPH_SCAN_PATH"] = str(projects_path)
     # Re-import to pick up new env
     from . import registry as reg
+
     reg.SCAN_PATH = projects_path
 
     registry = scan_projects()
@@ -78,22 +78,32 @@ def init(ctx, projects_dir, deep):
         console.print(f"  {p.name} [dim]({stacks})[/dim]")
 
     # 4. Build code graph
-    console.print(f"\nBuilding code graph...")
+    console.print("\nBuilding code graph...")
     ctx.invoke(scan, project=None, registry=str(REGISTRY_PATH), deep=deep)
 
-    console.print(f"\n[bold green]Done![/bold green] Run [bold]solograph-cli stats[/bold] to verify.")
+    console.print("\n[bold green]Done![/bold green] Run [bold]solograph-cli stats[/bold] to verify.")
     if not deep:
         console.print(f"[dim]Tip: solograph-cli init {projects_path} --deep  for imports/calls/inheritance[/dim]")
 
 
 @cli.command()
 @click.option("--project", "-p", default=None, help="Scan only this project")
-@click.option("--registry", "-r", type=click.Path(exists=True), default=None, help="Registry YAML path")
-@click.option("--deep", is_flag=True, help="Extract imports, calls, inheritance (tree-sitter deep analysis)")
+@click.option(
+    "--registry",
+    "-r",
+    type=click.Path(exists=True),
+    default=None,
+    help="Registry YAML path",
+)
+@click.option(
+    "--deep",
+    is_flag=True,
+    help="Extract imports, calls, inheritance (tree-sitter deep analysis)",
+)
 @click.pass_context
 def scan(ctx, project, registry, deep):
     """Scan projects and build the code graph."""
-    from .scanner.code import ingest_files, ingest_symbols, extract_symbols, scan_files
+    from .scanner.code import extract_symbols, ingest_files, ingest_symbols, scan_files
     from .scanner.deps import ingest_packages, scan_deps
     from .scanner.git import ingest_modifications, scan_git_log
     from .scanner.registry import ingest_projects, scan_registry
@@ -119,7 +129,12 @@ def scan(ctx, project, registry, deep):
 
     # Deep analysis imports (lazy)
     if deep:
-        from .scanner.code import extract_deep, ingest_calls, ingest_imports, ingest_inherits
+        from .scanner.code import (
+            extract_deep,
+            ingest_calls,
+            ingest_imports,
+            ingest_inherits,
+        )
 
     for proj in projects:
         proj_path = Path(proj.path)
@@ -165,9 +180,7 @@ def scan(ctx, project, registry, deep):
             for f in files:
                 if not f.lang:
                     continue
-                imp, cal, inh = extract_deep(
-                    proj_path / f.path, proj.name, f.lang, rel_path=f.path
-                )
+                imp, cal, inh = extract_deep(proj_path / f.path, proj.name, f.lang, rel_path=f.path)
                 all_imports.extend(imp)
                 all_calls.extend(cal)
                 all_inherits.extend(inh)
@@ -282,7 +295,12 @@ def shared_cmd(ctx):
 
 @cli.command("scan-sessions")
 @click.option("--project", "-p", default=None, help="Filter by project name")
-@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
 @click.pass_context
 def scan_sessions(ctx, project, backend):
     """Scan Claude Code chat history into graph + vectors."""
@@ -360,10 +378,7 @@ def sessions_cmd(ctx, project_name):
         dur = ""
         if r["duration_ms"]:
             dur = f" ({r['duration_ms'] // 1000}s)"
-        click.echo(
-            f"  {date} {r['session_id'][:8]}.. "
-            f"[{r['user_prompts']}p/{r['tool_uses']}t]{dur} {slug}"
-        )
+        click.echo(f"  {date} {r['session_id'][:8]}.. [{r['user_prompts']}p/{r['tool_uses']}t]{dur} {slug}")
 
 
 @cli.command("session-files")
@@ -405,8 +420,7 @@ def file_sessions_cmd(ctx, file_path):
     for r in results:
         date = r["started_at"][:10] if r["started_at"] else "?"
         click.echo(
-            f"  {date} {r['session_id'][:8]}.. [{r['action']} x{r['count']}] "
-            f"{r['project_name']} {r.get('slug', '')}"
+            f"  {date} {r['session_id'][:8]}.. [{r['action']} x{r['count']}] {r['project_name']} {r.get('slug', '')}"
         )
 
 
@@ -414,7 +428,12 @@ def file_sessions_cmd(ctx, file_path):
 @click.argument("query")
 @click.option("--project", "-p", default=None, help="Filter by project")
 @click.option("--limit", "-n", default=5, help="Number of results")
-@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
 @click.pass_context
 def session_search_cmd(ctx, query, project, limit, backend):
     """Semantic search across session summaries."""
@@ -430,10 +449,7 @@ def session_search_cmd(ctx, query, project, limit, backend):
     click.echo(f"\nSearch: '{query}' ({len(results)} results):\n")
     for i, r in enumerate(results, 1):
         date = r["started_at"][:10] if r["started_at"] else "?"
-        click.echo(
-            f"{i}. [{r['project_name']}] {date} "
-            f"(relevance: {r['relevance']:.0%})"
-        )
+        click.echo(f"{i}. [{r['project_name']}] {date} (relevance: {r['relevance']:.0%})")
         click.echo(f"   {r['session_id'][:8]}..")
         # Show first line of summary
         summary_line = r["summary"].split("\n")[0] if r["summary"] else ""
@@ -446,8 +462,19 @@ def session_search_cmd(ctx, query, project, limit, backend):
 
 @cli.command("index-projects")
 @click.option("--project", "-p", default=None, help="Index only this project")
-@click.option("--registry", "-r", type=click.Path(exists=True), default=None, help="Registry YAML path")
-@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.option(
+    "--registry",
+    "-r",
+    type=click.Path(exists=True),
+    default=None,
+    help="Registry YAML path",
+)
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
 @click.pass_context
 def index_projects_cmd(ctx, project, registry, backend):
     """Index project source code and docs into per-project FalkorDB vector DBs."""
@@ -491,9 +518,20 @@ def index_projects_cmd(ctx, project, registry, backend):
 @click.argument("query")
 @click.option("--project", "-p", default=None, help="Search in one project")
 @click.option("--limit", "-n", default=5, help="Number of results")
-@click.option("--type", "chunk_type", type=click.Choice(["code", "doc"]), default=None, help="Filter by chunk type")
+@click.option(
+    "--type",
+    "chunk_type",
+    type=click.Choice(["code", "doc"]),
+    default=None,
+    help="Filter by chunk type",
+)
 @click.option("--hybrid", is_flag=True, default=False, help="Hybrid search (show sibling chunks)")
-@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
 @click.pass_context
 def project_search_cmd(ctx, query, project, limit, chunk_type, hybrid, backend):
     """Semantic search over project source code and docs (FalkorDB)."""
@@ -516,9 +554,7 @@ def project_search_cmd(ctx, query, project, limit, chunk_type, hybrid, backend):
 
     for i, r in enumerate(results, 1):
         click.echo(
-            f"{i}. [{r['project']}] {r['file']} "
-            f"({r['language']}, {r['chunk_type']}) "
-            f"relevance: {r['relevance']:.0%}"
+            f"{i}. [{r['project']}] {r['file']} ({r['language']}, {r['chunk_type']}) relevance: {r['relevance']:.0%}"
         )
         if r.get("sibling_chunks"):
             click.echo(f"   siblings: chunks {r['sibling_chunks']}")
@@ -529,7 +565,12 @@ def project_search_cmd(ctx, query, project, limit, chunk_type, hybrid, backend):
 
 
 @cli.command("project-collections")
-@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
 @click.pass_context
 def project_collections_cmd(ctx, backend):
     """List indexed project vector databases (FalkorDB)."""
@@ -555,7 +596,12 @@ def project_collections_cmd(ctx, backend):
 
 @cli.command("project-delete")
 @click.argument("project_name")
-@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
 @click.pass_context
 def project_delete_cmd(ctx, project_name, backend):
     """Delete a project's FalkorDB vector database."""
@@ -580,19 +626,17 @@ def project_delete_cmd(ctx, project_name, backend):
 @click.pass_context
 def xray(ctx, directory, deep):
     """Portfolio X-Ray — zero-config scan of a directory of projects."""
-    import sys
 
+    from .models import ProjectNode
+    from .registry import detect_stacks
     from .scanner.code import (
+        extract_symbols,
         ingest_files,
         ingest_symbols,
-        extract_symbols,
         scan_files,
     )
     from .scanner.deps import ingest_packages, scan_deps
     from .scanner.registry import ingest_projects
-    from .models import ProjectNode
-
-    from .registry import detect_stacks
 
     fdb = cg_db.get_db(ctx.obj["db_path"])
     graph = cg_db.get_graph(fdb)
@@ -609,7 +653,12 @@ def xray(ctx, directory, deep):
         return
 
     if deep:
-        from .scanner.code import extract_deep, ingest_calls, ingest_imports, ingest_inherits
+        from .scanner.code import (
+            extract_deep,
+            ingest_calls,
+            ingest_imports,
+            ingest_inherits,
+        )
 
     mode = "deep" if deep else "standard"
     console.print(f"X-Ray scanning [bold]{directory_path}[/bold] [dim][{mode}][/dim]\n")
@@ -654,9 +703,7 @@ def xray(ctx, directory, deep):
             for f in files:
                 if not f.lang:
                     continue
-                imp, cal, inh = extract_deep(
-                    subdir / f.path, proj.name, f.lang, rel_path=f.path
-                )
+                imp, cal, inh = extract_deep(subdir / f.path, proj.name, f.lang, rel_path=f.path)
                 all_imports.extend(imp)
                 all_calls.extend(cal)
                 all_inherits.extend(inh)
@@ -671,13 +718,15 @@ def xray(ctx, directory, deep):
         total_symbols += proj_symbols
         total_packages += proj_packages
 
-        xray_results.append({
-            "name": proj.name,
-            "stack": stack_str or None,
-            "files": proj_files,
-            "symbols": proj_symbols,
-            "packages": proj_packages,
-        })
+        xray_results.append(
+            {
+                "name": proj.name,
+                "stack": stack_str or None,
+                "files": proj_files,
+                "symbols": proj_symbols,
+                "packages": proj_packages,
+            }
+        )
 
     # Shared packages
     from .query.search import shared_packages
@@ -687,15 +736,14 @@ def xray(ctx, directory, deep):
     print_xray_table(xray_results, total_files, total_symbols, total_packages, shared)
 
     if not deep:
-        console.print(
-            f"\n[dim]Run 'solograph-cli xray {directory} --deep' for imports/calls/inheritance[/dim]"
-        )
+        console.print(f"\n[dim]Run 'solograph-cli xray {directory} --deep' for imports/calls/inheritance[/dim]")
 
 
 @cli.command()
 @click.argument("project_name")
 @click.option(
-    "--type", "diagram_type",
+    "--type",
+    "diagram_type",
     type=click.Choice(["inheritance", "imports", "calls", "deps"]),
     default="inheritance",
     help="Diagram type",
@@ -827,7 +875,12 @@ def hierarchy_cmd(ctx, class_name, project):
 @click.argument("query")
 @click.option("--source", "-s", default=None, help="Filter by source name (telegram, youtube)")
 @click.option("--limit", "-n", default=5, help="Number of results")
-@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
 def source_search_cmd(query, source, limit, backend):
     """Search indexed external sources (Telegram, YouTube, etc.)."""
     from .vectors.source_index import SourceIndex
@@ -850,10 +903,7 @@ def source_search_cmd(query, source, limit, backend):
             if r.get("start_time"):
                 chapter_info += f" @ {r['start_time']}"
             chapter_info += "]"
-        click.echo(
-            f"{i}. [{src}] {r['title'][:80]}{chapter_info}"
-            f"  (relevance: {r['relevance']:.0%})"
-        )
+        click.echo(f"{i}. [{src}] {r['title'][:80]}{chapter_info}  (relevance: {r['relevance']:.0%})")
         if r.get("url"):
             click.echo(f"   {r['url']}")
         if r.get("tags"):
@@ -866,7 +916,12 @@ def source_search_cmd(query, source, limit, backend):
 
 
 @cli.command("source-list")
-@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
 def source_list_cmd(backend):
     """List indexed external sources with document counts."""
     from .vectors.source_index import SourceIndex
@@ -891,7 +946,12 @@ def source_list_cmd(backend):
 
 @cli.command("source-tags")
 @click.option("--source", "-s", default="youtube", help="Source name (default: youtube)")
-@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
 def source_tags_cmd(source, backend):
     """List all auto-detected topics with video counts."""
     from .vectors.source_index import SourceIndex
@@ -912,7 +972,12 @@ def source_tags_cmd(source, backend):
 @cli.command("source-related")
 @click.argument("video_id")
 @click.option("--source", "-s", default="youtube", help="Source name (default: youtube)")
-@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
 def source_related_cmd(video_id, source, backend):
     """Find related videos by shared tags."""
     import re
@@ -948,9 +1013,19 @@ def source_related_cmd(video_id, source, backend):
 @click.option("--channels-file", type=click.Path(exists=True), help="Path to channels.yaml")
 @click.option("--limit", "-n", type=int, default=10, help="Max videos per channel (default: 10)")
 @click.option("--url", "-u", multiple=True, help="Index specific video URLs (no SearXNG needed)")
-@click.option("--import-file", "import_path", type=click.Path(exists=True), help="Import pre-processed data file")
+@click.option(
+    "--import-file",
+    "import_path",
+    type=click.Path(exists=True),
+    help="Import pre-processed data file",
+)
 @click.option("--dry-run", is_flag=True, help="Parse only, don't insert into DB")
-@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
 def index_youtube_cmd(channels, channels_file, limit, url, import_path, dry_run, backend):
     """Index YouTube transcripts into FalkorDB source graph."""
     from .indexers.youtube import YouTubeIndexer
@@ -978,7 +1053,12 @@ def index_youtube_cmd(channels, channels_file, limit, url, import_path, dry_run,
 
 @cli.command("source-delete")
 @click.argument("source_name")
-@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
 def source_delete_cmd(source_name, backend):
     """Delete a source's FalkorDB vector database."""
     from .vectors.source_index import SourceIndex
@@ -993,7 +1073,12 @@ def source_delete_cmd(source_name, backend):
 @cli.command("web-search")
 @click.argument("query")
 @click.option("--limit", "-n", default=10, help="Number of results")
-@click.option("--engines", "-e", default=None, help="Override engines (e.g. 'reddit', 'arxiv,google scholar')")
+@click.option(
+    "--engines",
+    "-e",
+    default=None,
+    help="Override engines (e.g. 'reddit', 'arxiv,google scholar')",
+)
 @click.option("--raw", is_flag=True, help="Include raw page content (up to 5000 chars)")
 def web_search_cmd(query, limit, engines, raw):
     """Search the web via SearXNG / Tavily API."""
@@ -1044,9 +1129,19 @@ def web_search_cmd(query, limit, engines, raw):
 
 
 @cli.command("index-kb")
-@click.option("--kb-path", type=click.Path(exists=True), default=None, help="Knowledge base path (default: KB_PATH env)")
+@click.option(
+    "--kb-path",
+    type=click.Path(exists=True),
+    default=None,
+    help="Knowledge base path (default: KB_PATH env)",
+)
 @click.option("--force", is_flag=True, help="Force re-indexing of all documents")
-@click.option("--backend", type=click.Choice(["mlx", "st"]), default=None, help="Embedding backend")
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
 def index_kb_cmd(kb_path, force, backend):
     """Index knowledge base markdown files into FalkorDB vectors."""
     from .kb import KnowledgeEmbeddings
@@ -1059,7 +1154,9 @@ def index_kb_cmd(kb_path, force, backend):
     kb = KnowledgeEmbeddings(path, backend=backend)
     kb.index_all_markdown(force=force)
     stats = kb.get_stats()
-    console.print(f"\n[bold green]KB indexed:[/bold green] {stats['total_documents']} documents ({stats['unique_tags']} unique tags)")
+    console.print(
+        f"\n[bold green]KB indexed:[/bold green] {stats['total_documents']} documents ({stats['unique_tags']} unique tags)"
+    )
 
 
 if __name__ == "__main__":

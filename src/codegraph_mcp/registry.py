@@ -8,6 +8,8 @@ Usage:
     python scripts/project_registry.py info <name>   # Show project details
     python scripts/project_registry.py stacks        # List available stack templates
 """
+
+import os
 import subprocess
 import sys
 from datetime import datetime
@@ -16,8 +18,6 @@ from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
-
-import os
 
 # Configurable via env vars
 STACKS_DIR = Path(os.environ.get("CODEGRAPH_STACKS_DIR", str(Path.home() / ".solo" / "stacks"))).expanduser()
@@ -66,8 +66,7 @@ def _find_files(root: Path, pattern: str, max_depth: int) -> list[Path]:
             if len(rel.parts) <= max_depth:
                 # Skip node_modules, .venv, etc.
                 if not any(
-                    part.startswith(".")
-                    or part in ("node_modules", ".next", "dist", "build")
+                    part.startswith(".") or part in ("node_modules", ".next", "dist", "build")
                     for part in rel.parts[:-1]
                 ):
                     results.append(p)
@@ -83,10 +82,7 @@ def _read_package_json_deps(project_path: Path) -> dict[str, str]:
             rel = pkg_json.relative_to(project_path)
             if len(rel.parts) > 2:
                 continue
-            if any(
-                part in ("node_modules", ".next", "dist")
-                for part in rel.parts[:-1]
-            ):
+            if any(part in ("node_modules", ".next", "dist") for part in rel.parts[:-1]):
                 continue
             import json
 
@@ -249,7 +245,7 @@ def load_registry() -> ProjectRegistry | None:
     if not REGISTRY_PATH.exists():
         return None
 
-    with open(REGISTRY_PATH, "r", encoding="utf-8") as f:
+    with open(REGISTRY_PATH, encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     return ProjectRegistry(**data)
@@ -264,7 +260,7 @@ def list_available_stacks() -> None:
     print("\nAvailable Stack Templates:\n")
 
     for yaml_file in sorted(STACKS_DIR.glob("*.yaml")):
-        with open(yaml_file, "r", encoding="utf-8") as f:
+        with open(yaml_file, encoding="utf-8") as f:
             stack = yaml.safe_load(f)
 
         name = stack.get("name", yaml_file.stem)
@@ -320,11 +316,11 @@ def print_project_info(registry: ProjectRegistry, name: str) -> None:
 
             # Show stack details
             if p.stacks:
-                print(f"\n  Stack Details:")
+                print("\n  Stack Details:")
                 for stack_name in p.stacks:
                     stack_file = STACKS_DIR / f"{stack_name}.yaml"
                     if stack_file.exists():
-                        with open(stack_file, "r", encoding="utf-8") as f:
+                        with open(stack_file, encoding="utf-8") as f:
                             stack = yaml.safe_load(f)
                         packages = stack.get("key_packages", [])
                         print(f"    {stack_name}: {', '.join(packages[:6])}")

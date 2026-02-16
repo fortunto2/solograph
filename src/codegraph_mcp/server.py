@@ -33,6 +33,7 @@ CODEGRAPH_DB_PATH = os.environ.get("CODEGRAPH_DB_PATH", str(Path.home() / ".solo
 CODEGRAPH_REGISTRY = os.environ.get("CODEGRAPH_REGISTRY", "")
 KB_PATH = os.environ.get("KB_PATH", "")
 
+
 def _detect_kb_path() -> str:
     """Auto-detect KB path if not set via env var.
 
@@ -54,6 +55,8 @@ def _detect_kb_path() -> str:
         except OSError:
             continue
     return ""
+
+
 TAVILY_API_URL = os.environ.get("TAVILY_API_URL", "http://localhost:8013")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 
@@ -74,6 +77,7 @@ def _get_kb():
         if not kb_path:
             return None
         from codegraph_mcp.kb import KnowledgeEmbeddings
+
         sys.stdout = sys.stderr
         try:
             _kb = KnowledgeEmbeddings(kb_path)
@@ -86,6 +90,7 @@ def _get_session_index():
     global _session_idx
     if _session_idx is None:
         from codegraph_mcp.vectors.session_index import SessionIndex
+
         _session_idx = SessionIndex()
     return _session_idx
 
@@ -94,6 +99,7 @@ def _get_source_index():
     global _source_idx
     if _source_idx is None:
         from codegraph_mcp.vectors.source_index import SourceIndex
+
         _source_idx = SourceIndex()
     return _source_idx
 
@@ -102,6 +108,7 @@ def _get_project_index():
     global _project_idx
     if _project_idx is None:
         from codegraph_mcp.vectors.project_graph_index import ProjectGraphIndex
+
         sys.stdout = sys.stderr
         try:
             _project_idx = ProjectGraphIndex(backend="st")
@@ -114,6 +121,7 @@ def _get_graph():
     global _graph, _graph_db
     if _graph is None:
         from codegraph_mcp.db import get_db, get_graph
+
         _graph_db = get_db(Path(CODEGRAPH_DB_PATH).expanduser())
         _graph = get_graph(_graph_db)
         # Auto-refresh registry → project stacks always current
@@ -128,6 +136,7 @@ def _auto_refresh_registry():
         return
     try:
         from codegraph_mcp.scanner.registry import ingest_projects, scan_registry
+
         projects = scan_registry(registry_path)
         ingest_projects(_graph, projects)
     except Exception as exc:
@@ -243,7 +252,12 @@ def kb_search(
     filter_dict = {"type": doc_type} if doc_type else None
     sys.stdout = sys.stderr
     try:
-        results = kb.search(query, n_results=n_results, filter_dict=filter_dict, expand_graph=expand_graph)
+        results = kb.search(
+            query,
+            n_results=n_results,
+            filter_dict=filter_dict,
+            expand_graph=expand_graph,
+        )
     finally:
         sys.stdout = _real_stdout
 
@@ -369,6 +383,7 @@ def codegraph_stats() -> dict:
     """
     graph = _get_graph()
     from codegraph_mcp.db import graph_stats as _graph_stats
+
     return _graph_stats(graph)
 
 
@@ -384,6 +399,7 @@ def codegraph_explain(project: str) -> dict:
     """
     graph = _get_graph()
     from codegraph_mcp.output.explain import explain_project
+
     result = explain_project(graph, project)
     if isinstance(result, str):
         return {"error": result}
@@ -400,6 +416,7 @@ def codegraph_shared() -> list[dict]:
     """
     graph = _get_graph()
     from codegraph_mcp.query.search import shared_packages
+
     return shared_packages(graph)
 
 
@@ -482,7 +499,10 @@ async def web_search(
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(f"{TAVILY_API_URL}/search", json=payload, headers=headers)
         if resp.status_code != 200:
-            return {"error": f"Search returned {resp.status_code}", "detail": resp.text[:500]}
+            return {
+                "error": f"Search returned {resp.status_code}",
+                "detail": resp.text[:500],
+            }
         return resp.json()
 
 
@@ -625,6 +645,7 @@ def source_list() -> list[dict]:
 
 
 # ── Entry point ──────────────────────────────────────────────────
+
 
 def main():
     mcp.run(transport="stdio")

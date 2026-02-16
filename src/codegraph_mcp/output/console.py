@@ -57,11 +57,7 @@ def print_explain(data: dict) -> None:
         title += f"\n{data['description']}"
 
     counts = data["counts"]
-    title += (
-        f"\n[dim]{counts['files']} files | "
-        f"{counts['symbols']} symbols | "
-        f"{counts['packages']} packages[/dim]"
-    )
+    title += f"\n[dim]{counts['files']} files | {counts['symbols']} symbols | {counts['packages']} packages[/dim]"
     console.print(Panel(title, border_style="cyan"))
 
     # Languages
@@ -131,8 +127,7 @@ def print_scan_progress(name: str, stack: str | None, files: int, symbols: int, 
     """Print single project scan result."""
     stack_display = stack or "[dim](no stack)[/dim]"
     console.print(
-        f"  [cyan]{name}[/cyan] [green]{stack_display}[/green]  "
-        f"{files} files  {symbols} symbols  {packages} packages"
+        f"  [cyan]{name}[/cyan] [green]{stack_display}[/green]  {files} files  {symbols} symbols  {packages} packages"
     )
 
 

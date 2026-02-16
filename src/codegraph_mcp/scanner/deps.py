@@ -3,8 +3,6 @@
 import json
 from pathlib import Path
 
-import yaml
-
 from ..models import PackageNode
 
 
@@ -48,7 +46,11 @@ def _find_dep_files(project_path: Path, filename: str) -> list[Path]:
     if root_file.exists():
         found.append(root_file)
     for child in project_path.iterdir():
-        if child.is_dir() and not child.name.startswith(".") and child.name not in ("node_modules", ".next", "dist", "build", "__pycache__"):
+        if (
+            child.is_dir()
+            and not child.name.startswith(".")
+            and child.name not in ("node_modules", ".next", "dist", "build", "__pycache__")
+        ):
             sub = child / filename
             if sub.exists():
                 found.append(sub)
@@ -161,8 +163,7 @@ def ingest_packages(graph, packages: list[PackageNode], project_name: str) -> in
         name_escaped = pkg.name.replace("'", "\\'")
         version = pkg.version or ""
         graph.query(
-            f"MERGE (pkg:Package {{name: '{name_escaped}'}}) "
-            f"SET pkg.version = '{version}', pkg.source = '{pkg.source}'"
+            f"MERGE (pkg:Package {{name: '{name_escaped}'}}) SET pkg.version = '{version}', pkg.source = '{pkg.source}'"
         )
         graph.query(
             f"MATCH (p:Project {{name: '{project_name}'}}), "

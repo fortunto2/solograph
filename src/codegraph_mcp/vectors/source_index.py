@@ -15,7 +15,12 @@ from pathlib import Path
 from redislite.falkordb_client import FalkorDB
 
 from ..models import SourceDoc, VideoDoc
-from .common import DEFAULT_TOPICS, EMBEDDING_DIM, cosine_similarity, init_embedding_function
+from .common import (
+    DEFAULT_TOPICS,
+    EMBEDDING_DIM,
+    cosine_similarity,
+    init_embedding_function,
+)
 
 _DEFAULT_ROOT = str(Path.home() / ".solo" / "sources")
 
@@ -25,9 +30,7 @@ class SourceIndex:
 
     def __init__(self, backend: str | None = None, sources_root: str | None = None):
         self._ef = init_embedding_function(backend)
-        self._root = Path(
-            sources_root or os.environ.get("SOURCES_ROOT", _DEFAULT_ROOT)
-        ).expanduser()
+        self._root = Path(sources_root or os.environ.get("SOURCES_ROOT", _DEFAULT_ROOT)).expanduser()
         self._dbs: dict[str, tuple[FalkorDB, object]] = {}
         self._topic_embeddings: list[tuple[str, list[float]]] | None = None
 
@@ -186,9 +189,7 @@ class SourceIndex:
                 "created": video.created,
                 "tags": video.tags,
                 "dur": video.duration_seconds,
-                "chapters": ", ".join(
-                    f"{ch.start_time} {ch.title}" for ch in video.chapters
-                ) if video.chapters else "",
+                "chapters": ", ".join(f"{ch.start_time} {ch.title}" for ch in video.chapters) if video.chapters else "",
             },
         )
 
@@ -219,8 +220,7 @@ class SourceIndex:
 
         # Delete old chunks for this video
         graph.query(
-            "MATCH (v:Video {video_id: $vid})-[:HAS_CHUNK]->(c:VideoChunk) "
-            "DETACH DELETE c",
+            "MATCH (v:Video {video_id: $vid})-[:HAS_CHUNK]->(c:VideoChunk) DETACH DELETE c",
             {"vid": video.video_id},
         )
 
@@ -234,16 +234,18 @@ class SourceIndex:
         # Build items for UNWIND
         items = []
         for chunk, emb in zip(chunks, embeddings):
-            items.append({
-                "cid": f"{video.video_id}:{chunk['chunk_index']}",
-                "text": chunk["text"],
-                "ci": chunk["chunk_index"],
-                "chapter": chunk.get("chapter", ""),
-                "start_time": chunk.get("start_time", ""),
-                "start_seconds": chunk.get("start_seconds", 0.0),
-                "chunk_type": chunk.get("chunk_type", "transcript"),
-                "emb": emb,
-            })
+            items.append(
+                {
+                    "cid": f"{video.video_id}:{chunk['chunk_index']}",
+                    "text": chunk["text"],
+                    "ci": chunk["chunk_index"],
+                    "chapter": chunk.get("chapter", ""),
+                    "start_time": chunk.get("start_time", ""),
+                    "start_seconds": chunk.get("start_seconds", 0.0),
+                    "chunk_type": chunk.get("chunk_type", "transcript"),
+                    "emb": emb,
+                }
+            )
 
         # Batch insert with UNWIND
         graph.query(
@@ -304,9 +306,7 @@ class SourceIndex:
         all_results.sort(key=lambda r: r.get("relevance", 0), reverse=True)
         return all_results[:n_results]
 
-    def _search_one(
-        self, source_name: str, query_emb: list[float], n_results: int
-    ) -> list[dict]:
+    def _search_one(self, source_name: str, query_emb: list[float], n_results: int) -> list[dict]:
         """Search a single source graph — SourceDoc + VideoChunk, merged by score."""
         graph = self._get_graph(source_name)
         output = []
@@ -328,17 +328,19 @@ class SourceIndex:
                 result = graph.query(cypher, params={"q": query_emb})
                 for row in result.result_set:
                     doc_id, stype, sname, title, url, content, created, tags, score = row
-                    output.append({
-                        "doc_id": doc_id or "",
-                        "source_type": stype or "",
-                        "source_name": sname or "",
-                        "title": (title or "")[:100],
-                        "url": url or "",
-                        "content": (content or "")[:300],
-                        "created": created or "",
-                        "tags": tags or "",
-                        "relevance": round(1 - score, 4),
-                    })
+                    output.append(
+                        {
+                            "doc_id": doc_id or "",
+                            "source_type": stype or "",
+                            "source_name": sname or "",
+                            "title": (title or "")[:100],
+                            "url": url or "",
+                            "content": (content or "")[:300],
+                            "created": created or "",
+                            "tags": tags or "",
+                            "relevance": round(1 - score, 4),
+                        }
+                    )
             except Exception:
                 pass
 
@@ -365,10 +367,22 @@ class SourceIndex:
             try:
                 result = graph.query(cypher, params={"q": query_emb})
                 for row in result.result_set:
-                    (chunk_id, title, url, sname, text,
-                     chapter, start_time, start_seconds, chunk_type,
-                     prev_text, next_text,
-                     created, tags, score) = row
+                    (
+                        chunk_id,
+                        title,
+                        url,
+                        sname,
+                        text,
+                        chapter,
+                        start_time,
+                        start_seconds,
+                        chunk_type,
+                        prev_text,
+                        next_text,
+                        created,
+                        tags,
+                        score,
+                    ) = row
                     # Build context from siblings
                     parts = [p for p in [prev_text, text, next_text] if p]
                     context = "\n".join(parts) if len(parts) > 1 else ""
@@ -536,5 +550,6 @@ class SourceIndex:
             del self._dbs[source_name]
 
         import shutil
+
         shutil.rmtree(path)
         return True

@@ -95,10 +95,7 @@ def files_in_session(graph, session_id: str) -> list[dict]:
         f"RETURN f.path, f.project, TYPE(r) AS action, r.count "
         f"ORDER BY action, f.path"
     )
-    return [
-        {"path": r[0], "project": r[1], "action": r[2], "count": r[3]}
-        for r in result.result_set
-    ]
+    return [{"path": r[0], "project": r[1], "action": r[2], "count": r[3]} for r in result.result_set]
 
 
 def sessions_for_file(graph, file_path: str, limit: int = 20) -> list[dict]:
@@ -132,10 +129,7 @@ def hotfiles_by_sessions(graph, project_name: str, limit: int = 10) -> list[dict
         f"RETURN f.path, COUNT(r) AS sessions, SUM(r.count) AS edits "
         f"ORDER BY sessions DESC LIMIT {limit}"
     )
-    return [
-        {"path": r[0], "sessions": r[1], "edits": r[2]}
-        for r in result.result_set
-    ]
+    return [{"path": r[0], "sessions": r[1], "edits": r[2]} for r in result.result_set]
 
 
 def import_graph(graph, project_name: str) -> list[dict]:
@@ -146,10 +140,7 @@ def import_graph(graph, project_name: str) -> list[dict]:
         f"CASE WHEN tgt.path IS NOT NULL THEN tgt.path ELSE tgt.name END AS target "
         f"ORDER BY src.path, target"
     )
-    return [
-        {"source": r[0], "target_type": r[1], "target": r[2]}
-        for r in result.result_set
-    ]
+    return [{"source": r[0], "target_type": r[1], "target": r[2]} for r in result.result_set]
 
 
 def callers_of(graph, symbol_name: str, project: str | None = None) -> list[dict]:
@@ -162,10 +153,7 @@ def callers_of(graph, symbol_name: str, project: str | None = None) -> list[dict
         f"RETURN f.path AS caller, f.project AS project, s.file AS defined_in "
         f"ORDER BY f.project, f.path"
     )
-    return [
-        {"caller": r[0], "project": r[1], "defined_in": r[2]}
-        for r in result.result_set
-    ]
+    return [{"caller": r[0], "project": r[1], "defined_in": r[2]} for r in result.result_set]
 
 
 def class_hierarchy(graph, class_name: str, project: str | None = None) -> dict:
@@ -178,20 +166,14 @@ def class_hierarchy(graph, class_name: str, project: str | None = None) -> dict:
         f"WHERE true{project_filter} "
         f"RETURN p.name AS name, p.file AS file, p.project AS project"
     )
-    parents = [
-        {"name": r[0], "file": r[1], "project": r[2]}
-        for r in parents_result.result_set
-    ]
+    parents = [{"name": r[0], "file": r[1], "project": r[2]} for r in parents_result.result_set]
 
     children_result = graph.query(
         f"MATCH (child:Symbol)-[:INHERITS]->(c:Symbol {{name: '{name_escaped}'}}) "
         f"WHERE true{project_filter} "
         f"RETURN child.name AS name, child.file AS file, child.project AS project"
     )
-    children = [
-        {"name": r[0], "file": r[1], "project": r[2]}
-        for r in children_result.result_set
-    ]
+    children = [{"name": r[0], "file": r[1], "project": r[2]} for r in children_result.result_set]
 
     return {"class": class_name, "parents": parents, "children": children}
 
@@ -211,10 +193,7 @@ def session_stats(graph) -> dict:
     total = graph.query("MATCH (s:Session) RETURN COUNT(s)")
     total_count = total.result_set[0][0] if total.result_set else 0
 
-    projects = graph.query(
-        "MATCH (s:Session) RETURN s.project_name, COUNT(s) AS cnt "
-        "ORDER BY cnt DESC"
-    )
+    projects = graph.query("MATCH (s:Session) RETURN s.project_name, COUNT(s) AS cnt ORDER BY cnt DESC")
     by_project = {r[0]: r[1] for r in projects.result_set}
 
     edges = graph.query(

@@ -11,10 +11,7 @@ def explain_project(graph, project_name: str) -> dict | str:
     """
 
     # ── Header: project info ──
-    proj_result = graph.query(
-        f"MATCH (p:Project {{name: '{project_name}'}}) "
-        f"RETURN p.stack, p.description"
-    )
+    proj_result = graph.query(f"MATCH (p:Project {{name: '{project_name}'}}) RETURN p.stack, p.description")
     if not proj_result.result_set:
         return f"Project '{project_name}' not found in graph."
 
@@ -44,16 +41,10 @@ def explain_project(graph, project_name: str) -> dict | str:
         f"ORDER BY cnt DESC"
     )
     if lang_result.result_set:
-        data["languages"] = [
-            (row[0], row[1], row[2] or 0) for row in lang_result.result_set
-        ]
+        data["languages"] = [(row[0], row[1], row[2] or 0) for row in lang_result.result_set]
 
     # ── Directory layers ──
-    dir_result = graph.query(
-        f"MATCH (f:File {{project: '{project_name}'}}) "
-        f"RETURN f.path "
-        f"ORDER BY f.path"
-    )
+    dir_result = graph.query(f"MATCH (f:File {{project: '{project_name}'}}) RETURN f.path ORDER BY f.path")
     if dir_result.result_set:
         dir_stats: dict[str, dict] = defaultdict(lambda: {"files": 0, "symbols": 0})
         for row in dir_result.result_set:
@@ -68,10 +59,7 @@ def explain_project(graph, project_name: str) -> dict | str:
             dir_stats[dir_key]["files"] += 1
 
         # Count symbols per directory
-        sym_dir_result = graph.query(
-            f"MATCH (s:Symbol {{project: '{project_name}'}}) "
-            f"RETURN s.file"
-        )
+        sym_dir_result = graph.query(f"MATCH (s:Symbol {{project: '{project_name}'}}) RETURN s.file")
         for row in sym_dir_result.result_set:
             path = row[0]
             parts = path.split("/")
@@ -84,10 +72,7 @@ def explain_project(graph, project_name: str) -> dict | str:
             dir_stats[dir_key]["symbols"] += 1
 
         sorted_dirs = sorted(dir_stats.items(), key=lambda x: -x[1]["files"])
-        data["layers"] = [
-            (dir_key, stats["files"], stats["symbols"])
-            for dir_key, stats in sorted_dirs[:12]
-        ]
+        data["layers"] = [(dir_key, stats["files"], stats["symbols"]) for dir_key, stats in sorted_dirs[:12]]
 
     # ── Key patterns (heuristic) ──
     patterns: list[str] = []
@@ -128,9 +113,7 @@ def explain_project(graph, project_name: str) -> dict | str:
 
     # Protocol/Interface count
     proto_result = graph.query(
-        f"MATCH (s:Symbol {{project: '{project_name}'}}) "
-        f"WHERE s.kind IN ['protocol', 'interface'] "
-        f"RETURN COUNT(s)"
+        f"MATCH (s:Symbol {{project: '{project_name}'}}) WHERE s.kind IN ['protocol', 'interface'] RETURN COUNT(s)"
     )
     if proto_result.result_set and proto_result.result_set[0][0] > 0:
         count = proto_result.result_set[0][0]

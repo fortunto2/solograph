@@ -32,19 +32,48 @@ _QUERY_ALIASES = {"tsx": "typescript"}
 # Directories to skip during scan
 SKIP_DIRS = {
     # VCS / env
-    ".git", ".venv", "venv", "env", "node_modules", "__pycache__",
+    ".git",
+    ".venv",
+    "venv",
+    "env",
+    "node_modules",
+    "__pycache__",
     # Build artifacts
-    ".build", "DerivedData", "build", ".next", "dist", ".output",
-    ".gradle", "Pods", ".eggs", ".tox", ".turbo", ".vercel", ".wrangler",
+    ".build",
+    "DerivedData",
+    "build",
+    ".next",
+    "dist",
+    ".output",
+    ".gradle",
+    "Pods",
+    ".eggs",
+    ".tox",
+    ".turbo",
+    ".vercel",
+    ".wrangler",
     # Test / coverage
-    "coverage", ".nyc_output", "htmlcov", ".pytest_cache",
+    "coverage",
+    ".nyc_output",
+    "htmlcov",
+    ".pytest_cache",
     # Samples / examples / vendor (library code, not project code)
-    "samples", "Samples", "examples", "Examples", "react-samples",
-    "vendor", "third_party", "third-party",
+    "samples",
+    "Samples",
+    "examples",
+    "Examples",
+    "react-samples",
+    "vendor",
+    "third_party",
+    "third-party",
     # Generated / cache
-    "generated", ".cache", ".parcel-cache", ".swc",
+    "generated",
+    ".cache",
+    ".parcel-cache",
+    ".swc",
     # IDE
-    ".idea", ".vscode",
+    ".idea",
+    ".vscode",
 }
 
 # File patterns to skip
@@ -58,6 +87,7 @@ def _get_ts_language(lang: str):
     instead of language(). Other grammars use language().
     """
     import importlib
+
     from tree_sitter import Language
 
     grammar_map = {
@@ -258,48 +288,208 @@ def ingest_symbols(graph, symbols: list[SymbolNode]) -> int:
 # Builtins / noise to skip in CALLS extraction
 NOISE_CALLS: dict[str, set[str]] = {
     "python": {
-        "print", "len", "range", "int", "str", "float", "list", "dict", "set",
-        "isinstance", "hasattr", "getattr", "type", "super", "enumerate", "zip",
-        "sorted", "open", "bool", "tuple", "map", "filter", "any", "all", "min",
-        "max", "abs", "repr", "id", "vars", "next", "iter", "reversed", "round",
+        "print",
+        "len",
+        "range",
+        "int",
+        "str",
+        "float",
+        "list",
+        "dict",
+        "set",
+        "isinstance",
+        "hasattr",
+        "getattr",
+        "type",
+        "super",
+        "enumerate",
+        "zip",
+        "sorted",
+        "open",
+        "bool",
+        "tuple",
+        "map",
+        "filter",
+        "any",
+        "all",
+        "min",
+        "max",
+        "abs",
+        "repr",
+        "id",
+        "vars",
+        "next",
+        "iter",
+        "reversed",
+        "round",
     },
     "typescript": {
-        "log", "parseInt", "parseFloat", "String", "Number", "Boolean",
-        "Array", "Object", "Promise", "setTimeout", "require", "console",
-        "Error", "Map", "Set", "JSON", "Date", "Math", "RegExp",
+        "log",
+        "parseInt",
+        "parseFloat",
+        "String",
+        "Number",
+        "Boolean",
+        "Array",
+        "Object",
+        "Promise",
+        "setTimeout",
+        "require",
+        "console",
+        "Error",
+        "Map",
+        "Set",
+        "JSON",
+        "Date",
+        "Math",
+        "RegExp",
     },
     "swift": {"print", "fatalError", "precondition", "debugPrint", "assert"},
-    "kotlin": {"println", "print", "listOf", "mapOf", "setOf", "arrayOf", "emptyList", "emptyMap"},
+    "kotlin": {
+        "println",
+        "print",
+        "listOf",
+        "mapOf",
+        "setOf",
+        "arrayOf",
+        "emptyList",
+        "emptyMap",
+    },
     "rust": {
-        "println", "eprintln", "format", "panic", "todo", "unimplemented",
-        "vec", "assert", "assert_eq", "assert_ne", "dbg", "write", "writeln",
-        "Some", "None", "Ok", "Err", "Box", "Arc", "Rc", "Vec", "String",
+        "println",
+        "eprintln",
+        "format",
+        "panic",
+        "todo",
+        "unimplemented",
+        "vec",
+        "assert",
+        "assert_eq",
+        "assert_ne",
+        "dbg",
+        "write",
+        "writeln",
+        "Some",
+        "None",
+        "Ok",
+        "Err",
+        "Box",
+        "Arc",
+        "Rc",
+        "Vec",
+        "String",
     },
     "go": {
-        "Println", "Printf", "Sprintf", "Fprintf", "Errorf", "Fatal", "Fatalf",
-        "Log", "Logf", "Panicf", "New", "Error", "make", "append", "len", "cap",
-        "close", "delete", "copy", "panic", "recover",
+        "Println",
+        "Printf",
+        "Sprintf",
+        "Fprintf",
+        "Errorf",
+        "Fatal",
+        "Fatalf",
+        "Log",
+        "Logf",
+        "Panicf",
+        "New",
+        "Error",
+        "make",
+        "append",
+        "len",
+        "cap",
+        "close",
+        "delete",
+        "copy",
+        "panic",
+        "recover",
     },
     "java": {
-        "println", "printf", "format", "toString", "equals", "hashCode",
-        "valueOf", "parseInt", "parseDouble", "getName", "getClass",
-        "System", "String", "Integer", "Long", "Boolean", "List", "Map",
+        "println",
+        "printf",
+        "format",
+        "toString",
+        "equals",
+        "hashCode",
+        "valueOf",
+        "parseInt",
+        "parseDouble",
+        "getName",
+        "getClass",
+        "System",
+        "String",
+        "Integer",
+        "Long",
+        "Boolean",
+        "List",
+        "Map",
     },
     "ruby": {
-        "puts", "print", "p", "pp", "raise", "require", "require_relative",
-        "attr_reader", "attr_writer", "attr_accessor", "include", "extend",
-        "new", "to_s", "to_i", "to_f", "nil?", "empty?", "each", "map", "select",
+        "puts",
+        "print",
+        "p",
+        "pp",
+        "raise",
+        "require",
+        "require_relative",
+        "attr_reader",
+        "attr_writer",
+        "attr_accessor",
+        "include",
+        "extend",
+        "new",
+        "to_s",
+        "to_i",
+        "to_f",
+        "nil?",
+        "empty?",
+        "each",
+        "map",
+        "select",
     },
     "c": {
-        "printf", "fprintf", "sprintf", "snprintf", "scanf", "malloc", "calloc",
-        "realloc", "free", "memcpy", "memset", "strlen", "strcmp", "strcpy",
-        "assert", "exit", "abort", "sizeof",
+        "printf",
+        "fprintf",
+        "sprintf",
+        "snprintf",
+        "scanf",
+        "malloc",
+        "calloc",
+        "realloc",
+        "free",
+        "memcpy",
+        "memset",
+        "strlen",
+        "strcmp",
+        "strcpy",
+        "assert",
+        "exit",
+        "abort",
+        "sizeof",
     },
     "cpp": {
-        "printf", "fprintf", "sprintf", "snprintf", "malloc", "calloc", "free",
-        "memcpy", "memset", "strlen", "strcmp", "assert", "exit", "abort",
-        "cout", "cerr", "endl", "move", "forward", "make_shared", "make_unique",
-        "static_cast", "dynamic_cast", "reinterpret_cast",
+        "printf",
+        "fprintf",
+        "sprintf",
+        "snprintf",
+        "malloc",
+        "calloc",
+        "free",
+        "memcpy",
+        "memset",
+        "strlen",
+        "strcmp",
+        "assert",
+        "exit",
+        "abort",
+        "cout",
+        "cerr",
+        "endl",
+        "move",
+        "forward",
+        "make_shared",
+        "make_unique",
+        "static_cast",
+        "dynamic_cast",
+        "reinterpret_cast",
     },
 }
 
@@ -463,7 +653,7 @@ def _classify_import(module_text: str, lang: str) -> tuple[str, str]:
             return "internal", module_text
         return "external", module_text
     elif lang in ("c", "cpp"):
-        clean = module_text.strip("<>\"")
+        clean = module_text.strip('<>"')
         if module_text.startswith('"'):
             return "internal", clean
         return "external", clean
@@ -472,7 +662,10 @@ def _classify_import(module_text: str, lang: str) -> tuple[str, str]:
 
 
 def extract_deep(
-    file_path: Path, project_name: str, lang: str, rel_path: str = "",
+    file_path: Path,
+    project_name: str,
+    lang: str,
+    rel_path: str = "",
 ) -> tuple[list[ImportEdge], list[CallEdge], list[InheritsEdge]]:
     """Extract imports, calls, and inheritance from a file (single parse).
 
@@ -515,12 +708,14 @@ def extract_deep(
                     kind, module_name = _classify_import(module_text, query_lang)
                     if module_name not in seen_modules:
                         seen_modules.add(module_name)
-                        imports.append(ImportEdge(
-                            source_file=rel_path,
-                            project=project_name,
-                            module=module_name,
-                            kind=kind,
-                        ))
+                        imports.append(
+                            ImportEdge(
+                                source_file=rel_path,
+                                project=project_name,
+                                module=module_name,
+                                kind=kind,
+                            )
+                        )
         except Exception:
             pass
 
@@ -538,11 +733,13 @@ def extract_deep(
                     callee = node.text.decode("utf-8")
                     if callee not in noise and callee not in seen_calls:
                         seen_calls.add(callee)
-                        calls.append(CallEdge(
-                            source_file=rel_path,
-                            project=project_name,
-                            callee_name=callee,
-                        ))
+                        calls.append(
+                            CallEdge(
+                                source_file=rel_path,
+                                project=project_name,
+                                callee_name=callee,
+                            )
+                        )
         except Exception:
             pass
 
@@ -567,12 +764,14 @@ def extract_deep(
                     # children list has fewer entries than parents when multi-inherit
                     # Find the correct child by checking which child this parent belongs to
                     child_name = children[child_idx]
-                    inherits.append(InheritsEdge(
-                        child_name=child_name,
-                        parent_name=parent,
-                        child_file=rel_path,
-                        project=project_name,
-                    ))
+                    inherits.append(
+                        InheritsEdge(
+                            child_name=child_name,
+                            parent_name=parent,
+                            child_file=rel_path,
+                            project=project_name,
+                        )
+                    )
         except Exception:
             pass
 

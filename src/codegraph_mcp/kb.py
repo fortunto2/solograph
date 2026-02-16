@@ -71,8 +71,13 @@ class KnowledgeEmbeddings:
         errors = 0
 
         skip_patterns = [
-            "README.md", "INDEX.md", ".archive_old", "archive/",
-            ".venv/", "node_modules/", ".git/",
+            "README.md",
+            "INDEX.md",
+            ".archive_old",
+            "archive/",
+            ".venv/",
+            "node_modules/",
+            ".git/",
         ]
 
         for md_file in self.kb_path.rglob("*.md"):
@@ -80,7 +85,7 @@ class KnowledgeEmbeddings:
                 continue
 
             try:
-                with open(md_file, "r", encoding="utf-8") as f:
+                with open(md_file, encoding="utf-8") as f:
                     post = frontmatter.load(f)
 
                 rel_path = str(md_file.relative_to(self.kb_path))
@@ -132,7 +137,10 @@ class KnowledgeEmbeddings:
                 if "opportunity_score" in post.metadata:
                     self._graph.query(
                         "MATCH (d:KBDoc {doc_id: $did}) SET d.opportunity_score = $score",
-                        {"did": file_id, "score": float(post.metadata["opportunity_score"])},
+                        {
+                            "did": file_id,
+                            "score": float(post.metadata["opportunity_score"]),
+                        },
                     )
 
                 indexed += 1
@@ -163,10 +171,7 @@ class KnowledgeEmbeddings:
 
         fetch_n = min(n_results * 2 if filter_dict else n_results, count)
 
-        cypher = (
-            f"CALL db.idx.vector.queryNodes('KBDoc', 'embedding', {fetch_n}, vecf32($q)) "
-            "YIELD node, score "
-        )
+        cypher = f"CALL db.idx.vector.queryNodes('KBDoc', 'embedding', {fetch_n}, vecf32($q)) YIELD node, score "
         if filter_dict and "type" in filter_dict:
             cypher += "WHERE node.doc_type = $dtype "
 
@@ -190,17 +195,23 @@ class KnowledgeEmbeddings:
         distances = []
 
         for row in result.result_set:
-            doc_id, file, title, dtype, tags, content, score = row
+            _doc_id, file, title, dtype, tags, content, score = row
             documents.append(content or "")
-            metadatas.append({
-                "file": file or "",
-                "title": title or "",
-                "type": dtype or "",
-                "tags": tags or "",
-            })
+            metadatas.append(
+                {
+                    "file": file or "",
+                    "title": title or "",
+                    "type": dtype or "",
+                    "tags": tags or "",
+                }
+            )
             distances.append(score)
 
-        output = {"documents": documents, "metadatas": metadatas, "distances": distances}
+        output = {
+            "documents": documents,
+            "metadatas": metadatas,
+            "distances": distances,
+        }
 
         if expand_graph and metadatas:
             output = self._expand_with_graph(output)
@@ -237,13 +248,15 @@ class KnowledgeEmbeddings:
                     continue
                 result_files.add(neighbor)
                 node = graph["nodes"].get(neighbor, {})
-                expanded_meta.append({
-                    "file": neighbor,
-                    "title": node.get("title", neighbor),
-                    "type": node.get("type", "unknown"),
-                    "tags": ",".join(node.get("tags", [])),
-                    "graph_source": f"via {edge['type']}: {meta.get('title', file_path)}",
-                })
+                expanded_meta.append(
+                    {
+                        "file": neighbor,
+                        "title": node.get("title", neighbor),
+                        "type": node.get("type", "unknown"),
+                        "tags": ",".join(node.get("tags", [])),
+                        "graph_source": f"via {edge['type']}: {meta.get('title', file_path)}",
+                    }
+                )
                 expanded_docs.append(f"[graph-expanded from {meta.get('title', '')}]")
                 expanded_dist.append(1.0)
 
@@ -258,16 +271,12 @@ class KnowledgeEmbeddings:
         """Get collection statistics."""
         count = self._count()
 
-        type_result = self._graph.query(
-            "MATCH (d:KBDoc) RETURN d.doc_type, count(d) ORDER BY count(d) DESC"
-        )
+        type_result = self._graph.query("MATCH (d:KBDoc) RETURN d.doc_type, count(d) ORDER BY count(d) DESC")
         types = {}
         for row in type_result.result_set:
             types[row[0] or "unknown"] = row[1]
 
-        tag_result = self._graph.query(
-            "MATCH (d:KBDoc) WHERE d.tags <> '' RETURN d.tags"
-        )
+        tag_result = self._graph.query("MATCH (d:KBDoc) WHERE d.tags <> '' RETURN d.tags")
         tags = set()
         for row in tag_result.result_set:
             for tag in (row[0] or "").split(","):
@@ -309,24 +318,31 @@ def main():
             sys.exit(1)
         query = " ".join(args.query)
         filter_dict = {"type": args.type} if args.type else None
-        results = kb.search(query, n_results=args.limit, filter_dict=filter_dict, expand_graph=args.graph)
+        results = kb.search(
+            query,
+            n_results=args.limit,
+            filter_dict=filter_dict,
+            expand_graph=args.graph,
+        )
         if not results["documents"]:
             print("No results found")
             return
         print(f"\nFound {len(results['documents'])} results:\n")
-        for i, (doc, meta, dist) in enumerate(zip(results["documents"], results["metadatas"], results["distances"]), 1):
+        for i, (_doc, meta, dist) in enumerate(
+            zip(results["documents"], results["metadatas"], results["distances"]), 1
+        ):
             score = 1 - dist
             print(f"{i}. {meta['title']} (relevance: {score:.2%})")
             print(f"   File: {meta['file']} | Type: {meta['type']} | Tags: {meta.get('tags', 'none')}")
             print()
     elif args.command == "stats":
         stats = kb.get_stats()
-        print(f"\nKB Statistics:\n")
+        print("\nKB Statistics:\n")
         print(f"Total documents: {stats['total_documents']}")
         print(f"Embedding model: {stats['model']}")
         print(f"Storage: {stats['storage']}")
         print(f"Unique tags: {stats['unique_tags']}")
-        print(f"\nBy type:")
+        print("\nBy type:")
         for doc_type, count in stats["by_type"].items():
             print(f"  {doc_type}: {count}")
 

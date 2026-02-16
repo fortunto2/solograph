@@ -82,7 +82,7 @@ def init_embedding_function(backend: str | None = None):
 
     if use_mlx:
         try:
-            from mlx_embeddings.utils import load, generate
+            from mlx_embeddings.utils import generate, load
 
             model, tokenizer = load("mlx-community/multilingual-e5-small-mlx")
 
@@ -163,11 +163,13 @@ def parse_chapters(description: str) -> list[dict]:
             seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
         else:
             seconds = int(parts[0]) * 60 + int(parts[1])
-        chapters.append({
-            "title": title,
-            "start_time": timecode,
-            "start_seconds": seconds,
-        })
+        chapters.append(
+            {
+                "title": title,
+                "start_time": timecode,
+                "start_seconds": seconds,
+            }
+        )
 
     return chapters
 
@@ -219,12 +221,14 @@ def chunk_transcript_by_chapters(
 
         for sub in sub_chunks:
             if sub.strip():
-                result.append({
-                    "text": sub.strip(),
-                    "chapter": ch["title"],
-                    "start_time": ch["start_time"],
-                    "chunk_index": chunk_index,
-                })
+                result.append(
+                    {
+                        "text": sub.strip(),
+                        "chapter": ch["title"],
+                        "start_time": ch["start_time"],
+                        "chunk_index": chunk_index,
+                    }
+                )
                 chunk_index += 1
 
     return result
@@ -278,19 +282,21 @@ def chunk_segments_by_chapters(
     result = []
     chunk_index = 0
 
-    for ch_title, ch_time, ch_start_sec, group_segs in chapter_groups:
+    for ch_title, ch_time, _ch_start_sec, group_segs in chapter_groups:
         # Merge all segment texts in this chapter group
         merged_text = " ".join(s["text"] for s in group_segs)
 
         if len(merged_text) <= max_cap:
             # Fits in one chunk — use first segment's timestamp
-            result.append({
-                "text": merged_text,
-                "chapter": ch_title,
-                "start_time": ch_time,
-                "start_seconds": group_segs[0]["start"],
-                "chunk_index": chunk_index,
-            })
+            result.append(
+                {
+                    "text": merged_text,
+                    "chapter": ch_title,
+                    "start_time": ch_time,
+                    "start_seconds": group_segs[0]["start"],
+                    "chunk_index": chunk_index,
+                }
+            )
             chunk_index += 1
         else:
             # Too large — split into sub-chunks, assign timestamps proportionally
@@ -311,13 +317,15 @@ def chunk_segments_by_chapters(
                         break
                     running += seg_len
 
-                result.append({
-                    "text": sub,
-                    "chapter": ch_title,
-                    "start_time": ch_time,
-                    "start_seconds": sub_start_sec,
-                    "chunk_index": chunk_index,
-                })
+                result.append(
+                    {
+                        "text": sub,
+                        "chapter": ch_title,
+                        "start_time": ch_time,
+                        "start_seconds": sub_start_sec,
+                        "chunk_index": chunk_index,
+                    }
+                )
                 chunk_index += 1
                 char_pos += len(sub) + 1  # approximate
 

@@ -36,10 +36,10 @@ def inheritance_diagram(graph, project: str, max_nodes: int = 50) -> str:
         parent_id = _safe_id(parent)
 
         if child_id not in seen_nodes:
-            lines.append(f"    {child_id}[\"{_safe_label(child)}\"]")
+            lines.append(f'    {child_id}["{_safe_label(child)}"]')
             seen_nodes.add(child_id)
         if parent_id not in seen_nodes:
-            lines.append(f"    {parent_id}[\"{_safe_label(parent)}\"]")
+            lines.append(f'    {parent_id}["{_safe_label(parent)}"]')
             seen_nodes.add(parent_id)
 
         lines.append(f"    {child_id} --> {parent_id}")
@@ -70,10 +70,10 @@ def imports_diagram(graph, project: str, max_nodes: int = 50) -> str:
         tgt_id = "f_" + _safe_id(tgt)
 
         if src_id not in seen_nodes:
-            lines.append(f"    {src_id}[\"{_safe_label(src)}\"]")
+            lines.append(f'    {src_id}["{_safe_label(src)}"]')
             seen_nodes.add(src_id)
         if tgt_id not in seen_nodes:
-            lines.append(f"    {tgt_id}[\"{_safe_label(tgt)}\"]")
+            lines.append(f'    {tgt_id}["{_safe_label(tgt)}"]')
             seen_nodes.add(tgt_id)
 
         lines.append(f"    {src_id} --> {tgt_id}")
@@ -83,7 +83,10 @@ def imports_diagram(graph, project: str, max_nodes: int = 50) -> str:
 
 
 def calls_diagram(
-    graph, project: str, symbol: str | None = None, max_nodes: int = 50,
+    graph,
+    project: str,
+    symbol: str | None = None,
+    max_nodes: int = 50,
 ) -> str:
     """Generate mermaid flowchart of call relationships (File -> Symbol)."""
     if symbol:
@@ -118,10 +121,10 @@ def calls_diagram(
         callee_id = "s_" + _safe_id(callee_name + "_" + callee_file)
 
         if caller_id not in seen_nodes:
-            lines.append(f"    {caller_id}[\"{_safe_label(caller_path)}\"]")
+            lines.append(f'    {caller_id}["{_safe_label(caller_path)}"]')
             seen_nodes.add(caller_id)
         if callee_id not in seen_nodes:
-            lines.append(f"    {callee_id}([\"{_safe_label(callee_name)}\"])")
+            lines.append(f'    {callee_id}(["{_safe_label(callee_name)}"])')
             seen_nodes.add(callee_id)
 
         lines.append(f"    {caller_id} --> {callee_id}")
@@ -142,7 +145,7 @@ def deps_diagram(graph, project: str) -> str:
 
     lines = ["graph LR"]
     project_id = _safe_id(project)
-    lines.append(f"    {project_id}[[\"{_safe_label(project)}\"]]")
+    lines.append(f'    {project_id}[["{_safe_label(project)}"]]')
 
     # Group by source
     by_source: dict[str, list[str]] = {}
@@ -152,11 +155,11 @@ def deps_diagram(graph, project: str) -> str:
 
     for source, pkgs in sorted(by_source.items()):
         source_id = "src_" + _safe_id(source)
-        lines.append(f"    {source_id}{{\"{_safe_label(source)}\"}}")
+        lines.append(f'    {source_id}{{"{_safe_label(source)}"}}')
         lines.append(f"    {project_id} --> {source_id}")
         for pkg in pkgs:
             pkg_id = "pkg_" + _safe_id(pkg)
-            lines.append(f"    {pkg_id}(\"{_safe_label(pkg)}\")")
+            lines.append(f'    {pkg_id}("{_safe_label(pkg)}")')
             lines.append(f"    {source_id} --> {pkg_id}")
 
     return "\n".join(lines)

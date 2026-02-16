@@ -12,8 +12,11 @@ def scan_git_log(project_path: Path, project_name: str, max_commits: int = 100) 
     try:
         result = subprocess.run(
             [
-                "git", "log", f"--max-count={max_commits}",
-                "--numstat", "--format=%H|%an|%aI",
+                "git",
+                "log",
+                f"--max-count={max_commits}",
+                "--numstat",
+                "--format=%H|%an|%aI",
             ],
             cwd=project_path,
             capture_output=True,

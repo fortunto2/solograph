@@ -8,24 +8,24 @@ Vectors live on graph nodes, enabling hybrid queries:
   e.g. "find similar code -> show its imports -> find other files using same packages"
 """
 
+# Registry path from env or ~/.solo/
+import os
 import shutil
 from pathlib import Path
 
 from redislite.falkordb_client import FalkorDB
 
 from .common import (
+    CHUNK_CAPACITY,
+    EMBEDDING_DIM,
+    TS_GRAMMAR_MAP,
     VECTORS_ROOT,
     get_code_splitter,
     get_markdown_splitter,
     init_embedding_function,
     scan_project_files,
-    TS_GRAMMAR_MAP,
-    CHUNK_CAPACITY,
-    EMBEDDING_DIM,
 )
 
-# Registry path from env or ~/.solo/
-import os
 _REGISTRY_ENV = os.environ.get("CODEGRAPH_REGISTRY", "")
 _REGISTRY_PATH = Path(_REGISTRY_ENV).expanduser() if _REGISTRY_ENV else Path.home() / ".solo" / "registry.yaml"
 
@@ -48,6 +48,7 @@ class ProjectGraphIndex:
         if not _REGISTRY_PATH.exists():
             return
         import yaml
+
         with open(_REGISTRY_PATH, encoding="utf-8") as f:
             data = yaml.safe_load(f)
         for p in data.get("projects", []):
@@ -109,7 +110,7 @@ class ProjectGraphIndex:
             return []
 
         # Skip binary files masquerading as code (e.g. .ts files with binary data)
-        if '\x00' in content or sum(1 for c in content[:2000] if ord(c) < 32 and c not in '\n\r\t') > 20:
+        if "\x00" in content or sum(1 for c in content[:2000] if ord(c) < 32 and c not in "\n\r\t") > 20:
             return []
 
         chunk_type = "doc" if lang == "markdown" else "code"
@@ -124,28 +125,30 @@ class ProjectGraphIndex:
                 try:
                     raw_chunks = splitter.chunks(content)
                 except Exception:
-                    raw_chunks = [content[:CHUNK_CAPACITY[1]]] if len(content) > CHUNK_CAPACITY[1] else [content]
+                    raw_chunks = [content[: CHUNK_CAPACITY[1]]] if len(content) > CHUNK_CAPACITY[1] else [content]
             else:
-                raw_chunks = [content[:CHUNK_CAPACITY[1]]] if len(content) > CHUNK_CAPACITY[1] else [content]
+                raw_chunks = [content[: CHUNK_CAPACITY[1]]] if len(content) > CHUNK_CAPACITY[1] else [content]
         else:
-            raw_chunks = [content[:CHUNK_CAPACITY[1]]] if len(content) > CHUNK_CAPACITY[1] else [content]
+            raw_chunks = [content[: CHUNK_CAPACITY[1]]] if len(content) > CHUNK_CAPACITY[1] else [content]
 
         chunks = []
         total = len(raw_chunks)
         for i, chunk_text in enumerate(raw_chunks):
             if not chunk_text.strip():
                 continue
-            chunks.append({
-                "id": f"{rel_path}::chunk_{i}",
-                "document": chunk_text,
-                "metadata": {
-                    "file": rel_path,
-                    "language": lang,
-                    "chunk_type": chunk_type,
-                    "chunk_index": i,
-                    "total_chunks": total,
-                },
-            })
+            chunks.append(
+                {
+                    "id": f"{rel_path}::chunk_{i}",
+                    "document": chunk_text,
+                    "metadata": {
+                        "file": rel_path,
+                        "language": lang,
+                        "chunk_type": chunk_type,
+                        "chunk_index": i,
+                        "total_chunks": total,
+                    },
+                }
+            )
         return chunks
 
     def index_project(self, project_path: Path, project_name: str) -> dict:
@@ -175,7 +178,6 @@ class ProjectGraphIndex:
 
         # Process file by file, embed + insert in small batches
         batch: list[dict] = []
-        batch_file: str | None = None
         batch_size = 16
 
         for abs_path, lang in files:
@@ -226,16 +228,18 @@ class ProjectGraphIndex:
         items = []
         for chunk, emb in zip(batch, embeddings):
             meta = chunk["metadata"]
-            items.append({
-                "cid": chunk["id"],
-                "text": chunk["document"],
-                "ct": meta["chunk_type"],
-                "ci": meta["chunk_index"],
-                "tc": meta["total_chunks"],
-                "lang": meta["language"],
-                "fp": meta["file"],
-                "emb": emb,
-            })
+            items.append(
+                {
+                    "cid": chunk["id"],
+                    "text": chunk["document"],
+                    "ct": meta["chunk_type"],
+                    "ci": meta["chunk_index"],
+                    "tc": meta["total_chunks"],
+                    "lang": meta["language"],
+                    "fp": meta["file"],
+                    "emb": emb,
+                }
+            )
 
         # Single UNWIND query: create all Chunk nodes + link to File nodes
         graph.query(
@@ -276,7 +280,10 @@ class ProjectGraphIndex:
         return all_results[:n_results]
 
     def _search_one(
-        self, query_emb: list[float], project_name: str, n_results: int,
+        self,
+        query_emb: list[float],
+        project_name: str,
+        n_results: int,
         chunk_type: str | None,
     ) -> list[dict]:
         """Search a single project's FalkorDB graph."""
@@ -321,16 +328,18 @@ class ProjectGraphIndex:
         output = []
         for row in result.result_set[:n_results]:
             doc_id, file_path, lang, ct, ci, text, score = row
-            output.append({
-                "id": doc_id,
-                "file": file_path or "",
-                "language": lang or "",
-                "chunk_type": ct or "",
-                "chunk_index": ci or 0,
-                "relevance": round(1 - score, 4),  # cosine distance → similarity
-                "snippet": (text or "")[:500],
-                "project": project_name,
-            })
+            output.append(
+                {
+                    "id": doc_id,
+                    "file": file_path or "",
+                    "language": lang or "",
+                    "chunk_type": ct or "",
+                    "chunk_index": ci or 0,
+                    "relevance": round(1 - score, 4),  # cosine distance → similarity
+                    "snippet": (text or "")[:500],
+                    "project": project_name,
+                }
+            )
 
         return output
 
@@ -372,16 +381,18 @@ class ProjectGraphIndex:
         output = []
         for row in result.result_set:
             doc_id, file_path, lang, ct, text, score, siblings = row
-            output.append({
-                "id": doc_id,
-                "file": file_path or "",
-                "language": lang or "",
-                "chunk_type": ct or "",
-                "relevance": round(1 - score, 4),
-                "snippet": (text or "")[:500],
-                "project": project,
-                "sibling_chunks": siblings or [],
-            })
+            output.append(
+                {
+                    "id": doc_id,
+                    "file": file_path or "",
+                    "language": lang or "",
+                    "chunk_type": ct or "",
+                    "relevance": round(1 - score, 4),
+                    "snippet": (text or "")[:500],
+                    "project": project,
+                    "sibling_chunks": siblings or [],
+                }
+            )
 
         return output
 
@@ -415,11 +426,13 @@ class ProjectGraphIndex:
             size_bytes = sum(f.stat().st_size for f in db_path.rglob("*") if f.is_file())
             size_mb = round(size_bytes / 1024 / 1024, 2)
 
-            projects.append({
-                "name": name,
-                "chunks": chunks,
-                "size_mb": size_mb,
-            })
+            projects.append(
+                {
+                    "name": name,
+                    "chunks": chunks,
+                    "size_mb": size_mb,
+                }
+            )
 
         return sorted(projects, key=lambda x: x["name"])
 

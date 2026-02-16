@@ -87,17 +87,10 @@ class SessionIndex:
 
         fetch_n = min(n_results * 2 if project else n_results, count)
 
-        cypher = (
-            f"CALL db.idx.vector.queryNodes('SessionDoc', 'embedding', {fetch_n}, vecf32($q)) "
-            "YIELD node, score "
-        )
+        cypher = f"CALL db.idx.vector.queryNodes('SessionDoc', 'embedding', {fetch_n}, vecf32($q)) YIELD node, score "
         if project:
             cypher += "WHERE node.project_name = $proj "
-        cypher += (
-            "RETURN node.session_id, node.project_name, node.started_at, "
-            "node.summary, score "
-            f"LIMIT {n_results}"
-        )
+        cypher += f"RETURN node.session_id, node.project_name, node.started_at, node.summary, score LIMIT {n_results}"
 
         params: dict = {"q": query_emb}
         if project:
@@ -111,13 +104,15 @@ class SessionIndex:
         output = []
         for row in result.result_set:
             sid, pname, start, summary, score = row
-            output.append({
-                "session_id": sid or "",
-                "project_name": pname or "",
-                "started_at": start or "",
-                "relevance": round(1 - score, 4),
-                "summary": (summary or "")[:300],
-            })
+            output.append(
+                {
+                    "session_id": sid or "",
+                    "project_name": pname or "",
+                    "started_at": start or "",
+                    "relevance": round(1 - score, 4),
+                    "summary": (summary or "")[:300],
+                }
+            )
 
         return output
 
