@@ -1078,6 +1078,9 @@ def index_trustmrr_cmd(categories, limit, dry_run, force, backend):
 @cli.command("index-producthunt")
 @click.option("--days", "-d", type=int, default=30, help="Days back to scrape (default: 30)")
 @click.option("--limit", "-n", type=int, default=None, help="Max products to scrape")
+@click.option("--all", "all_time", is_flag=True, help="Scrape ALL products since 2013 (~13k featured)")
+@click.option("--resume", is_flag=True, help="Enable JSONL resume file for long scrapes")
+@click.option("--include-all", "include_all", is_flag=True, help="Include non-featured posts too")
 @click.option("--dry-run", is_flag=True, help="Scrape only, don't insert into DB")
 @click.option("--force", is_flag=True, help="Re-scrape all, ignore already-indexed")
 @click.option(
@@ -1086,7 +1089,7 @@ def index_trustmrr_cmd(categories, limit, dry_run, force, backend):
     default=None,
     help="Embedding backend",
 )
-def index_producthunt_cmd(days, limit, dry_run, force, backend):
+def index_producthunt_cmd(days, limit, all_time, resume, include_all, dry_run, force, backend):
     """Scrape ProductHunt leaderboard into FalkorDB source graph.
 
     \b
@@ -1098,9 +1101,14 @@ def index_producthunt_cmd(days, limit, dry_run, force, backend):
       solograph-cli index-producthunt                  # Last 30 days
       solograph-cli index-producthunt -d 7             # Last 7 days
       solograph-cli index-producthunt -n 50            # Limit 50 products
+      solograph-cli index-producthunt --all --resume   # Full dump (~13k, ~2h)
       solograph-cli index-producthunt --dry-run        # Preview only
     """
     from .indexers.producthunt import ProductHuntIndexer
+
+    if all_time:
+        days = 4500  # Since PH launch (~2013)
+        resume = True  # Always resume for full dumps
 
     indexer = ProductHuntIndexer(backend=backend)
     indexer.run(
@@ -1108,7 +1116,49 @@ def index_producthunt_cmd(days, limit, dry_run, force, backend):
         limit=limit,
         dry_run=dry_run,
         force=force,
+        resume=resume,
+        featured_only=not include_all,
     )
+
+
+@cli.command("import-producthunt")
+@click.argument("jsonl_path", type=click.Path(exists=True))
+@click.option("--dry-run", is_flag=True, help="Preview only, don't insert into DB")
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
+def import_producthunt_cmd(jsonl_path, dry_run, backend):
+    """Import ProductHunt products from a JSONL file into FalkorDB.
+
+    \b
+    Use this to re-index from a previously scraped dump file.
+
+    \b
+    Examples:
+      solograph-cli import-producthunt ~/.solo/sources/producthunt_scrape.jsonl
+      solograph-cli import-producthunt dump.jsonl --dry-run
+    """
+    import json
+
+    items = []
+    with open(jsonl_path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    items.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+
+    click.echo(f"Loaded {len(items)} products from {jsonl_path}")
+
+    from .indexers.producthunt import ProductHuntIndexer
+
+    indexer = ProductHuntIndexer(backend=backend)
+    indexer.import_items(items, dry_run=dry_run)
 
 
 @cli.command("source-delete")

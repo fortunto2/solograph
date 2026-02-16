@@ -7,10 +7,12 @@ Usage:
     solograph-cli index-producthunt                  # Last 30 days
     solograph-cli index-producthunt -d 7             # Last 7 days
     solograph-cli index-producthunt -n 50            # Limit to 50 products
+    solograph-cli index-producthunt --all --resume   # Full dump with resume
     solograph-cli index-producthunt --dry-run        # Parse only, no DB
 """
 
 import hashlib
+from pathlib import Path
 
 from rich.console import Console
 from rich.progress import Progress
@@ -21,6 +23,7 @@ from ..vectors.source_index import SourceIndex
 console = Console()
 
 SOURCE_NAME = "producthunt"
+DEFAULT_RESUME_PATH = str(Path.home() / ".solo" / "sources" / "producthunt_scrape.jsonl")
 
 
 class ProductHuntIndexer:
@@ -35,6 +38,8 @@ class ProductHuntIndexer:
         limit: int | None = None,
         dry_run: bool = False,
         force: bool = False,
+        resume: bool = False,
+        featured_only: bool = True,
     ):
         """Run full pipeline: scrape → map → embed → store."""
         from ..scrapers.producthunt import run_ph_scraper
@@ -50,7 +55,19 @@ class ProductHuntIndexer:
                     f"Skipping [yellow]{len(skip_slugs)}[/yellow] already-indexed products (use --force to re-scrape)"
                 )
 
-        items = run_ph_scraper(days=days, limit=limit, skip_slugs=skip_slugs)
+        # Resume path for long scrapes
+        resume_path = DEFAULT_RESUME_PATH if resume else None
+        if resume_path:
+            Path(resume_path).parent.mkdir(parents=True, exist_ok=True)
+            console.print(f"Resume file: [dim]{resume_path}[/dim]")
+
+        items = run_ph_scraper(
+            days=days,
+            limit=limit,
+            skip_slugs=skip_slugs,
+            resume_path=resume_path,
+            featured_only=featured_only,
+        )
 
         console.print(f"Scraped [green]{len(items)}[/green] products")
 

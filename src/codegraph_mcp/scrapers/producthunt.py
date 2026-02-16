@@ -270,10 +270,6 @@ def run_ph_scraper(
                 collected += 1
                 chunk_count += 1
 
-                # Incremental save
-                if resume_path and collected % 100 == 0:
-                    _save_jsonl(items, resume_path)
-
                 if limit and collected >= limit:
                     break
 
@@ -288,6 +284,10 @@ def run_ph_scraper(
 
         period = f"{current_start.strftime('%Y-%m-%d')} → {current_end.strftime('%Y-%m-%d')}"
         print(f"  {period}: {chunk_count} products (total: {collected})", file=sys.stderr)
+
+        # Save after each weekly chunk (reliable for long runs)
+        if resume_path and chunk_count > 0:
+            _save_jsonl(items, resume_path)
 
         current_start = current_end
 
