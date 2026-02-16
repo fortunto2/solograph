@@ -26,12 +26,20 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+try:
+    import certifi
+
+    _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    _SSL_CTX = None
 
 GRAPHQL_URL = "https://api.producthunt.com/v2/api/graphql"
 OAUTH_TOKEN_URL = "https://api.producthunt.com/v2/oauth/token"
@@ -85,15 +93,16 @@ def _get_token(
     csecret = client_secret or os.environ.get("PH_CLIENT_SECRET", "")
     if not cid or not csecret:
         raise RuntimeError(
-            "PH credentials required. Set PH_TOKEN (developer token) "
-            "or both PH_CLIENT_ID + PH_CLIENT_SECRET env vars."
+            "PH credentials required. Set PH_TOKEN (developer token) or both PH_CLIENT_ID + PH_CLIENT_SECRET env vars."
         )
 
-    body = json.dumps({
-        "client_id": cid,
-        "client_secret": csecret,
-        "grant_type": "client_credentials",
-    }).encode()
+    body = json.dumps(
+        {
+            "client_id": cid,
+            "client_secret": csecret,
+            "grant_type": "client_credentials",
+        }
+    ).encode()
 
     req = Request(
         OAUTH_TOKEN_URL,
@@ -101,7 +110,7 @@ def _get_token(
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urlopen(req, timeout=15) as resp:
+    with urlopen(req, timeout=15, context=_SSL_CTX) as resp:
         data = json.loads(resp.read())
 
     _token = data["access_token"]
@@ -123,7 +132,7 @@ def _graphql(query: str, variables: dict, token: str) -> dict:
         },
         method="POST",
     )
-    with urlopen(req, timeout=30) as resp:
+    with urlopen(req, timeout=30, context=_SSL_CTX) as resp:
         data = json.loads(resp.read())
 
     if "errors" in data:
@@ -180,7 +189,7 @@ def run_ph_scraper(
             if items:
                 print(f"  Resumed: {len(items)} products from {resume_path}", file=sys.stderr)
 
-    today = datetime.now(timezone.utc)
+    today = datetime.now(UTC)
     start_date = today - timedelta(days=days)
 
     # Scrape in weekly chunks (avoids hitting pagination limits)
@@ -215,7 +224,7 @@ def run_ph_scraper(
                 request_count += 1
             except HTTPError as e:
                 if e.code == 429:
-                    print(f"  Rate limited, sleeping 60s...", file=sys.stderr)
+                    print("  Rate limited, sleeping 60s...", file=sys.stderr)
                     time.sleep(60)
                     continue
                 print(f"  HTTP {e.code} error, skipping chunk", file=sys.stderr)
@@ -295,7 +304,7 @@ def run_ph_scraper(
     if resume_path:
         _save_jsonl(items, resume_path)
 
-    total = posts_data.get("totalCount", "?") if 'posts_data' in dir() else "?"
+    total = posts_data.get("totalCount", "?") if "posts_data" in dir() else "?"
     print(f"  Total: {collected} products scraped ({request_count} API calls, PH has ~{total})", file=sys.stderr)
 
     return items
