@@ -38,15 +38,14 @@ dependencies = [
     "mcp>=1.26.0",
     # HTTP (web search)
     "httpx>=0.28.1",
-    # Web scraping
-    "scrapy>=2.12",
     # File watching
     "watchdog>=6.0",
 ]
 
 [project.optional-dependencies]
 mlx = ["mlx-embeddings>=0.0.3"]
-dev = ["pre-commit>=4.5.1"]
+scraper = ["scrapy>=2.12", "playwright>=1.49"]
+dev = ["pre-commit>=4.5.1", "scrapy>=2.12", "playwright>=1.49"]
 
 [project.urls]
 Homepage = "https://github.com/fortunto2/solograph"

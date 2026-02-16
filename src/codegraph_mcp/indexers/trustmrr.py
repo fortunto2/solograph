@@ -51,7 +51,9 @@ class TrustMRRIndexer:
                     f"Skipping [yellow]{len(skip_slugs)}[/yellow] already-indexed startups (use --force to re-scrape)"
                 )
 
-        items = run_spider(TrustMRRSpider, categories=categories, limit=limit, skip_slugs=skip_slugs)
+        # Full site ~4000 startups at 1.5s/req = ~100min → need large timeout
+        timeout = 7200 if not limit else 600
+        items = run_spider(TrustMRRSpider, timeout=timeout, categories=categories, limit=limit, skip_slugs=skip_slugs)
 
         console.print(f"Scraped [green]{len(items)}[/green] startups")
 

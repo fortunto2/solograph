@@ -1075,6 +1075,42 @@ def index_trustmrr_cmd(categories, limit, dry_run, force, backend):
     )
 
 
+@cli.command("index-producthunt")
+@click.option("--days", "-d", type=int, default=30, help="Days back to scrape (default: 30)")
+@click.option("--limit", "-n", type=int, default=None, help="Max products to scrape")
+@click.option("--dry-run", is_flag=True, help="Scrape only, don't insert into DB")
+@click.option("--force", is_flag=True, help="Re-scrape all, ignore already-indexed")
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
+def index_producthunt_cmd(days, limit, dry_run, force, backend):
+    """Scrape ProductHunt leaderboard into FalkorDB source graph.
+
+    \b
+    Requires: pip install playwright && playwright install chromium
+    PH is behind Cloudflare — uses headless Chrome via Playwright.
+
+    \b
+    Examples:
+      solograph-cli index-producthunt                  # Last 30 days
+      solograph-cli index-producthunt -d 7             # Last 7 days
+      solograph-cli index-producthunt -n 50            # Limit 50 products
+      solograph-cli index-producthunt --dry-run        # Preview only
+    """
+    from .indexers.producthunt import ProductHuntIndexer
+
+    indexer = ProductHuntIndexer(backend=backend)
+    indexer.run(
+        days=days,
+        limit=limit,
+        dry_run=dry_run,
+        force=force,
+    )
+
+
 @cli.command("source-delete")
 @click.argument("source_name")
 @click.option(
