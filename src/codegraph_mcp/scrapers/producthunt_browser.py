@@ -289,8 +289,30 @@ async def _wait_for_cf(page, timeout: int = 30) -> bool:
     return False
 
 
+EXTRACT_MAKERS_PAGE_JS = r"""
+() => {
+    const makers = [];
+    const seen = new Set();
+    for (const a of document.querySelectorAll('a[href^="/@"]')) {
+        const href = a.getAttribute('href');
+        if (href.includes('/reviews')) continue;
+        const username = href.replace(/^\//, '').replace(/^@/, '');
+        if (!username || seen.has(username)) continue;
+        seen.add(username);
+        makers.push({
+            username: username,
+            name: a.textContent.trim() || username,
+            url: `https://www.producthunt.com/@${username}`,
+            role: 'maker',
+        });
+    }
+    return makers;
+}
+"""
+
+
 async def _scrape_product(page, slug: str) -> dict | None:
-    """Navigate to /posts/{slug} and extract product data."""
+    """Navigate to /posts/{slug} for product data, then /products/{slug}/makers for real makers."""
     url = f"{BASE_URL}/posts/{slug}"
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -313,7 +335,23 @@ async def _scrape_product(page, slug: str) -> dict | None:
         if not data:
             return None
 
-        return _parse_product(slug, data)
+        result = _parse_product(slug, data)
+        if not result:
+            return None
+
+        # Step 2: Visit /products/{slug}/makers for clean maker list
+        try:
+            makers_url = f"{BASE_URL}/products/{slug}/makers"
+            await page.goto(makers_url, wait_until="domcontentloaded", timeout=15000)
+            if await _wait_for_cf(page, timeout=5):
+                await page.wait_for_timeout(2000)
+                real_makers = await page.evaluate(EXTRACT_MAKERS_PAGE_JS)
+                if real_makers:
+                    result["makers"] = real_makers
+        except Exception:
+            pass  # Keep makers from product page as fallback
+
+        return result
     except Exception as e:
         print(f"  [{slug}] Error: {e}", file=sys.stderr)
         return None
