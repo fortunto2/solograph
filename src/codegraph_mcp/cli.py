@@ -1251,6 +1251,176 @@ def index_producthunt_makers_cmd(source, limit, delay, resume, dry_run, backend)
     indexer.import_makers(profiles)
 
 
+@cli.command("scrape-ph-browser")
+@click.option(
+    "--mode",
+    type=click.Choice(["enrich", "discover"]),
+    default="enrich",
+    help="Mode: enrich existing JSONL or discover new products from leaderboard",
+)
+@click.option(
+    "--source",
+    "-s",
+    type=click.Path(exists=True),
+    default=None,
+    help="Source JSONL file with existing products (enrich mode)",
+)
+@click.option("--year", type=int, default=2026, help="Year for discover mode (default: 2026)")
+@click.option("--from-date", default=None, help="Start date YYYY-MM-DD (discover mode)")
+@click.option("--to-date", default=None, help="End date YYYY-MM-DD (discover mode, default: today)")
+@click.option("--limit", "-n", type=int, default=None, help="Max products to scrape")
+@click.option("--resume", is_flag=True, help="Skip already-enriched slugs (check output file)")
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Output JSONL path (default: ~/.solo/sources/ph_2026_enriched.jsonl)",
+)
+@click.option("--dry-run", is_flag=True, help="Scrape a few items and print, don't save")
+@click.option("--delay", type=float, default=2.0, help="Seconds between requests (default: 2)")
+@click.option("--concurrency", "-j", type=int, default=1, help="Parallel browser tabs (default: 1, try 3-5)")
+@click.option("--index", is_flag=True, help="Also import enriched items into FalkorDB")
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
+def scrape_ph_browser_cmd(
+    mode, source, year, from_date, to_date, limit, resume, output, dry_run, delay, concurrency, index, backend
+):
+    """Scrape ProductHunt product pages via HTTP (SSR HTML) to get non-redacted maker data.
+
+    \b
+    PH GraphQL API redacts maker info (~93% of 2026 products). Browser spider
+    extracts full data from SSR HTML: maker usernames, JSON-LD, topics, upvotes.
+
+    \b
+    Enrich mode — update existing JSONL with browser data:
+      solograph-cli scrape-ph-browser --mode enrich -s ph_2026_all.jsonl --limit 5 --dry-run
+      solograph-cli scrape-ph-browser --mode enrich -s ph_2026_all.jsonl --resume
+
+    \b
+    Discover mode — crawl daily leaderboard for new products:
+      solograph-cli scrape-ph-browser --mode discover --from-date 2026-01-10 --dry-run
+      solograph-cli scrape-ph-browser --mode discover --from-date 2026-01-10 --limit 500
+    """
+    import json as json_mod
+
+    from .indexers.producthunt import ProductHuntIndexer
+    from .scrapers.producthunt_browser import run_ph_browser_scraper
+
+    default_output = str(Path.home() / ".solo" / "sources" / "ph_2026_enriched.jsonl")
+    output_path = output or default_output
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    # Load existing items for enrich mode
+    original_items: list[dict] = []
+    slugs: list[str] = []
+
+    if mode == "enrich":
+        if not source:
+            default_source = str(Path.home() / ".solo" / "sources" / "ph_2026_all.jsonl")
+            if Path(default_source).exists():
+                source = default_source
+            else:
+                console.print("[red]Enrich mode requires --source JSONL file[/red]")
+                raise SystemExit(1)
+
+        for line in Path(source).read_text().splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    original_items.append(json_mod.loads(line))
+                except json_mod.JSONDecodeError:
+                    pass
+
+        slugs = [item.get("slug", "") for item in original_items if item.get("slug")]
+        console.print(f"Loaded [green]{len(original_items)}[/green] products from {source}")
+
+    # Resume: skip slugs already in output file
+    skip_slugs: list[str] = []
+    if resume and Path(output_path).exists():
+        for line in Path(output_path).read_text().splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    item = json_mod.loads(line)
+                    s = item.get("slug", "")
+                    if s and item.get("_source") == "browser":
+                        skip_slugs.append(s)
+                except json_mod.JSONDecodeError:
+                    pass
+        if skip_slugs:
+            console.print(f"Resuming: skipping [yellow]{len(skip_slugs)}[/yellow] already-enriched slugs")
+
+    # Build scraper kwargs
+    scraper_kwargs: dict = {
+        "limit": limit,
+        "skip_slugs": skip_slugs,
+        "resume_path": output_path if resume else None,
+        "delay": delay,
+        "concurrency": concurrency,
+    }
+
+    if mode == "enrich":
+        scraper_kwargs["slugs"] = slugs
+    else:
+        if from_date:
+            scraper_kwargs["from_date"] = from_date
+        if to_date:
+            scraper_kwargs["to_date"] = to_date
+
+    console.print(f"[bold]Scraping PH products (Playwright, {mode} mode)...[/bold]")
+    browser_items = run_ph_browser_scraper(**scraper_kwargs)
+    console.print(f"Scraped [green]{len(browser_items)}[/green] products")
+
+    if dry_run:
+        for item in browser_items[:10]:
+            makers = item.get("makers", [])
+            maker_str = ", ".join(f"@{m.get('username', '?')}" for m in makers[:3])
+            console.print(
+                f"  {item.get('name', '?')} | {item.get('upvotes', 0)}upvotes | "
+                f"makers: {maker_str or 'none'} | topics: {item.get('topics', '')[:40]}"
+            )
+        if len(browser_items) > 10:
+            console.print(f"  ... and {len(browser_items) - 10} more")
+        return
+
+    if not browser_items:
+        console.print("[yellow]No items scraped[/yellow]")
+        return
+
+    # Merge and save
+    indexer = ProductHuntIndexer(backend=backend)
+
+    if mode == "enrich" and original_items:
+        merged = indexer.enrich_items(original_items, browser_items)
+    else:
+        merged = browser_items
+
+    # Save JSONL
+    _save_jsonl_cli(merged, output_path)
+    console.print(f"Saved [green]{len(merged)}[/green] products to {output_path}")
+
+    # Optionally index into FalkorDB
+    if index:
+        console.print("\nIndexing into FalkorDB...")
+        indexer.import_items(merged)
+
+
+def _save_jsonl_cli(items: list[dict], path: str):
+    """Save items to JSONL file (atomic write)."""
+    import json as json_mod
+
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        for item in items:
+            f.write(json_mod.dumps(item, ensure_ascii=False) + "\n")
+    Path(tmp).rename(path)
+
+
 @cli.command("source-delete")
 @click.argument("source_name")
 @click.option(

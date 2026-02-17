@@ -154,6 +154,80 @@ class ProductHuntIndexer:
         )
         return makers
 
+    def enrich_items(
+        self,
+        original_items: list[dict],
+        enriched_items: list[dict],
+    ) -> list[dict]:
+        """Merge browser-scraped data into original API items.
+
+        For each enriched item (from browser spider), update the matching
+        original item with non-redacted makers, topics, upvotes, featuredAt.
+        Items not found in originals are appended (new discoveries).
+
+        Returns the merged list.
+        """
+        # Index enriched by slug for O(1) lookup
+        enriched_by_slug: dict[str, dict] = {}
+        for item in enriched_items:
+            slug = item.get("slug", "")
+            if slug:
+                enriched_by_slug[slug] = item
+
+        # Index originals by slug
+        originals_by_slug: dict[str, dict] = {}
+        for item in original_items:
+            slug = item.get("slug", "")
+            if slug:
+                originals_by_slug[slug] = item
+
+        merged_count = 0
+        added_count = 0
+
+        for slug, enriched in enriched_by_slug.items():
+            if slug in originals_by_slug:
+                orig = originals_by_slug[slug]
+                # Merge makers if enriched has non-empty makers
+                browser_makers = enriched.get("makers", [])
+                if browser_makers:
+                    orig_makers = orig.get("makers", [])
+                    # Check if original has redacted makers
+                    is_redacted = not orig_makers or (
+                        isinstance(orig_makers, list)
+                        and all(
+                            not m.get("username") or m.get("username") == "[REDACTED]"
+                            for m in orig_makers
+                            if isinstance(m, dict)
+                        )
+                    )
+                    if is_redacted:
+                        orig["makers"] = browser_makers
+                        merged_count += 1
+
+                # Merge topics if empty
+                if enriched.get("topics") and not orig.get("topics"):
+                    orig["topics"] = enriched["topics"]
+
+                # Update upvotes if browser has higher (more recent)
+                if enriched.get("upvotes", 0) > orig.get("upvotes", 0):
+                    orig["upvotes"] = enriched["upvotes"]
+
+                # Add featured_at if missing
+                if enriched.get("featured_at") and not orig.get("featured_at"):
+                    orig["featured_at"] = enriched["featured_at"]
+
+                # Fill missing fields
+                for field in ("tagline", "description", "website", "launch_date"):
+                    if enriched.get(field) and not orig.get(field):
+                        orig[field] = enriched[field]
+            else:
+                # New product from discover mode
+                original_items.append(enriched)
+                added_count += 1
+
+        console.print(f"Enriched [green]{merged_count}[/green] products, added [green]{added_count}[/green] new")
+        return original_items
+
     @staticmethod
     def _get_existing_slugs() -> list[str]:
         """Query FalkorDB for already-indexed ProductHunt slugs."""
