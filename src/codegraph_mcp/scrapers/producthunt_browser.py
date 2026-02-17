@@ -339,7 +339,8 @@ async def _scrape_product(page, slug: str) -> dict | None:
         if not result:
             return None
 
-        # Step 2: Visit /products/{slug}/makers for clean maker list
+        # Step 2: Visit /products/{slug}/makers to identify real makers
+        # Cross-reference: anyone on makers page → role="maker", others keep role
         try:
             makers_url = f"{BASE_URL}/products/{slug}/makers"
             await page.goto(makers_url, wait_until="domcontentloaded", timeout=15000)
@@ -347,7 +348,22 @@ async def _scrape_product(page, slug: str) -> dict | None:
                 await page.wait_for_timeout(2000)
                 real_makers = await page.evaluate(EXTRACT_MAKERS_PAGE_JS)
                 if real_makers:
-                    result["makers"] = real_makers
+                    real_maker_usernames = {m["username"] for m in real_makers}
+                    existing_usernames = {m["username"] for m in result["makers"]}
+                    # Update roles: if on makers page → maker, else keep original
+                    for m in result["makers"]:
+                        if m["username"] in real_maker_usernames:
+                            m["role"] = "maker"
+                        elif m["role"] == "maker":
+                            # Was tagged maker from JSON-LD but NOT on makers page
+                            m["role"] = "commenter"
+                    # Add any makers from the page not already in the list
+                    for m in real_makers:
+                        if m["username"] not in existing_usernames:
+                            result["makers"].append(m)
+                    # Re-sort: makers first, hunters, commenters
+                    order = {"maker": 0, "hunter": 1, "commenter": 2}
+                    result["makers"].sort(key=lambda x: order.get(x.get("role", "commenter"), 9))
         except Exception:
             pass  # Keep makers from product page as fallback
 
@@ -498,10 +514,16 @@ async def _run_browser_scraper(
                 item = await _scrape_product(page, slug)
                 if item:
                     items.append(item)
-                    makers_str = ", ".join(f"@{m.get('username', '?')}" for m in item.get("makers", [])[:3])
+                    all_people = item.get("makers", [])
+                    n_makers = sum(1 for m in all_people if m.get("role") == "maker")
+                    n_others = len(all_people) - n_makers
+                    makers_str = ", ".join(f"@{m.get('username', '?')}" for m in all_people if m.get("role") == "maker")
+                    role_str = f"{n_makers}m"
+                    if n_others:
+                        role_str += f"+{n_others}c"
                     print(
                         f"  [{i + 1}/{total}] {item['name']}: "
-                        f"{item.get('upvotes', 0)}↑, makers: {makers_str or 'none'}",
+                        f"{item.get('upvotes', 0)}↑, [{role_str}] {makers_str or 'none'}",
                         file=sys.stderr,
                     )
                 else:

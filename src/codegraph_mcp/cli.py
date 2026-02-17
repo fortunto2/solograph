@@ -1421,6 +1421,182 @@ def _save_jsonl_cli(items: list[dict], path: str):
     Path(tmp).rename(path)
 
 
+@cli.command("ph-makers-csv")
+@click.option(
+    "--products",
+    "-p",
+    type=click.Path(exists=True),
+    default=None,
+    help="Products JSONL file (default: ~/.solo/sources/ph_2026_enriched.jsonl)",
+)
+@click.option(
+    "--profiles",
+    type=click.Path(exists=True),
+    default=None,
+    help="Profiles JSONL file (default: ~/.solo/sources/ph_2026_profiles.jsonl)",
+)
+@click.option("--min-points", type=int, default=5, help="Minimum points (default: 5)")
+@click.option("--max-points", type=int, default=1000, help="Maximum points (default: 1000)")
+@click.option("--min-upvotes", type=int, default=5, help="Minimum product upvotes (default: 5)")
+@click.option("--max-upvotes", type=int, default=700, help="Maximum product upvotes (default: 700)")
+@click.option("--linkedin-only", is_flag=True, help="Only include profiles with LinkedIn")
+@click.option("--min-streak", type=int, default=0, help="Minimum streak (default: 0)")
+@click.option("--max-streak", type=int, default=None, help="Maximum streak (default: no limit)")
+@click.option("--output", "-o", type=click.Path(), default=None, help="Output CSV path")
+def ph_makers_csv_cmd(
+    products,
+    profiles,
+    min_points,
+    max_points,
+    min_upvotes,
+    max_upvotes,
+    linkedin_only,
+    min_streak,
+    max_streak,
+    output,
+):
+    """Generate CSV of PH makers/commenters with profile_type from product data.
+
+    \b
+    Cross-references products (with maker roles) and profile data to produce
+    a CSV with profile_type (maker/commenter), points, streak, LinkedIn, etc.
+
+    \b
+    Examples:
+      solograph-cli ph-makers-csv --min-points 5 --max-points 1000
+      solograph-cli ph-makers-csv --linkedin-only --min-streak 5 --max-streak 400
+      solograph-cli ph-makers-csv --min-upvotes 10 --max-upvotes 500 -o makers.csv
+    """
+    import csv
+    import json as json_mod
+
+    default_products = str(Path.home() / ".solo" / "sources" / "ph_2026_enriched.jsonl")
+    default_profiles = str(Path.home() / ".solo" / "sources" / "ph_2026_profiles.jsonl")
+    products_path = products or default_products
+    profiles_path = profiles or default_profiles
+
+    if not Path(products_path).exists():
+        console.print(f"[red]Products file not found: {products_path}[/red]")
+        raise SystemExit(1)
+
+    # Step 1: Build username → role map + products list from products JSONL
+    user_roles: dict[str, str] = {}  # username → "maker" if maker in ANY product, else "commenter"
+    user_products: dict[str, list[str]] = {}  # username → list of product names
+    user_upvotes: dict[str, int] = {}  # username → max upvotes of their products
+
+    for line in Path(products_path).read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json_mod.loads(line)
+        except json_mod.JSONDecodeError:
+            continue
+        product_name = item.get("name", item.get("slug", "?"))
+        upvotes = item.get("upvotes", 0)
+        if upvotes < min_upvotes or upvotes > max_upvotes:
+            continue
+        for m in item.get("makers", []):
+            username = m.get("username", "")
+            if not username:
+                continue
+            role = m.get("role", "maker")  # old data without role = assume maker
+            if role == "maker" or user_roles.get(username) != "maker":
+                user_roles[username] = "maker" if role == "maker" else user_roles.get(username, "commenter")
+            user_products.setdefault(username, []).append(product_name)
+            user_upvotes[username] = max(user_upvotes.get(username, 0), upvotes)
+
+    console.print(
+        f"Products: [green]{len(user_roles)}[/green] unique people from "
+        f"products with {min_upvotes}-{max_upvotes} upvotes"
+    )
+
+    # Step 2: Load profiles
+    profile_map: dict[str, dict] = {}
+    if Path(profiles_path).exists():
+        for line in Path(profiles_path).read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                prof = json_mod.loads(line)
+                username = prof.get("username", "")
+                if username:
+                    profile_map[username] = prof
+            except json_mod.JSONDecodeError:
+                pass
+        console.print(f"Profiles: [green]{len(profile_map)}[/green] loaded from {profiles_path}")
+    else:
+        console.print(f"[yellow]No profiles file: {profiles_path}[/yellow]")
+
+    # Step 3: Build merged rows with filters
+    rows = []
+    for username in sorted(user_roles.keys()):
+        profile = profile_map.get(username, {})
+        points = profile.get("points", 0)
+        streak = profile.get("streak", 0)
+        linkedin = profile.get("linkedin", "")
+
+        # Filters
+        if points < min_points or points > max_points:
+            continue
+        if linkedin_only and not linkedin:
+            continue
+        if streak < min_streak:
+            continue
+        if max_streak is not None and streak > max_streak:
+            continue
+
+        profile_type = user_roles.get(username, "commenter")
+        products_list = user_products.get(username, [])
+
+        rows.append(
+            {
+                "username": username,
+                "profile_type": profile_type,
+                "name": profile.get("headline", "") or "",
+                "points": points,
+                "streak": streak,
+                "linkedin": linkedin,
+                "twitter": profile.get("twitter", ""),
+                "github": profile.get("github", ""),
+                "website": profile.get("website", ""),
+                "is_maker_ph": profile.get("is_maker"),
+                "followers": profile.get("followers", 0),
+                "max_upvotes": user_upvotes.get(username, 0),
+                "products_count": len(products_list),
+                "products": "; ".join(products_list[:5]),
+                "profile_url": f"https://www.producthunt.com/@{username}",
+            }
+        )
+
+    if not rows:
+        console.print("[yellow]No matching profiles found[/yellow]")
+        return
+
+    # Step 4: Save CSV
+    if not output:
+        suffix = ""
+        if linkedin_only:
+            suffix += "_linkedin"
+        if min_streak > 0:
+            suffix += f"_streak{min_streak}"
+        output = str(Path.home() / ".solo" / "sources" / f"ph_2026_makers{suffix}.csv")
+
+    fieldnames = list(rows[0].keys())
+    with open(output, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    makers_count = sum(1 for r in rows if r["profile_type"] == "maker")
+    commenters_count = sum(1 for r in rows if r["profile_type"] == "commenter")
+    console.print(
+        f"\nSaved [green]{len(rows)}[/green] profiles to {output}\n"
+        f"  Makers: [green]{makers_count}[/green], Commenters: [cyan]{commenters_count}[/cyan]"
+    )
+
+
 @cli.command("source-delete")
 @click.argument("source_name")
 @click.option(
