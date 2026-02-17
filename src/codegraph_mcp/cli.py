@@ -1479,9 +1479,10 @@ def ph_makers_csv_cmd(
         console.print(f"[red]Products file not found: {products_path}[/red]")
         raise SystemExit(1)
 
-    # Step 1: Build username → role map + products list from products JSONL
+    # Step 1: Build username → role map + per-role product lists
     user_roles: dict[str, str] = {}  # username → "maker" if maker in ANY product, else "commenter"
-    user_products: dict[str, list[str]] = {}  # username → list of product names
+    user_maker_of: dict[str, list[str]] = {}  # products where user is maker
+    user_commenter_on: dict[str, list[str]] = {}  # products where user is commenter
     user_upvotes: dict[str, int] = {}  # username → max upvotes of their products
 
     for line in Path(products_path).read_text().splitlines():
@@ -1493,6 +1494,9 @@ def ph_makers_csv_cmd(
         except json_mod.JSONDecodeError:
             continue
         product_name = item.get("name", item.get("slug", "?"))
+        slug = item.get("slug", "")
+        product_url = f"https://www.producthunt.com/posts/{slug}" if slug else ""
+        product_label = f"{product_name} ({product_url})" if product_url else product_name
         upvotes = item.get("upvotes", 0)
         if upvotes < min_upvotes or upvotes > max_upvotes:
             continue
@@ -1501,9 +1505,13 @@ def ph_makers_csv_cmd(
             if not username:
                 continue
             role = m.get("role", "maker")  # old data without role = assume maker
-            if role == "maker" or user_roles.get(username) != "maker":
-                user_roles[username] = "maker" if role == "maker" else user_roles.get(username, "commenter")
-            user_products.setdefault(username, []).append(product_name)
+            if role == "maker":
+                user_roles[username] = "maker"
+                user_maker_of.setdefault(username, []).append(product_label)
+            else:
+                if user_roles.get(username) != "maker":
+                    user_roles[username] = "commenter"
+                user_commenter_on.setdefault(username, []).append(product_label)
             user_upvotes[username] = max(user_upvotes.get(username, 0), upvotes)
 
     console.print(
@@ -1548,7 +1556,8 @@ def ph_makers_csv_cmd(
             continue
 
         profile_type = user_roles.get(username, "commenter")
-        products_list = user_products.get(username, [])
+        maker_of = user_maker_of.get(username, [])
+        commenter_on = user_commenter_on.get(username, [])
 
         rows.append(
             {
@@ -1564,8 +1573,10 @@ def ph_makers_csv_cmd(
                 "is_maker_ph": profile.get("is_maker"),
                 "followers": profile.get("followers", 0),
                 "max_upvotes": user_upvotes.get(username, 0),
-                "products_count": len(products_list),
-                "products": "; ".join(products_list[:5]),
+                "maker_of_count": len(maker_of),
+                "commenter_on_count": len(commenter_on),
+                "maker_of": "; ".join(maker_of[:5]),
+                "commenter_on": "; ".join(commenter_on[:5]),
                 "profile_url": f"https://www.producthunt.com/@{username}",
             }
         )
