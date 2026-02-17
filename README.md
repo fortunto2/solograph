@@ -220,6 +220,49 @@ Separate FalkorDB graph at `~/.solo/sources/youtube/graph.db`:
 
 **VTT cache:** `~/.solo/sources/youtube/vtt/{videoId}.vtt` — persistent, reused on re-index.
 
+### ProductHunt Source Graph
+
+Separate FalkorDB graph at `~/.solo/sources/producthunt/graph.db`:
+
+| Node | Key Properties |
+|------|---------------|
+| `SourceDoc` | doc_id, title, url, content, tags, created, popularity, embedding (384-dim) |
+| `Maker` | username, name, headline, bio, points, streak_days, followers, twitter, linkedin |
+
+**Indexer:** `solograph-cli index-producthunt` — scrapes ProductHunt GraphQL API v2, maps products to SourceDoc with upvotes as popularity.
+
+```bash
+solograph-cli index-producthunt -d 30            # Last 30 days
+solograph-cli index-producthunt --all --resume    # Full 3-year dump with checkpoint
+solograph-cli import-producthunt data.jsonl       # Import from JSONL file
+```
+
+**Ranking:** Search results are boosted by popularity (upvotes). At equal semantic relevance, products with more upvotes rank higher.
+
+## Search Server
+
+HTTP API for vector search across all indexed sources. Designed to run as a Docker service alongside SearXNG.
+
+```bash
+# Standalone
+solograph-search  # starts on port 8002
+
+# Docker (in searxng-docker-tavily-adapter)
+docker compose up -d solograph-search
+```
+
+**Endpoints:**
+- `GET /search?q=AI+tool&source=producthunt&n=5` — semantic search (source optional)
+- `GET /sources` — list indexed sources with counts
+- `GET /health` — status
+
+**Popularity boost:** Products with more upvotes rank higher at equal relevance. Score = `cosine_similarity * 0.85 + log10(upvotes) * boost`. Fetch 3x candidates, re-rank, return top N.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SOLOGRAPH_SEARCH_PORT` | `8002` | HTTP server port |
+| `SOURCES_ROOT` | `~/.solo/sources` | FalkorDB graphs directory |
+
 ## Storage
 
 - **Code graph:** `~/.solo/codegraph.db` (FalkorDB)
@@ -227,6 +270,7 @@ Separate FalkorDB graph at `~/.solo/sources/youtube/graph.db`:
 - **KB vectors:** `{KB_PATH}/.solo/kb/graph.db` (FalkorDB)
 - **Project vectors:** `{project_path}/.solo/vectors/graph.db` (per-project FalkorDB)
 - **YouTube source:** `~/.solo/sources/youtube/graph.db` (FalkorDB) + `youtube/vtt/` (cached VTT files) + `youtube/channels.yaml`
+- **ProductHunt source:** `~/.solo/sources/producthunt/graph.db` (FalkorDB) — 26k+ products with upvote-based ranking
 
 ## Part of Solo Factory
 
