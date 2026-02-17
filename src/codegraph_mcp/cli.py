@@ -939,6 +939,8 @@ def source_list_cmd(backend):
         extra = ""
         if s.get("videos"):
             extra = f"  ({s['videos']} videos, {s.get('video_chunks', 0)} chunks)"
+        if s.get("makers"):
+            extra += f"  ({s['makers']} makers)"
         click.echo(f"  {s['source']:12s} {s['count']:4d} docs{extra}  {s['path']}")
         total += s["count"]
     click.echo(f"\n  Total: {total} documents")
@@ -1159,6 +1161,94 @@ def import_producthunt_cmd(jsonl_path, dry_run, backend):
 
     indexer = ProductHuntIndexer(backend=backend)
     indexer.import_items(items, dry_run=dry_run)
+
+
+@cli.command("index-producthunt-makers")
+@click.option(
+    "--source",
+    "-s",
+    type=click.Path(exists=True),
+    default=None,
+    help="JSONL file with scraped posts (to extract usernames)",
+)
+@click.option("--limit", "-n", type=int, default=None, help="Max profiles to scrape")
+@click.option("--delay", "-d", type=float, default=3.0, help="Seconds between requests (default: 3)")
+@click.option(
+    "--resume",
+    type=click.Path(),
+    default=None,
+    help="Resume file path (default: ~/.solo/sources/producthunt_makers.jsonl)",
+)
+@click.option("--dry-run", is_flag=True, help="Extract usernames only, don't scrape")
+@click.option(
+    "--backend",
+    type=click.Choice(["mlx", "st"]),
+    default=None,
+    help="Embedding backend",
+)
+def index_producthunt_makers_cmd(source, limit, delay, resume, dry_run, backend):
+    """Scrape ProductHunt maker profiles via Playwright and index into FalkorDB.
+
+    \b
+    Two-phase pipeline:
+      1. Extract unique usernames from scraped posts JSONL
+      2. Playwright visits /@username pages, extracts Apollo cache data
+
+    \b
+    Examples:
+      solograph-cli index-producthunt-makers --dry-run --limit 5
+      solograph-cli index-producthunt-makers --limit 10 --delay 3
+      solograph-cli index-producthunt-makers -s ~/dump.jsonl -n 20
+      solograph-cli index-producthunt-makers --resume ~/.solo/sources/makers.jsonl
+    """
+    from .indexers.producthunt import DEFAULT_RESUME_PATH, ProductHuntIndexer
+    from .scrapers.producthunt_makers import extract_makers_from_posts, run_maker_scraper
+
+    # Default resume path for makers
+    default_makers_resume = str(Path.home() / ".solo" / "sources" / "producthunt_makers.jsonl")
+    resume_path = resume or default_makers_resume
+
+    # Phase 1: extract usernames
+    jsonl_path = source or DEFAULT_RESUME_PATH
+    if not Path(jsonl_path).exists():
+        console.print(f"[red]Posts JSONL not found:[/red] {jsonl_path}")
+        console.print("[dim]Run: solograph-cli index-producthunt --resume  first[/dim]")
+        raise SystemExit(1)
+
+    usernames = extract_makers_from_posts(jsonl_path)
+    console.print(f"Extracted [green]{len(usernames)}[/green] unique maker usernames from {jsonl_path}")
+
+    if not usernames:
+        console.print("[yellow]No usernames found in JSONL[/yellow]")
+        return
+
+    if dry_run:
+        show = usernames[:20] if limit is None else usernames[:limit]
+        for u in show:
+            console.print(f"  @{u}")
+        if len(usernames) > len(show):
+            console.print(f"  ... and {len(usernames) - len(show)} more")
+        return
+
+    # Phase 2: Playwright scrape
+    Path(resume_path).parent.mkdir(parents=True, exist_ok=True)
+    console.print(f"Resume file: [dim]{resume_path}[/dim]")
+
+    profiles = run_maker_scraper(
+        usernames=usernames,
+        limit=limit,
+        resume_path=resume_path,
+        delay=delay,
+    )
+
+    console.print(f"Scraped [green]{len(profiles)}[/green] maker profiles")
+
+    if not profiles:
+        return
+
+    # Phase 3: index into FalkorDB
+    indexer = ProductHuntIndexer(backend=backend)
+    indexer.import_makers(profiles)
 
 
 @cli.command("source-delete")

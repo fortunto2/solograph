@@ -17,7 +17,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.progress import Progress
 
-from ..models import SourceDoc
+from ..models import MakerProfile, SourceDoc
 from ..vectors.source_index import SourceIndex
 
 console = Console()
@@ -114,6 +114,45 @@ class ProductHuntIndexer:
             f"Done: [green]{new_count} new[/green], {len(items) - new_count - skip_count} updated, {skip_count} skipped"
         )
         return items
+
+    def import_makers(
+        self,
+        makers: list[MakerProfile],
+        dry_run: bool = False,
+    ) -> list[MakerProfile]:
+        """Index maker profiles into FalkorDB source graph.
+
+        Creates Maker nodes with embeddings and links them to existing
+        SourceDoc products via CREATED edges.
+        """
+        if dry_run:
+            for m in makers[:10]:
+                console.print(
+                    f"  @{m.username} ({m.name}) — {m.points}pts, "
+                    f"{m.streak_days}d streak, {m.followers_count} followers"
+                )
+            if len(makers) > 10:
+                console.print(f"  ... and {len(makers) - 10} more")
+            return makers
+
+        idx = SourceIndex(backend=self.backend)
+        new_count = 0
+
+        with Progress(console=console) as progress:
+            task = progress.add_task("Indexing makers...", total=len(makers))
+            for maker in makers:
+                was_new = idx.upsert_maker(SOURCE_NAME, maker)
+                if was_new:
+                    new_count += 1
+                progress.advance(task)
+
+        total_makers = idx.maker_count(SOURCE_NAME)
+        console.print(
+            f"Done: [green]{new_count} new[/green], "
+            f"{len(makers) - new_count} updated "
+            f"(total: {total_makers} makers in graph)"
+        )
+        return makers
 
     @staticmethod
     def _get_existing_slugs() -> list[str]:

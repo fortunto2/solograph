@@ -14,7 +14,7 @@ from pathlib import Path
 
 from redislite.falkordb_client import FalkorDB
 
-from ..models import SourceDoc, VideoDoc
+from ..models import MakerProfile, SourceDoc, VideoDoc
 from .common import (
     DEFAULT_TOPICS,
     EMBEDDING_DIM,
@@ -63,6 +63,10 @@ class SourceIndex:
             "CREATE INDEX FOR (ch:Channel) ON (ch.handle)",
             # Tag indexes
             "CREATE INDEX FOR (t:Tag) ON (t.name)",
+            # Maker indexes (ProductHunt profiles)
+            "CREATE INDEX FOR (m:Maker) ON (m.username)",
+            f"CREATE VECTOR INDEX FOR (m:Maker) ON (m.embedding) "
+            f"OPTIONS {{dimension: {EMBEDDING_DIM}, similarityFunction: 'cosine'}}",
         ]
         for idx in indexes:
             try:
@@ -137,6 +141,103 @@ class SourceIndex:
             },
         )
         return was_new
+
+    def upsert_maker(
+        self,
+        source_name: str,
+        maker: MakerProfile,
+        embedding: list[float] | None = None,
+    ) -> bool:
+        """Upsert a Maker node. Returns True if new (inserted).
+
+        Also links maker to existing SourceDoc products via CREATED edges
+        by matching SourceDoc URLs containing the maker's product slugs.
+        """
+        graph = self._get_graph(source_name)
+
+        # Compute embedding from bio + headline
+        if embedding is None:
+            parts = [maker.name, maker.headline, maker.bio]
+            text = ". ".join(p for p in parts if p)
+            if not text:
+                text = maker.username
+            embedding = self.embed([text[:3000]])[0]
+
+        # Check if exists
+        result = graph.query(
+            "MATCH (m:Maker {username: $u}) RETURN m.username",
+            {"u": maker.username},
+        )
+        was_new = not bool(result.result_set)
+
+        # Upsert Maker node
+        graph.query(
+            "MERGE (m:Maker {username: $username}) "
+            "SET m.name = $name, m.headline = $headline, m.bio = $bio, "
+            "m.twitter = $twitter, m.linkedin = $linkedin, "
+            "m.website = $website, m.points = $points, "
+            "m.streak_days = $streak, m.followers = $followers, "
+            "m.following = $following, "
+            "m.products_count = $products, m.hunted_count = $hunted, "
+            "m.is_maker = $is_maker, m.avatar_url = $avatar, "
+            "m.created_at = $created, m.ph_user_id = $user_id, "
+            "m.embedding = vecf32($emb)",
+            {
+                "username": maker.username,
+                "name": maker.name,
+                "headline": maker.headline,
+                "bio": maker.bio[:500],
+                "twitter": maker.twitter_username,
+                "linkedin": maker.linkedin_url,
+                "website": maker.website_url,
+                "points": maker.points,
+                "streak": maker.streak_days,
+                "followers": maker.followers_count,
+                "following": maker.following_count,
+                "products": maker.products_count,
+                "hunted": maker.hunted_count,
+                "is_maker": maker.is_maker,
+                "avatar": maker.avatar_url,
+                "created": maker.created_at,
+                "user_id": maker.ph_user_id,
+                "emb": embedding,
+            },
+        )
+
+        # Link to existing SourceDoc products (producthunt-product)
+        # Match SourceDoc where the URL contains the maker's username
+        # This creates CREATED edges between Maker and their products
+        try:
+            graph.query(
+                "MATCH (m:Maker {username: $username}) "
+                "MATCH (d:SourceDoc) "
+                "WHERE d.source_type = 'producthunt-product' "
+                "AND d.content CONTAINS $username "
+                "MERGE (m)-[:CREATED]->(d)",
+                {"username": maker.username},
+            )
+        except Exception:
+            pass
+
+        return was_new
+
+    def maker_count(self, source_name: str) -> int:
+        """Count Maker nodes in a source graph."""
+        graph = self._get_graph(source_name)
+        try:
+            result = graph.query("MATCH (m:Maker) RETURN count(m)")
+            return result.result_set[0][0] if result.result_set else 0
+        except Exception:
+            return 0
+
+    def get_existing_maker_usernames(self, source_name: str) -> set[str]:
+        """Return all Maker usernames already in the graph."""
+        graph = self._get_graph(source_name)
+        try:
+            result = graph.query("MATCH (m:Maker) RETURN m.username")
+            return {row[0] for row in result.result_set if row[0]}
+        except Exception:
+            return set()
 
     def auto_tag_video(self, title: str, description: str, threshold: float = 0.3) -> list[tuple[str, float]]:
         """Zero-shot topic tagging via embedding similarity.
@@ -414,6 +515,49 @@ class SourceIndex:
             except Exception:
                 pass
 
+        # 3. Search Maker nodes (ProductHunt profiles)
+        mk_count_result = graph.query("MATCH (m:Maker) RETURN count(m)")
+        mk_count = mk_count_result.result_set[0][0] if mk_count_result.result_set else 0
+
+        if mk_count > 0:
+            fetch_n = min(n_results, mk_count)
+            cypher = (
+                f"CALL db.idx.vector.queryNodes('Maker', 'embedding', {fetch_n}, vecf32($q)) "
+                "YIELD node, score "
+                "RETURN node.username, node.name, node.headline, node.bio, "
+                "node.points, node.streak_days, node.followers, "
+                "node.twitter, node.linkedin, node.website, score "
+                f"LIMIT {n_results}"
+            )
+            try:
+                result = graph.query(cypher, params={"q": query_emb})
+                for row in result.result_set:
+                    (username, name, headline, bio, points, streak, followers, twitter, linkedin, website, score) = row
+                    content_parts = []
+                    if headline:
+                        content_parts.append(headline)
+                    if points:
+                        content_parts.append(f"{points} pts")
+                    if streak:
+                        content_parts.append(f"{streak}d streak")
+                    if followers:
+                        content_parts.append(f"{followers} followers")
+                    output.append(
+                        {
+                            "doc_id": f"maker:{username or ''}",
+                            "source_type": "producthunt-maker",
+                            "source_name": "producthunt",
+                            "title": f"{name or username or ''} (@{username or ''})",
+                            "url": f"https://www.producthunt.com/@{username or ''}",
+                            "content": " | ".join(content_parts),
+                            "created": "",
+                            "tags": "",
+                            "relevance": round(1 - score, 4),
+                        }
+                    )
+            except Exception:
+                pass
+
         # Merge by relevance
         output.sort(key=lambda r: r.get("relevance", 0), reverse=True)
         return output[:n_results]
@@ -529,11 +673,15 @@ class SourceIndex:
             if vc["videos"] > 0:
                 entry["videos"] = vc["videos"]
                 entry["video_chunks"] = vc["chunks"]
+            # Enrich with maker count
+            mc = self.maker_count(src)
+            if mc > 0:
+                entry["makers"] = mc
             result.append(entry)
         return result
 
     def count(self, source_name: str | None = None) -> int:
-        """Count total searchable items (SourceDoc + Video nodes)."""
+        """Count total searchable items (SourceDoc + Video + Maker nodes)."""
         if source_name:
             graph = self._get_graph(source_name)
             sd = graph.query("MATCH (d:SourceDoc) RETURN count(d)")
@@ -543,7 +691,8 @@ class SourceIndex:
                 v_count = vr.result_set[0][0] if vr.result_set else 0
             except Exception:
                 v_count = 0
-            return sd_count + v_count
+            m_count = self.maker_count(source_name)
+            return sd_count + v_count + m_count
 
         return sum(self.count(src) for src in self._discover_sources())
 

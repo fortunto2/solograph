@@ -158,6 +158,28 @@ class VideoDoc(BaseModel):
     transcript: str = ""  # transient — used during indexing, not stored on node
 
 
+class MakerProfile(BaseModel):
+    """A ProductHunt maker profile (scraped via Playwright)."""
+
+    username: str  # PH handle
+    name: str = ""
+    headline: str = ""
+    bio: str = ""
+    twitter_username: str = ""
+    linkedin_url: str = ""
+    website_url: str = ""
+    points: int = 0  # karmaBadge.score
+    streak_days: int = 0  # visitStreak.duration
+    followers_count: int = 0
+    following_count: int = 0
+    products_count: int = 0  # products made
+    hunted_count: int = 0  # submitted posts
+    is_maker: bool = False
+    avatar_url: str = ""
+    created_at: str = ""
+    ph_user_id: str = ""
+
+
 class ScanResult(BaseModel):
     """Aggregated result from scanning a project."""
 
