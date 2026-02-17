@@ -270,6 +270,7 @@ def run_ph_scraper(
                 # Parse date
                 created = node.get("createdAt", "")
                 launch_date = created[:10] if created else ""
+                featured_at = node.get("featuredAt", "")
 
                 item = {
                     "slug": slug,
@@ -283,6 +284,8 @@ def run_ph_scraper(
                     "rating": node.get("reviewsRating", 0),
                     "daily_rank": node.get("dailyRank"),
                     "weekly_rank": node.get("weeklyRank"),
+                    "featured": bool(featured_at),
+                    "featured_at": featured_at[:10] if featured_at else "",
                     "website": node.get("website", ""),
                     "url": node.get("url", f"https://www.producthunt.com/posts/{slug}"),
                     "launch_date": launch_date,
