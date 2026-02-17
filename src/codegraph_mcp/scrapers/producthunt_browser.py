@@ -35,7 +35,10 @@ EXTRACT_PRODUCT_JS = """
             const data = JSON.parse(s.textContent);
             const items = Array.isArray(data) ? data : [data];
             for (const item of items) {
-                if (item['@type'] === 'WebApplication' || item['@type'] === 'SoftwareApplication') {
+                const t = item['@type'];
+                const types = Array.isArray(t) ? t : [t];
+                if (types.some(x => ['WebApplication', 'SoftwareApplication', 'Product'].includes(x))
+                    && item.author) {
                     result.jsonLd = item;
                     break;
                 }
@@ -43,22 +46,57 @@ EXTRACT_PRODUCT_JS = """
         } catch(e) {}
     }
 
-    // Maker links: /@username
-    const makerLinks = document.querySelectorAll('a[href^="/@"]');
-    const makers = [];
+    // Collect all /@username links with role detection
+    const allUserLinks = document.querySelectorAll('a[href^="/@"]');
+    const people = [];
     const seenUsernames = new Set();
     const skipPaths = new Set(['', 'topics', 'posts', 'search', 'newsletter', 'login', 'signup']);
-    for (const a of makerLinks) {
-        const username = a.getAttribute('href').replace(/^\\//, '').replace(/^@/, '');
+
+    // JSON-LD authors = confirmed makers
+    const makerUsernames = new Set();
+    if (result.jsonLd) {
+        let authors = result.jsonLd.author || [];
+        if (!Array.isArray(authors)) authors = [authors];
+        for (const a of authors) {
+            if (a && a.url && a.url.includes('/@')) {
+                const u = a.url.split('/@').pop().replace(/\\/$/, '');
+                if (u) makerUsernames.add(u);
+            }
+        }
+    }
+
+    // Hunter detection: look for "Hunter" label near a /@username link
+    const hunterUsernames = new Set();
+    const bodyText = document.body.innerText || '';
+    // PH shows "Hunted by @username" or has a Hunter badge section
+    const hunterMatch = bodyText.match(/(?:Hunted by|Hunter)\\s+([A-Za-z0-9_]+)/i);
+    if (hunterMatch) hunterUsernames.add(hunterMatch[1]);
+
+    for (const a of allUserLinks) {
+        const href = a.getAttribute('href');
+        // Skip /reviews links like /@user/reviews
+        if (href.includes('/reviews')) continue;
+        const username = href.replace(/^\\//, '').replace(/^@/, '');
         if (!username || seenUsernames.has(username) || skipPaths.has(username)) continue;
         seenUsernames.add(username);
-        makers.push({
+
+        let role = 'commenter';
+        if (makerUsernames.has(username)) role = 'maker';
+        else if (hunterUsernames.has(username)) role = 'hunter';
+
+        people.push({
             username: username,
             name: a.textContent.trim() || username,
             url: `https://www.producthunt.com/@${username}`,
+            role: role,
         });
     }
-    result.makers = makers;
+    // Sort: makers first, then hunters, then commenters
+    people.sort((a, b) => {
+        const order = {maker: 0, hunter: 1, commenter: 2};
+        return (order[a.role] || 9) - (order[b.role] || 9);
+    });
+    result.makers = people;
 
     // Topics
     const topicLinks = document.querySelectorAll('a[href*="/topics/"]');
@@ -154,7 +192,7 @@ def _parse_product(slug: str, data: dict) -> dict | None:
     makers = data.get("makers", [])
     topics = data.get("topics", [])
 
-    # Enrich makers from JSON-LD authors
+    # Enrich makers from JSON-LD authors (confirmed makers)
     if json_ld:
         seen = {m["username"] for m in makers}
         authors = json_ld.get("author", [])
@@ -169,11 +207,13 @@ def _parse_product(slug: str, data: dict) -> dict | None:
                 username = url.split("/@")[-1].rstrip("/")
                 if username and username not in seen:
                     seen.add(username)
-                    makers.append({"username": username, "name": name or username, "url": url})
-                elif username in seen and name:
+                    makers.append({"username": username, "name": name or username, "url": url, "role": "maker"})
+                elif username in seen:
                     for m in makers:
-                        if m["username"] == username and m["name"] == username:
-                            m["name"] = name
+                        if m["username"] == username:
+                            m["role"] = "maker"
+                            if name and m["name"] == username:
+                                m["name"] = name
                             break
 
     # Name
