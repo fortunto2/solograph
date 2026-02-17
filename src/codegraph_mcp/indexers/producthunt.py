@@ -236,4 +236,5 @@ class ProductHuntIndexer:
             created=item.get("launch_date", ""),
             tags=",".join(tags),
             embed_text=embed_text[:3000],
+            popularity=item.get("upvotes", 0),
         )

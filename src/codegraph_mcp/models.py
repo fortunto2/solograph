@@ -132,6 +132,7 @@ class SourceDoc(BaseModel):
     created: str = ""
     tags: str = Field("", description="Comma-separated tags")
     embed_text: str = Field("", description="Full text for embedding (up to 3000 chars)")
+    popularity: int = Field(0, description="Popularity score (e.g. upvotes) for search ranking boost")
 
 
 class VideoChapter(BaseModel):

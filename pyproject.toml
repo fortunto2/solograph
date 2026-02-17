@@ -55,6 +55,7 @@ Repository = "https://github.com/fortunto2/solograph"
 [project.scripts]
 solograph = "codegraph_mcp.server:main"
 solograph-cli = "codegraph_mcp.cli:cli"
+solograph-search = "codegraph_mcp.search_server:main"
 
 [build-system]
 requires = ["hatchling"]

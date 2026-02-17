@@ -127,7 +127,8 @@ class SourceIndex:
             "SET d.source_type = $stype, d.source_name = $sname, "
             "d.title = $title, d.url = $url, "
             "d.tags = $tags, d.created = $created, "
-            "d.content = $content, d.embedding = vecf32($emb)",
+            "d.content = $content, d.popularity = $pop, "
+            "d.embedding = vecf32($emb)",
             {
                 "did": doc.doc_id,
                 "stype": doc.source_type,
@@ -137,6 +138,7 @@ class SourceIndex:
                 "tags": doc.tags,
                 "created": doc.created,
                 "content": doc.content[:500],
+                "pop": doc.popularity,
                 "emb": embedding,
             },
         )
@@ -425,18 +427,30 @@ class SourceIndex:
         sd_count = sd_count_result.result_set[0][0] if sd_count_result.result_set else 0
 
         if sd_count > 0:
-            fetch_n = min(n_results, sd_count)
+            # Fetch 3x candidates for popularity re-ranking
+            fetch_n = min(n_results * 3, sd_count)
             cypher = (
                 f"CALL db.idx.vector.queryNodes('SourceDoc', 'embedding', {fetch_n}, vecf32($q)) "
                 "YIELD node, score "
                 "RETURN node.doc_id, node.source_type, node.source_name, "
-                "node.title, node.url, node.content, node.created, node.tags, score "
-                f"LIMIT {n_results}"
+                "node.title, node.url, node.content, node.created, node.tags, "
+                "node.popularity, score "
+                f"LIMIT {fetch_n}"
             )
             try:
                 result = graph.query(cypher, params={"q": query_emb})
                 for row in result.result_set:
-                    doc_id, stype, sname, title, url, content, created, tags, score = row
+                    doc_id, stype, sname, title, url, content, created, tags, popularity, score = row
+                    cosine_rel = 1 - score
+                    # Popularity boost: log-scaled upvotes contribute up to ~0.15
+                    pop = popularity or 0
+                    if pop > 0:
+                        import math
+                        pop_boost = min(math.log10(pop + 1) / 25, 0.15)
+                    else:
+                        pop_boost = 0
+                    final_rel = cosine_rel * 0.85 + pop_boost
+
                     output.append(
                         {
                             "doc_id": doc_id or "",
@@ -447,9 +461,12 @@ class SourceIndex:
                             "content": (content or "")[:300],
                             "created": created or "",
                             "tags": tags or "",
-                            "relevance": round(1 - score, 4),
+                            "relevance": round(final_rel, 4),
                         }
                     )
+                # Re-sort by boosted relevance and trim
+                output.sort(key=lambda r: r["relevance"], reverse=True)
+                output = output[:n_results]
             except Exception:
                 pass
 
