@@ -194,8 +194,8 @@ def run_ph_scraper(
     today = datetime.now(UTC)
     start_date = today - timedelta(days=days)
 
-    # Scrape in weekly chunks (avoids hitting pagination limits)
-    chunk_days = 7
+    # Chunk size: 1 day for all posts, 7 days for featured-only
+    chunk_days = 1 if not featured_only else 7
     collected = len(items)
     request_count = 0
 
