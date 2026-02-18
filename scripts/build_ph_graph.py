@@ -266,12 +266,6 @@ def main():
     data_root = _default_data_root()
     if args.file is None:
         args.file = str(data_root / "ph" / "final" / f"ph_{args.year}_merged.jsonl")
-        # Fallback: try legacy path
-        if not Path(args.file).exists():
-            legacy = Path.home() / ".solo" / "sources" / f"ph_{args.year}_merged.jsonl"
-            if legacy.exists():
-                args.file = str(legacy)
-                print(f"Using legacy path: {args.file}")
     if args.source is None:
         args.source = f"producthunt-{args.year}"
 
