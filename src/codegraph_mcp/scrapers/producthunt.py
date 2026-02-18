@@ -57,7 +57,7 @@ query($first: Int!, $after: String, $postedAfter: DateTime, $postedBefore: DateT
         id slug name tagline description
         votesCount commentsCount reviewsCount reviewsRating
         website url
-        createdAt launchedAt featuredAt
+        createdAt featuredAt
         dailyRank weeklyRank
         makers { username name url followersCount }
         productLinks { type url }
@@ -269,10 +269,9 @@ def run_ph_scraper(
 
                 # Parse dates
                 created = node.get("createdAt", "")
-                launched = node.get("launchedAt", "")
                 featured_at = node.get("featuredAt", "")
-                launch_date = (launched or created or "")[:10]
                 created_at = created[:10] if created else ""
+                launch_date = (featured_at or created or "")[:10]
 
                 # Determine product status: featured > launched > created
                 daily_rank = node.get("dailyRank") or 0
