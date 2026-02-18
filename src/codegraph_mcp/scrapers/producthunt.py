@@ -57,7 +57,7 @@ query($first: Int!, $after: String, $postedAfter: DateTime, $postedBefore: DateT
         id slug name tagline description
         votesCount commentsCount reviewsCount reviewsRating
         website url
-        createdAt featuredAt
+        createdAt launchedAt featuredAt
         dailyRank weeklyRank
         makers { username name url followersCount }
         productLinks { type url }
@@ -267,10 +267,12 @@ def run_ph_scraper(
                     if link_type and pl.get("url"):
                         links[link_type] = pl["url"]
 
-                # Parse date
+                # Parse dates
                 created = node.get("createdAt", "")
-                launch_date = created[:10] if created else ""
+                launched = node.get("launchedAt", "")
                 featured_at = node.get("featuredAt", "")
+                launch_date = (launched or created or "")[:10]
+                created_at = created[:10] if created else ""
 
                 # Determine product status: featured > launched > created
                 daily_rank = node.get("dailyRank") or 0
@@ -295,6 +297,7 @@ def run_ph_scraper(
                     "weekly_rank": node.get("weeklyRank"),
                     "featured": bool(featured_at),
                     "featured_at": featured_at[:10] if featured_at else "",
+                    "created_at": created_at,
                     "website": node.get("website", ""),
                     "url": node.get("url", f"https://www.producthunt.com/posts/{slug}"),
                     "launch_date": launch_date,

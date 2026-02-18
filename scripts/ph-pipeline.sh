@@ -230,6 +230,7 @@ NEW_FIELDS = [
     "comments", "daily_rank", "weekly_rank", "rating",
     "reviews_count", "featured", "product_links",
     "comments_count", "created_at", "featured_at",
+    "product_status", "launch_date",
 ]
 
 merged = {}
@@ -240,8 +241,10 @@ from_api = 0
 for slug, item in all_enriched.items():
     if slug in all_api:
         for field in NEW_FIELDS:
-            if field in all_api[slug] and field not in item:
-                item[field] = all_api[slug][field]
+            api_val = all_api[slug].get(field)
+            cur_val = item.get(field)
+            if api_val and not cur_val:
+                item[field] = api_val
         sv_up = all_api[slug].get("upvotes", 0) or 0
         if (sv_up) > (item.get("upvotes", 0) or 0):
             item["upvotes"] = sv_up

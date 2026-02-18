@@ -97,6 +97,14 @@ def build_graph(
         for i, item in enumerate(items):
             doc = ProductHuntIndexer._to_source_doc(item)
             if not doc:
+                slug = item.get("slug", "?")
+                if not item.get("slug"):
+                    reason = "no slug"
+                elif not item.get("name"):
+                    reason = "no name"
+                else:
+                    reason = "conversion failed"
+                print(f"  SKIP: {slug} ({reason})")
                 skip_count += 1
                 continue
             doc.source_name = source
@@ -105,24 +113,29 @@ def build_graph(
             if was_new:
                 new_count += 1
 
-            # Set extra fields (product_status, daily_rank, weekly_rank)
+            # Set extra fields (product_status, daily_rank, weekly_rank, created_at)
             doc_id = hashlib.md5(f"ph:{item.get('slug', '')}".encode()).hexdigest()
             status = str(item.get("product_status", "")) or "launched"
             daily_rank = item.get("daily_rank") or 0
             weekly_rank = item.get("weekly_rank") or 0
             comments_count = item.get("comments_count") or item.get("comments") or 0
+            created_at = item.get("created_at", "") or ""
+            featured_at = item.get("featured_at", "") or ""
 
             graph.query(
                 "MATCH (d:SourceDoc {doc_id: $did}) "
                 "SET d.product_status = $status, "
                 "d.daily_rank = $dr, d.weekly_rank = $wr, "
-                "d.comments_count = $cc",
+                "d.comments_count = $cc, "
+                "d.created_at = $ca, d.featured_at = $fa",
                 {
                     "did": doc_id,
                     "status": status,
                     "dr": daily_rank,
                     "wr": weekly_rank,
                     "cc": comments_count,
+                    "ca": created_at,
+                    "fa": featured_at,
                 },
             )
 
@@ -201,8 +214,8 @@ def build_graph(
                     {"u": username, "did": doc_id},
                 )
                 edge_count += 1
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  EDGE FAIL: {username} -[{edge_type}]-> {slug}: {e}")
 
         if (i + 1) % 1000 == 0:
             print(f"  Users: {i+1}/{len(user_products)} ({edge_count} edges)")
