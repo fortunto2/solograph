@@ -107,7 +107,7 @@ def build_graph(
 
             # Set extra fields (product_status, daily_rank, weekly_rank)
             doc_id = hashlib.md5(f"ph:{item.get('slug', '')}".encode()).hexdigest()
-            status = str(item.get("product_status", ""))
+            status = str(item.get("product_status", "")) or "launched"
             daily_rank = item.get("daily_rank") or 0
             weekly_rank = item.get("weekly_rank") or 0
             comments_count = item.get("comments_count") or item.get("comments") or 0

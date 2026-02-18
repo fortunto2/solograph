@@ -253,8 +253,15 @@ for slug, item in all_enriched.items():
 for slug, item in all_api.items():
     if slug not in merged:
         item["_source"] = "api_only"
+        if not item.get("product_status"):
+            item["product_status"] = "launched"
         merged[slug] = item
         from_api += 1
+
+# Ensure all products have a status
+for slug, item in merged.items():
+    if not item.get("product_status"):
+        item["product_status"] = "launched"
 
 out = ph / "final" / f"ph_{year}_merged.jsonl"
 tmp = out.with_suffix(".jsonl.tmp")

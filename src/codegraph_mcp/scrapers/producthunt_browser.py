@@ -253,7 +253,13 @@ def _parse_product(slug: str, data: dict) -> dict | None:
     # Determine product status: featured > launched > created
     is_featured = data.get("isFeatured", False)
     created_at = data.get("createdAt", "")
-    product_status = "featured" if (is_featured or featured_at) else "created"
+    daily_rank = data.get("dailyRank", 0) or 0
+    if is_featured or featured_at:
+        product_status = "featured"
+    elif daily_rank > 0:
+        product_status = "launched"
+    else:
+        product_status = "created"
 
     return {
         "slug": slug,

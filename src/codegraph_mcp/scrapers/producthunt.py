@@ -272,6 +272,15 @@ def run_ph_scraper(
                 launch_date = created[:10] if created else ""
                 featured_at = node.get("featuredAt", "")
 
+                # Determine product status: featured > launched > created
+                daily_rank = node.get("dailyRank") or 0
+                if featured_at:
+                    product_status = "featured"
+                elif daily_rank > 0:
+                    product_status = "launched"
+                else:
+                    product_status = "created"
+
                 item = {
                     "slug": slug,
                     "name": node.get("name", ""),
@@ -282,13 +291,14 @@ def run_ph_scraper(
                     "comments": node.get("commentsCount", 0),
                     "reviews_count": node.get("reviewsCount", 0),
                     "rating": node.get("reviewsRating", 0),
-                    "daily_rank": node.get("dailyRank"),
+                    "daily_rank": daily_rank,
                     "weekly_rank": node.get("weeklyRank"),
                     "featured": bool(featured_at),
                     "featured_at": featured_at[:10] if featured_at else "",
                     "website": node.get("website", ""),
                     "url": node.get("url", f"https://www.producthunt.com/posts/{slug}"),
                     "launch_date": launch_date,
+                    "product_status": product_status,
                     "makers": makers_list,
                     "product_links": links,
                     "thumbnail": (node.get("thumbnail") or {}).get("url", ""),
