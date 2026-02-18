@@ -2,7 +2,7 @@
 # Usage: make help
 
 .PHONY: help lint format check typecheck test hooks clean \
-	ph-discover ph-enrich ph-profiles ph-csv ph-pipeline ph-status
+	ph-discover ph-enrich ph-profiles ph-merge ph-csv ph-pipeline ph-status
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -66,18 +66,14 @@ ph-enrich: ## Enrich API products with browser data (J=3)
 ph-profiles: ## Scrape maker/commenter profiles (J=3)
 	scripts/ph-pipeline.sh profiles -j $(J) -d $(D) $(if $(LIMIT),--limit $(LIMIT))
 
+ph-merge: ## Merge enriched + API data into final file
+	scripts/ph-pipeline.sh merge
+
 ph-csv: ## Generate filtered CSVs (MIN_PTS=5 MAX_PTS=1000 MIN_UP=5 MAX_UP=700)
-	@echo "Generating CSVs..."
-	uv run solograph-cli ph-makers-csv --min-points $(MIN_PTS) --max-points $(MAX_PTS) --min-upvotes $(MIN_UP) --max-upvotes $(MAX_UP)
-	uv run solograph-cli ph-makers-csv --min-points $(MIN_PTS) --max-points $(MAX_PTS) --min-upvotes $(MIN_UP) --max-upvotes $(MAX_UP) --linkedin-only
-	uv run solograph-cli ph-makers-csv --min-points $(MIN_PTS) --max-points $(MAX_PTS) --min-upvotes $(MIN_UP) --max-upvotes $(MAX_UP) --linkedin-only --min-streak 5 --max-streak 400
-	@echo ""; ls -lh ~/.solo/sources/ph_$(YEAR)_makers*.csv
+	scripts/ph-pipeline.sh csv
 
 ph-pipeline: ## Full pipeline: discover -> enrich -> profiles -> csv
 	scripts/ph-pipeline.sh all -j $(J) -d $(D) $(if $(FROM),--from $(FROM)) $(if $(TO),--to $(TO)) $(if $(LIMIT),--limit $(LIMIT))
 
 ph-status: ## Show current PH data file stats
-	@echo "=== ProductHunt Data Files ==="
-	@for f in ~/.solo/sources/ph_$(YEAR)_*.jsonl ~/.solo/sources/ph_$(YEAR)_*.csv; do \
-		[ -f "$$f" ] && printf "  %-50s %s lines\n" "$$(basename $$f)" "$$(wc -l < $$f)" || true; \
-	done
+	@scripts/ph-pipeline.sh status
