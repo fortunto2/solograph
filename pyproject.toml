@@ -12,6 +12,7 @@ keywords = ["mcp", "code-intelligence", "codegraph", "semantic-search", "claude-
 dependencies = [
     # Graph Database + Vector Search
     "falkordblite>=0.4",
+    "redis<7.1",  # 7.1+ breaks UnixDomainSocketConnection (no .port attr)
     # Embeddings
     "sentence-transformers>=5.2.2",
     "semantic-text-splitter>=0.29.0",
