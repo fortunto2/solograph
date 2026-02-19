@@ -1484,6 +1484,7 @@ def ph_makers_csv_cmd(
     user_maker_of: dict[str, list[str]] = {}  # products where user is maker
     user_commenter_on: dict[str, list[str]] = {}  # products where user is commenter
     user_upvotes: dict[str, int] = {}  # username → max upvotes of their products
+    user_featured: dict[str, int] = {}  # username → count of featured products
 
     for line in Path(products_path).read_text().splitlines():
         line = line.strip()
@@ -1496,7 +1497,9 @@ def ph_makers_csv_cmd(
         product_name = item.get("name", item.get("slug", "?"))
         slug = item.get("slug", "")
         product_url = f"https://www.producthunt.com/posts/{slug}" if slug else ""
-        product_label = f"{product_name} ({product_url})" if product_url else product_name
+        featured = bool(item.get("featured") or item.get("featured_at"))
+        feat_tag = " [F]" if featured else ""
+        product_label = f"{product_name}{feat_tag} ({product_url})" if product_url else f"{product_name}{feat_tag}"
         upvotes = item.get("upvotes", 0)
         if upvotes < min_upvotes or upvotes > max_upvotes:
             continue
@@ -1513,6 +1516,9 @@ def ph_makers_csv_cmd(
                     user_roles[username] = "commenter"
                 user_commenter_on.setdefault(username, []).append(product_label)
             user_upvotes[username] = max(user_upvotes.get(username, 0), upvotes)
+            if featured:
+                user_featured.setdefault(username, 0)
+                user_featured[username] += 1
 
     console.print(
         f"Products: [green]{len(user_roles)}[/green] unique people from "
@@ -1573,6 +1579,7 @@ def ph_makers_csv_cmd(
                 "is_maker_ph": profile.get("is_maker"),
                 "followers": profile.get("followers", 0),
                 "max_upvotes": user_upvotes.get(username, 0),
+                "featured_count": user_featured.get(username, 0),
                 "maker_of_count": len(maker_of),
                 "commenter_on_count": len(commenter_on),
                 "maker_of": "; ".join(maker_of[:5]),
