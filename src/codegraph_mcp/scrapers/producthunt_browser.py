@@ -734,6 +734,7 @@ async def _scrape_profile(page, username: str) -> dict | None:
             "username": username,
             "profile_url": url,
             "headline": data.get("headline", ""),
+            "about": data.get("ogDesc", ""),
             "linkedin": data.get("socials", {}).get("linkedin", ""),
             "twitter": (f"https://x.com/{data['twitterUsername']}" if data.get("twitterUsername") else "")
             or data.get("socials", {}).get("twitter", ""),
