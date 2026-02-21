@@ -100,7 +100,7 @@ def init_embedding_function(backend: str | None = None):
     # Sentence Transformers fallback
     from sentence_transformers import SentenceTransformer
 
-    st_model = SentenceTransformer("all-MiniLM-L6-v2")
+    st_model = SentenceTransformer("intfloat/multilingual-e5-small")
 
     def st_embed(texts: list[str]) -> list[list[float]]:
         embeddings = st_model.encode(texts)
