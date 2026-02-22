@@ -11,7 +11,8 @@ Usage via CLI:
     solograph-cli index-youtube --import-file FILE           # Import pre-processed data
     solograph-cli index-youtube --backend st                 # Force sentence-transformers
 
-Requires: SearXNG tunnel active for transcript fetching, yt-dlp for metadata.
+Discovery: yt-dlp (primary) → SearXNG (fallback, optional).
+Transcript: yt-dlp VTT (primary) → SearXNG /transcript (fallback, optional).
 """
 
 import hashlib
@@ -186,6 +187,56 @@ def fetch_transcript(searxng_url: str, video_id: str) -> str | None:
 def check_ytdlp() -> bool:
     """Check if yt-dlp is available on PATH."""
     return shutil.which("yt-dlp") is not None
+
+
+def fetch_channel_videos_ytdlp(channel_handle: str, limit: int = 10) -> list[dict]:
+    """Discover latest videos from a YouTube channel via yt-dlp flat playlist.
+
+    Returns list of {"url": str, "title": str, "id": str} dicts.
+    No network requests beyond YouTube — no SearXNG needed.
+    """
+    import json
+    import subprocess
+
+    url = f"https://www.youtube.com/@{channel_handle}/videos"
+    try:
+        result = subprocess.run(
+            [
+                "yt-dlp",
+                "--flat-playlist",
+                "--dump-json",
+                "-I",
+                f":{limit}",
+                "--no-warnings",
+                "--quiet",
+                url,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        videos = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                vid_id = entry.get("id") or entry.get("url", "")
+                if vid_id and len(vid_id) == 11:
+                    videos.append(
+                        {
+                            "id": vid_id,
+                            "url": f"https://www.youtube.com/watch?v={vid_id}",
+                            "title": entry.get("title", ""),
+                        }
+                    )
+            except json.JSONDecodeError:
+                continue
+        return videos
+    except (subprocess.TimeoutExpired, Exception) as e:
+        print(f"  yt-dlp channel discovery error: {e}", file=sys.stderr)
+        return []
 
 
 def fetch_video_metadata(video_id: str) -> dict:
@@ -436,16 +487,15 @@ class YouTubeIndexer:
         print("Loading embedding model...")
         idx = SourceIndex(backend=self.backend)
 
-        # Check SearXNG
-        if not check_searxng(self.searxng_url):
-            print(f"SearXNG not reachable at {self.searxng_url}", file=sys.stderr)
-            print("Start tunnel or set TAVILY_API_URL env var.", file=sys.stderr)
-            sys.exit(1)
-
-        # Check yt-dlp
+        # Check yt-dlp (required)
         if not check_ytdlp():
             print("yt-dlp not found. Install: brew install yt-dlp", file=sys.stderr)
             sys.exit(1)
+
+        # Check SearXNG (optional — used as fallback only)
+        searxng_available = check_searxng(self.searxng_url)
+        if not searxng_available:
+            print(f"SearXNG not available at {self.searxng_url} — using yt-dlp only", file=sys.stderr)
 
         # Resolve channel list
         if channels:
@@ -473,13 +523,26 @@ class YouTubeIndexer:
             print(f"Channel: @{ch['handle']} ({ch['name']})")
             print(f"{'=' * 60}")
 
-            videos = search_youtube_videos(self.searxng_url, ch["handle"], limit=limit)
+            # Discovery: yt-dlp primary → SearXNG fallback
+            videos = fetch_channel_videos_ytdlp(ch["handle"], limit=limit)
+            if not videos and searxng_available:
+                print("  yt-dlp discovery returned 0, trying SearXNG fallback...")
+                searxng_results = search_youtube_videos(self.searxng_url, ch["handle"], limit=limit)
+                videos = [
+                    {
+                        "url": v.get("url", ""),
+                        "title": v.get("title", ""),
+                        "id": extract_video_id(v.get("url", "")) or "",
+                    }
+                    for v in searxng_results
+                    if v.get("url")
+                ]
             print(f"  Found {len(videos)} videos")
 
             for video in videos:
                 url = video.get("url", "")
                 title = video.get("title", "Untitled")
-                video_id = extract_video_id(url)
+                video_id = video.get("id") or extract_video_id(url)
 
                 if not video_id:
                     continue
@@ -501,7 +564,7 @@ class YouTubeIndexer:
                 yt_tags = meta["tags"]
                 upload_date = meta.get("upload_date", "")
 
-                if not transcript or len(transcript) < 200:
+                if (not transcript or len(transcript) < 200) and searxng_available:
                     transcript = fetch_transcript(self.searxng_url, video_id) or ""
 
                 if not transcript or len(transcript) < 200:
