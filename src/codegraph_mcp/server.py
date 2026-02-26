@@ -506,6 +506,90 @@ async def web_search(
         return resp.json()
 
 
+# ── Random User-Agent pool for web_fetch ────────────────────────
+_USER_AGENTS = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0",
+]
+
+
+@mcp.tool()
+async def web_fetch(
+    url: str,
+    max_length: int = 20000,
+    extract_text: bool = True,
+    timeout: int = 30,
+) -> dict:
+    """Fetch a URL with browser-like headers to bypass basic bot protection.
+
+    Returns page content as plain text (HTML tags stripped) or raw HTML.
+    Handles redirects, cookies, and common anti-bot headers automatically.
+
+    Args:
+        url: URL to fetch
+        max_length: Max content length in chars (default 20000)
+        extract_text: Strip HTML tags and return plain text (default true)
+        timeout: Request timeout in seconds (default 30)
+    """
+    import random
+    import re
+
+    headers = {
+        "User-Agent": random.choice(_USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Cache-Control": "max-age=0",
+    }
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            max_redirects=10,
+        ) as client:
+            resp = await client.get(url, headers=headers)
+
+            if resp.status_code >= 400:
+                return {
+                    "url": str(resp.url),
+                    "status": resp.status_code,
+                    "error": f"HTTP {resp.status_code}",
+                    "content": resp.text[:500],
+                }
+
+            content = resp.text
+            if extract_text:
+                # Strip script/style blocks, then all tags
+                content = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", content, flags=re.DOTALL | re.IGNORECASE)
+                content = re.sub(r"<[^>]+>", " ", content)
+                content = re.sub(r"\s+", " ", content).strip()
+
+            return {
+                "url": str(resp.url),
+                "status": resp.status_code,
+                "content_type": resp.headers.get("content-type", ""),
+                "content": content[:max_length],
+                "truncated": len(content) > max_length,
+            }
+    except httpx.TimeoutException:
+        return {"url": url, "error": "Timeout", "status": 0}
+    except httpx.ConnectError as e:
+        return {"url": url, "error": f"Connection failed: {e}", "status": 0}
+    except Exception as e:
+        return {"url": url, "error": str(e), "status": 0}
+
+
 @mcp.tool()
 def project_code_search(
     query: str,
