@@ -2714,11 +2714,12 @@ wheels = [
 
 [[package]]
 name = "solograph"
-version = "0.2.3"
+version = "0.2.4"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
     { name = "falkordblite" },
+    { name = "httpcore" },
     { name = "httpx" },
     { name = "mcp" },
     { name = "pydantic" },
@@ -2762,6 +2763,7 @@ requires-dist = [
     { name = "certifi", marker = "extra == 'dev'", specifier = ">=2024.0.0" },
     { name = "click", specifier = ">=8.1" },
     { name = "falkordblite", specifier = ">=0.4" },
+    { name = "httpcore", specifier = ">=1.0.7" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "mcp", specifier = ">=1.26.0" },
     { name = "mlx-embeddings", marker = "extra == 'mlx'", specifier = ">=0.0.3" },

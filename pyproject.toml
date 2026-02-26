@@ -39,6 +39,7 @@ dependencies = [
     "mcp>=1.26.0",
     # HTTP (web search)
     "httpx>=0.28.1",
+    "httpcore>=1.0.7",  # pin explicitly — uvx can drop transitive deps
     # File watching
     "watchdog>=6.0",
 ]
