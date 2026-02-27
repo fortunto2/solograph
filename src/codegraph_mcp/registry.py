@@ -22,7 +22,9 @@ from pydantic import BaseModel, Field
 # Configurable via env vars
 STACKS_DIR = Path(os.environ.get("CODEGRAPH_STACKS_DIR", str(Path.home() / ".solo" / "stacks"))).expanduser()
 REGISTRY_PATH = Path(os.environ.get("CODEGRAPH_REGISTRY", str(Path.home() / ".solo" / "registry.yaml"))).expanduser()
-SCAN_PATH = Path(os.environ.get("CODEGRAPH_SCAN_PATH", str(Path.home() / "startups" / "active"))).expanduser()
+_scan_raw = os.environ.get("CODEGRAPH_SCAN_PATH", str(Path.home() / "startups" / "active"))
+SCAN_PATHS = [Path(p.strip()).expanduser() for p in _scan_raw.split(",") if p.strip()]
+SCAN_PATH = SCAN_PATHS[0]  # backward compat: primary path
 OLD_PATH = Path(os.environ.get("CODEGRAPH_OLD_PATH", str(Path.home() / "projects" / "archive"))).expanduser()
 
 
@@ -207,12 +209,18 @@ def _scan_dir(scan_dir: Path, status: str = "active") -> list[ProjectInfo]:
 
 
 def scan_projects(include_old: bool = False) -> ProjectRegistry:
-    """Scan startups/active/ and build registry."""
-    if not SCAN_PATH.exists():
-        print(f"Scan path not found: {SCAN_PATH}")
-        sys.exit(1)
+    """Scan all CODEGRAPH_SCAN_PATH directories and build registry."""
+    projects: list[ProjectInfo] = []
 
-    projects = _scan_dir(SCAN_PATH, status="active")
+    for scan_dir in SCAN_PATHS:
+        if not scan_dir.exists():
+            print(f"Scan path not found: {scan_dir}")
+            continue
+        projects.extend(_scan_dir(scan_dir, status="active"))
+
+    if not projects and not include_old:
+        print(f"No projects found in: {', '.join(str(p) for p in SCAN_PATHS)}")
+        sys.exit(1)
 
     if include_old:
         if OLD_PATH.exists():
@@ -222,7 +230,7 @@ def scan_projects(include_old: bool = False) -> ProjectRegistry:
 
     registry = ProjectRegistry(
         projects=projects,
-        scan_path=str(SCAN_PATH),
+        scan_path=",".join(str(p) for p in SCAN_PATHS),
         last_scan=datetime.now().isoformat(),
     )
 
@@ -344,7 +352,8 @@ def main():
 
     if command == "scan":
         include_old = "--old" in sys.argv
-        print(f"Scanning {SCAN_PATH}..." + (" + old" if include_old else ""))
+        paths_str = ", ".join(str(p) for p in SCAN_PATHS)
+        print(f"Scanning {paths_str}..." + (" + old" if include_old else ""))
         registry = scan_projects(include_old=include_old)
         save_registry(registry)
         print_projects(registry)

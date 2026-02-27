@@ -43,13 +43,13 @@ def init(ctx, projects_dir, deep):
       solograph-cli init                      # interactive prompt
       solograph-cli init ~/projects --deep    # with deep analysis
     """
-    from .registry import REGISTRY_PATH, SCAN_PATH, save_registry, scan_projects
+    from .registry import REGISTRY_PATH, SCAN_PATHS, save_registry, scan_projects
 
     codegraph_dir = Path.home() / ".solo"
 
     # 1. Ask for projects dir if not provided
     if not projects_dir:
-        default = str(SCAN_PATH)
+        default = ",".join(str(p) for p in SCAN_PATHS)
         projects_dir = click.prompt("Where are your projects?", default=default)
 
     projects_path = Path(projects_dir).expanduser().resolve()
@@ -66,6 +66,7 @@ def init(ctx, projects_dir, deep):
     # Re-import to pick up new env
     from . import registry as reg
 
+    reg.SCAN_PATHS = [projects_path]
     reg.SCAN_PATH = projects_path
 
     registry = scan_projects()
