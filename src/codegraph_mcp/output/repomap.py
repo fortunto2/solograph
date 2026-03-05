@@ -77,10 +77,11 @@ def generate_repomap(graph, project_name: str, max_files: int = 20) -> str:
                 # Fetch signature from file
                 signature = _get_line_from_file(project_path, filepath, line_num)
 
+                sym_data = {"name": name, "kind": kind, "line": line_num}
                 if signature:
-                    symbols.append({"name": name, "kind": kind, "signature": signature})
-                else:
-                    symbols.append({"name": name, "kind": kind})
+                    sym_data["signature"] = signature
+
+                symbols.append(sym_data)
 
         # Only include files that actually export symbols (or at least note they exist)
         if symbols:
