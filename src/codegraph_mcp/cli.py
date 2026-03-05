@@ -1907,3 +1907,18 @@ def index_kb_cmd(kb_path, force, backend):
 
 if __name__ == "__main__":
     cli()
+
+
+@cli.command()
+@click.argument("project_name")
+@click.option("--limit", "-n", default=20, help="Max files to include in map (default 20)")
+@click.pass_context
+def repomap(ctx, project_name, limit):
+    """Generate a YAML-formatted repository map (like Aider)."""
+    from .output.repomap import generate_repomap
+
+    fdb = cg_db.get_db(ctx.obj["db_path"])
+    graph = cg_db.get_graph(fdb)
+
+    result = generate_repomap(graph, project_name, max_files=limit)
+    click.echo(result)

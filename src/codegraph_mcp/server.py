@@ -407,6 +407,23 @@ def codegraph_explain(project: str) -> dict:
 
 
 @mcp.tool()
+def codegraph_repomap(project: str, limit: int = 20) -> dict:
+    """Generate a YAML-formatted repository map showing the most important files and their symbols.
+
+    Helps understand the global structure of a project without reading all files.
+
+    Args:
+        project: Project name (e.g. "my-app")
+        limit: Maximum number of top files to include (default 20)
+    """
+    graph = _get_graph()
+    from codegraph_mcp.output.repomap import generate_repomap
+
+    result = generate_repomap(graph, project, max_files=limit)
+    return {"repomap": result}
+
+
+@mcp.tool()
 def codegraph_shared() -> list[dict]:
     """Packages shared across multiple projects in the code graph.
 
