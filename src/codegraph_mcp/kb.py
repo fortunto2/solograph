@@ -109,6 +109,9 @@ class KnowledgeEmbeddings:
             ".venv/",
             "node_modules/",
             ".git/",
+            "blog/",
+            "invoices/",
+            "solo-factory/",
         ]
 
         for md_file in self.kb_path.rglob("*.md"):
