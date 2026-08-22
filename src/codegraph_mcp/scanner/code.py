@@ -87,6 +87,27 @@ SKIP_DIRS = {
 # File patterns to skip
 SKIP_FILES = {".DS_Store", "package-lock.json", "yarn.lock", "uv.lock"}
 
+# Directories whose markdown is generated output, not authored knowledge.
+#
+# Markdown earns its place in the index for a different reason than code does: a
+# CLAUDE.md or a skill file records a decision, and that is worth retrieving. An
+# LLM-written report is neither decision nor code, and there are usually hundreds of
+# them. Measured 22 Aug 2026 on epiphan/sgr-chat-agent: 781 files under reports/, all
+# generated, and they buried the code so thoroughly that a question about a parser
+# returned five reports at 15-17% relevance and no source at all. The same query
+# against a repo without them scored 84%.
+#
+# Separate from SKIP_DIRS because these hold real content — it is just content the
+# project produced, not content the project is.
+SKIP_DOC_DIRS = {
+    "reports",
+    "baselines",
+    "snapshots",
+    "__snapshots__",
+    "fixtures",
+    "golden",
+}
+
 
 def _get_ts_language(lang: str):
     """Get tree-sitter Language object, handling typescript API differences.

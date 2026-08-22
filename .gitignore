@@ -7,3 +7,8 @@ build/
 .solo/
 .embeddings/
 .env
+
+# refresh bookkeeping, per-machine
+.refresh-stamps/
+.refresh.log
+.DS_Store
