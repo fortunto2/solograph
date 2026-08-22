@@ -9,7 +9,7 @@ Both produce 384-dimensional vectors compatible with FalkorDB cosine similarity.
 
 from pathlib import Path
 
-from ..scanner.code import LANG_MAP, SKIP_DIRS, SKIP_DOC_DIRS, SKIP_FILES
+from ..scanner.code import LANG_MAP, SKIP_DIRS, SKIP_DOC_DIRS, is_skipped_file
 
 VECTORS_ROOT = Path.home() / ".solo" / "vectors"
 
@@ -345,7 +345,7 @@ def scan_project_files(project_path: Path) -> list[tuple[Path, str]]:
                 continue
             if lang == "markdown" and any(part in SKIP_DOC_DIRS for part in fp.parts):
                 continue
-            if fp.name in SKIP_FILES:
+            if is_skipped_file(fp):
                 continue
             files.append((fp, lang))
     return files

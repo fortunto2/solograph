@@ -98,6 +98,20 @@ SKIP_DIRS = {
 # File patterns to skip
 SKIP_FILES = {".DS_Store", "package-lock.json", "yarn.lock", "uv.lock"}
 
+# Suffixes that mark a file as build output or a vendored library rather than source.
+# Measured 22 Aug 2026 on epiphan/legacy_crm_php: canvasjs.min.js (488 KB), jquery and
+# d3 sat in the index and a search for "how a license serial is validated" returned a
+# jQuery slideshow plugin as its top hit. One minified line is one enormous chunk that
+# embeds close to everything and matches nothing in particular.
+SKIP_SUFFIXES = (".min.js", ".min.css", ".bundle.js", ".bundle.css", ".map")
+
+
+def is_skipped_file(path: Path) -> bool:
+    """One predicate for both scanners, so the code graph and the vector index cannot
+    disagree about what counts as source."""
+    return path.name in SKIP_FILES or path.name.endswith(SKIP_SUFFIXES)
+
+
 # Directories whose markdown is generated output, not authored knowledge.
 #
 # Markdown earns its place in the index for a different reason than code does: a
@@ -167,7 +181,7 @@ def scan_files(project_path: Path, project_name: str) -> list[FileNode]:
             # Skip excluded dirs
             if any(part in SKIP_DIRS for part in fp.parts):
                 continue
-            if fp.name in SKIP_FILES:
+            if is_skipped_file(fp):
                 continue
             try:
                 lines = fp.read_text(encoding="utf-8", errors="ignore").count("\n") + 1
@@ -218,9 +232,16 @@ def extract_symbols(file_path: Path, project_name: str, lang: str, rel_path: str
             (class_declaration name: (type_identifier) @class.def)
             (protocol_declaration name: (type_identifier) @protocol.def)
         """,
+        # method_definition and arrow-function declarators were missing until 22 Aug
+        # 2026, so a class method and `const handler = () => {}` — most of a modern TS
+        # codebase — produced no symbol at all. The javascript block below captures
+        # them; the two cannot be aliased because TS names classes with type_identifier
+        # and JS with identifier.
         "typescript": """
             (function_declaration name: (identifier) @func.def)
+            (method_definition name: (property_identifier) @func.def)
             (class_declaration name: (type_identifier) @class.def)
+            (variable_declarator name: (identifier) @func.def value: (arrow_function))
         """,
         "kotlin": """
             (function_declaration (identifier) @func.def)
@@ -273,6 +294,8 @@ def extract_symbols(file_path: Path, project_name: str, lang: str, rel_path: str
         "hcl": """
             (block (string_lit) @class.def)
         """,
+        # Kept beside typescript rather than aliased to it: TS names classes with
+        # type_identifier and JS with identifier, so one query cannot serve both.
         "javascript": """
             (function_declaration name: (identifier) @func.def)
             (method_definition name: (property_identifier) @func.def)
@@ -296,11 +319,12 @@ def extract_symbols(file_path: Path, project_name: str, lang: str, rel_path: str
             if "protocol" in capture_name:
                 kind = "protocol"
             for node in nodes:
-                # HCL block labels are string_lit nodes, so their text arrives quoted.
-                # A symbol called "crm_prod_public_ip" with the quotes attached does not
-                # match a search for crm_prod_public_ip, which is what people type.
                 name = node.text.decode("utf-8")
-                if len(name) > 1 and name[0] == name[-1] and name[0] in "\"'":
+                # HCL block labels are string_lit nodes, so their text arrives quoted,
+                # and "crm_prod_public_ip" does not match a search for
+                # crm_prod_public_ip. Scoped to hcl: every other grammar captures bare
+                # identifiers, and stripping there would silently eat a real character.
+                if query_lang == "hcl" and len(name) > 1 and name[0] == name[-1] and name[0] in "\"'":
                     name = name[1:-1]
                 symbols.append(
                     SymbolNode(

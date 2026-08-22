@@ -357,9 +357,17 @@ def ingest_session_files(graph, edges: list[SessionFileEdge]) -> int:
 
 def link_sessions_to_projects(graph) -> int:
     """Create IN_PROJECT edges from Session to Project nodes."""
+    # Join on path, not on name. The name is derived by splitting the session
+    # directory on every dash (_derive_project_name), so `video-analyzer` becomes
+    # `analyzer` and `sgr-chat-agent` becomes `epiphan/sgr/chat/agent` — and it is
+    # not recoverable, because the directory encoding flattens underscores to
+    # dashes too (`legacy_crm_php` arrives as `legacy-crm-php`). project_path is
+    # the session's real cwd and matches Project.path exactly. The name match is
+    # kept as a fallback for sessions recorded before project_path existed.
     result = graph.query(
         "MATCH (sess:Session), (p:Project) "
-        "WHERE sess.project_name = p.name "
+        "WHERE sess.project_path = p.path "
+        "   OR (sess.project_path IS NULL AND sess.project_name = p.name) "
         "MERGE (sess)-[:IN_PROJECT]->(p) "
         "RETURN COUNT(*) AS cnt"
     )

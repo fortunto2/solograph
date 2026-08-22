@@ -349,13 +349,26 @@ def shared_cmd(ctx):
 @cli.command("scan-sessions")
 @click.option("--project", "-p", default=None, help="Filter by project name")
 @click.option(
+    "--claude-dir",
+    type=click.Path(),
+    default=None,
+    help="Claude config dir holding projects/ (default ~/.claude). "
+    "A second workspace keeps its history elsewhere — point this at it.",
+)
+@click.option(
+    "--vectors-path",
+    type=click.Path(),
+    default=None,
+    help="Where session embeddings live (default ~/.solo/vectors/sessions).",
+)
+@click.option(
     "--backend",
     type=click.Choice(["mlx", "st"]),
     default=None,
     help="Embedding backend",
 )
 @click.pass_context
-def scan_sessions(ctx, project, backend):
+def scan_sessions(ctx, project, claude_dir, vectors_path, backend):
     """Scan Claude Code chat history into graph + vectors."""
     from .scanner.sessions import (
         ingest_session_files,
@@ -376,7 +389,10 @@ def scan_sessions(ctx, project, backend):
     all_summaries = []
     project_counts: dict[str, int] = {}
 
-    for session, edges, summary in scan_all_sessions(project_filter=project):
+    for session, edges, summary in scan_all_sessions(
+        claude_dir=Path(claude_dir).expanduser() if claude_dir else None,
+        project_filter=project,
+    ):
         all_sessions.append(session)
         all_edges.extend(edges)
         all_summaries.append(summary)
@@ -399,7 +415,7 @@ def scan_sessions(ctx, project, backend):
 
     # Index into FalkorDB vectors
     click.echo(f"\nIndexing {len(all_summaries)} summaries into FalkorDB...")
-    idx = SessionIndex(backend=backend)
+    idx = SessionIndex(backend=backend, db_path=vectors_path)
     indexed = idx.upsert(all_summaries)
     click.echo(f"  Indexed: {indexed}")
 
@@ -482,17 +498,23 @@ def file_sessions_cmd(ctx, file_path):
 @click.option("--project", "-p", default=None, help="Filter by project")
 @click.option("--limit", "-n", default=5, help="Number of results")
 @click.option(
+    "--vectors-path",
+    type=click.Path(),
+    default=None,
+    help="Where session embeddings live — must match the scan-sessions run.",
+)
+@click.option(
     "--backend",
     type=click.Choice(["mlx", "st"]),
     default=None,
     help="Embedding backend",
 )
 @click.pass_context
-def session_search_cmd(ctx, query, project, limit, backend):
+def session_search_cmd(ctx, query, project, limit, vectors_path, backend):
     """Semantic search across session summaries."""
     from .vectors.session_index import SessionIndex
 
-    idx = SessionIndex(backend=backend)
+    idx = SessionIndex(backend=backend, db_path=vectors_path)
     results = idx.search(query, n_results=limit, project=project)
 
     if not results:
@@ -503,7 +525,7 @@ def session_search_cmd(ctx, query, project, limit, backend):
     for i, r in enumerate(results, 1):
         date = r["started_at"][:10] if r["started_at"] else "?"
         click.echo(f"{i}. [{r['project_name']}] {date} (relevance: {r['relevance']:.0%})")
-        click.echo(f"   {r['session_id'][:8]}..")
+        click.echo(f"   claude --resume {r['session_id']}")
         # Show first line of summary
         summary_line = r["summary"].split("\n")[0] if r["summary"] else ""
         click.echo(f"   {summary_line}")
@@ -571,6 +593,12 @@ def index_projects_cmd(ctx, project, registry, backend):
             f"({stats['code_chunks']} code + {stats['doc_chunks']} doc)"
         )
         total_chunks += stats["chunks"]
+        # Release this project's store before opening the next one. ProjectGraphIndex
+        # caches a FalkorDB per project and never evicts, so a sweep over twenty repos
+        # otherwise ends holding twenty open embedded databases — which is also why
+        # callers were driving one process per project and paying the model load again
+        # each time.
+        idx._dbs.pop(proj.name, None)
 
     click.echo(f"\nTotal: {total_chunks} chunks indexed (FalkorDB)")
     if busy:
