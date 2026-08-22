@@ -1,6 +1,6 @@
 [project]
 name = "solograph"
-version = "0.2.6"
+version = "0.2.7"
 description = "Code intelligence MCP server — multi-project code graph, semantic search, session history, knowledge base, web search"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -12,7 +12,7 @@ keywords = ["mcp", "code-intelligence", "codegraph", "semantic-search", "claude-
 dependencies = [
     # Graph Database + Vector Search
     "falkordblite>=0.4",
-    "redis<7.1",  # 7.1+ breaks UnixDomainSocketConnection (no .port attr)
+    "redis<7.1", # 7.1+ breaks UnixDomainSocketConnection (no .port attr)
     # Embeddings
     "sentence-transformers>=5.2.2",
     "semantic-text-splitter>=0.29.0",
@@ -39,9 +39,12 @@ dependencies = [
     "mcp>=1.26.0",
     # HTTP (web search)
     "httpx>=0.28.1",
-    "httpcore>=1.0.7",  # pin explicitly — uvx can drop transitive deps
+    "httpcore>=1.0.7", # pin explicitly — uvx can drop transitive deps
     # File watching
     "watchdog>=6.0",
+    "tree-sitter-php>=0.24.1",
+    "tree-sitter-hcl>=1.2.0",
+    "tree-sitter-javascript>=0.25.0",
 ]
 
 [project.optional-dependencies]

@@ -9,8 +9,10 @@ Vectors live on graph nodes, enabling hybrid queries:
 """
 
 # Registry path from env or ~/.solo/
+import fcntl
 import os
 import shutil
+from contextlib import contextmanager
 from pathlib import Path
 
 from redislite.falkordb_client import FalkorDB
@@ -28,6 +30,54 @@ from .common import (
 
 _REGISTRY_ENV = os.environ.get("CODEGRAPH_REGISTRY", "")
 _REGISTRY_PATH = Path(_REGISTRY_ENV).expanduser() if _REGISTRY_ENV else Path.home() / ".solo" / "registry.yaml"
+
+
+class VectorIndexBusy(RuntimeError):
+    """Another process is already indexing this project."""
+
+
+@contextmanager
+def _exclusive(db_dir: Path, project_name: str):
+    """Hold an exclusive lock on one project's vector store for the duration of a write.
+
+    index_project opens with `MATCH (n) DETACH DELETE n`, so two runs on the same
+    project do not merely race — the later one wipes what the earlier had written and
+    both then append into the hole. Observed 22 Aug 2026 on epiphan/sgr-chat-agent: a
+    full sweep and a single-project reindex overlapped and left 45,454 chunks in a store
+    that reported indexing 26,654, including 1,883 chunks from a deleted agent worktree
+    the current scanner excludes. Search returned them at 84% relevance, which is the
+    failure this whole subsystem exists to prevent: a stale index answers confidently.
+
+    flock, so the lock dies with the process — a killed indexer must not leave a store
+    that nothing can ever write to again. Non-blocking: the second run is told to wait
+    rather than queued, because these runs take minutes and a silent queue looks like a
+    hang.
+    """
+    db_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = db_dir / ".index.lock"
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            holder = ""
+            try:
+                holder = os.read(fd, 32).decode().strip()
+            except Exception:
+                pass
+            raise VectorIndexBusy(
+                f"{project_name} is being indexed by another process"
+                + (f" (pid {holder})" if holder else "")
+                + f" — lock: {lock_path}"
+            ) from None
+        os.ftruncate(fd, 0)
+        os.write(fd, str(os.getpid()).encode())
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 class ProjectGraphIndex:
@@ -156,13 +206,24 @@ class ProjectGraphIndex:
 
         Creates File and Chunk nodes with embeddings, linked by HAS_CHUNK edges.
         Returns stats: {chunks, files, code_chunks, doc_chunks}.
-        """
-        import gc
 
+        Raises VectorIndexBusy if another process holds this project's lock.
+        """
         # Register path so _db_dir resolves to {project_path}/.solo/
         self._paths[project_name] = project_path
 
+        with _exclusive(self._db_dir(project_name), project_name):
+            return self._index_locked(project_path, project_name)
+
+    def _index_locked(self, project_path: Path, project_name: str) -> dict:
+        """The write itself. Always called with the project's lock held."""
+        import gc
+
         graph = self._get_graph(project_name)
+        file_count = 0
+        total_chunks = 0
+        code_chunks = 0
+        doc_chunks = 0
 
         # Clear old data
         try:
@@ -171,17 +232,13 @@ class ProjectGraphIndex:
             pass
 
         files = scan_project_files(project_path)
-        file_count = 0
-        total_chunks = 0
-        code_chunks = 0
-        doc_chunks = 0
 
         # Process file by file, embed + insert in batches.
         #
         # Two round-trips per batch, not one per file plus one per 16 chunks. Measured
-        # 22 Aug 2026 on epiphan/sgr-chat-agent: embedding runs at 61 chunks/sec while
-        # end-to-end indexing ran at 7.6, so four fifths of the time was graph traffic,
-        # not the model. The File MERGE was the bulk of it — one query per file.
+        # 22 Aug 2026 on epiphan/epiphan-students, 45,465 chunks, the two shapes back to
+        # back in one process: 63.5 chunks/sec at batch 16 with a MERGE per file, 121.7
+        # at batch 128 with the merge folded into the flush.
         batch: list[dict] = []
         batch_size = 128
 

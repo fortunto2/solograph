@@ -532,7 +532,7 @@ def session_search_cmd(ctx, query, project, limit, backend):
 def index_projects_cmd(ctx, project, registry, backend):
     """Index project source code and docs into per-project FalkorDB vector DBs."""
     from .scanner.registry import scan_registry
-    from .vectors.project_graph_index import ProjectGraphIndex
+    from .vectors.project_graph_index import ProjectGraphIndex, VectorIndexBusy
 
     registry_path = Path(registry) if registry else DEFAULT_REGISTRY
     if not registry_path.exists():
@@ -550,6 +550,8 @@ def index_projects_cmd(ctx, project, registry, backend):
     click.echo(f"Indexing {len(projects)} project(s) into FalkorDB...\n")
 
     total_chunks = 0
+
+    busy: list[str] = []
     for proj in projects:
         proj_path = Path(proj.path)
         if not proj_path.exists():
@@ -557,7 +559,13 @@ def index_projects_cmd(ctx, project, registry, backend):
             continue
 
         click.echo(f"  {proj.name}...", nl=False)
-        stats = idx.index_project(proj_path, proj.name)
+        try:
+            stats = idx.index_project(proj_path, proj.name)
+        except VectorIndexBusy as e:
+            # One busy project must not abort a sweep over twenty others.
+            click.echo(f" SKIPPED — {e}")
+            busy.append(proj.name)
+            continue
         click.echo(
             f" {stats['files']} files, {stats['chunks']} chunks "
             f"({stats['code_chunks']} code + {stats['doc_chunks']} doc)"
@@ -565,6 +573,9 @@ def index_projects_cmd(ctx, project, registry, backend):
         total_chunks += stats["chunks"]
 
     click.echo(f"\nTotal: {total_chunks} chunks indexed (FalkorDB)")
+    if busy:
+        click.echo(f"Skipped, already being indexed elsewhere: {', '.join(busy)}")
+        raise SystemExit(1)
 
 
 @cli.command("project-search")

@@ -10,6 +10,17 @@ from ..models import CallEdge, FileNode, ImportEdge, InheritsEdge, SymbolNode
 # Language extensions → tree-sitter grammar module
 LANG_MAP = {
     ".py": "python",
+    # Added 22 Aug 2026 after counting where commits actually land in the Epiphan set:
+    # of the four repos with the most commits in 90 days, three were invisible here.
+    # epiphan-marketing-infrastructure is 53 .tf + 12 .hcl and got 93 commits;
+    # legacy_crm_php is 681 .php and got 89; .js/.mjs covers 105 files in legacy_crm_php
+    # and the harness tooling. A language nobody can search is a repo nobody can search.
+    ".php": "php",
+    ".tf": "hcl",
+    ".hcl": "hcl",
+    ".js": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
     ".swift": "swift",
     ".ts": "typescript",
     ".tsx": "tsx",
@@ -131,6 +142,12 @@ def _get_ts_language(lang: str):
         "ruby": ("tree_sitter_ruby", "language"),
         "c": ("tree_sitter_c", "language"),
         "cpp": ("tree_sitter_cpp", "language"),
+        # language_php parses full .php files (text + <?php ... ?>); language_php_only
+        # would reject everything outside the tags, which is most of a WordPress or
+        # legacy CRM file.
+        "php": ("tree_sitter_php", "language_php"),
+        "hcl": ("tree_sitter_hcl", "language"),
+        "javascript": ("tree_sitter_javascript", "language"),
     }
 
     if lang not in grammar_map:
@@ -243,6 +260,25 @@ def extract_symbols(file_path: Path, project_name: str, lang: str, rel_path: str
             (struct_specifier name: (type_identifier) @class.def)
             (enum_specifier name: (type_identifier) @class.def)
         """,
+        "php": """
+            (function_definition name: (name) @func.def)
+            (method_declaration name: (name) @func.def)
+            (class_declaration name: (name) @class.def)
+            (interface_declaration name: (name) @class.def)
+            (trait_declaration name: (name) @class.def)
+        """,
+        # HCL has no functions. Its unit is the labelled block, and both labels are
+        # worth a symbol: `resource "aws_s3_bucket" "telemetry"` should be findable by
+        # the type and by the name, because people search for either.
+        "hcl": """
+            (block (string_lit) @class.def)
+        """,
+        "javascript": """
+            (function_declaration name: (identifier) @func.def)
+            (method_definition name: (property_identifier) @func.def)
+            (class_declaration name: (identifier) @class.def)
+            (variable_declarator name: (identifier) @func.def value: (arrow_function))
+        """,
     }
 
     query_lang = _QUERY_ALIASES.get(lang, lang)
@@ -260,9 +296,15 @@ def extract_symbols(file_path: Path, project_name: str, lang: str, rel_path: str
             if "protocol" in capture_name:
                 kind = "protocol"
             for node in nodes:
+                # HCL block labels are string_lit nodes, so their text arrives quoted.
+                # A symbol called "crm_prod_public_ip" with the quotes attached does not
+                # match a search for crm_prod_public_ip, which is what people type.
+                name = node.text.decode("utf-8")
+                if len(name) > 1 and name[0] == name[-1] and name[0] in "\"'":
+                    name = name[1:-1]
                 symbols.append(
                     SymbolNode(
-                        name=node.text.decode("utf-8"),
+                        name=name,
                         kind=kind,
                         file=rel_path,
                         project=project_name,
