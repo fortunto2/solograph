@@ -103,13 +103,19 @@ SKIP_FILES = {".DS_Store", "package-lock.json", "yarn.lock", "uv.lock"}
 # d3 sat in the index and a search for "how a license serial is validated" returned a
 # jQuery slideshow plugin as its top hit. One minified line is one enormous chunk that
 # embeds close to everything and matches nothing in particular.
-SKIP_SUFFIXES = (".min.js", ".min.css", ".bundle.js", ".bundle.css", ".map")
+SKIP_SUFFIXES = (".map", ".lock")
+
+# `.min.` anywhere in the name, not just as a suffix: the first file this rule was
+# written against is `slides.min.jquery.js`, where the minified marker sits in the
+# middle. Same for bundles.
+SKIP_MARKERS = (".min.", ".bundle.", "-min.", ".pack.")
 
 
 def is_skipped_file(path: Path) -> bool:
     """One predicate for both scanners, so the code graph and the vector index cannot
     disagree about what counts as source."""
-    return path.name in SKIP_FILES or path.name.endswith(SKIP_SUFFIXES)
+    name = path.name
+    return name in SKIP_FILES or name.endswith(SKIP_SUFFIXES) or any(m in name for m in SKIP_MARKERS)
 
 
 # Directories whose markdown is generated output, not authored knowledge.
