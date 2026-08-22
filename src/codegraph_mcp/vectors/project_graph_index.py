@@ -21,7 +21,6 @@ from .common import (
     CHUNK_CAPACITY,
     EMBEDDING_DIM,
     MIN_CHUNK_CHARS,
-    TS_GRAMMAR_MAP,
     VECTORS_ROOT,
     get_code_splitter,
     get_markdown_splitter,
@@ -32,6 +31,38 @@ from .common import (
 
 _REGISTRY_ENV = os.environ.get("CODEGRAPH_REGISTRY", "")
 _REGISTRY_PATH = Path(_REGISTRY_ENV).expanduser() if _REGISTRY_ENV else Path.home() / ".solo" / "registry.yaml"
+
+
+def _merge_fragments(chunks: list[str]) -> list[str]:
+    """Glue chunks too small to mean anything onto their neighbour.
+
+    CHUNK_CAPACITY's lower bound is a target the splitter aims for, not a floor it
+    honours: an AST boundary can end a chunk anywhere. Measured 22 Aug 2026 on a
+    43,156-chunk store, 4,472 of them — 10.4% — were under 20 characters, and what
+    they contained was `;`, `() =>`, `describe`, `async () =>`. Each still carries a
+    384-dimension embedding that can outrank real code on a short query.
+
+    Merged rather than dropped, because the languages added the same week have
+    legitimately short units — an HCL `output` block, a one-line bash function, a
+    `CREATE INDEX`. Dropping would lose them silently, which is the failure this
+    subsystem exists to prevent, only smaller.
+    """
+    out: list[str] = []
+    for chunk in chunks:
+        if out and len(chunk.strip()) < MIN_CHUNK_CHARS:
+            out[-1] = out[-1] + chunk
+        else:
+            out.append(chunk)
+    # A leading fragment has no predecessor to join, so it waits for a successor.
+    if len(out) > 1 and len(out[0].strip()) < MIN_CHUNK_CHARS:
+        out[1] = out[0] + out[1]
+        out.pop(0)
+    return out
+
+
+def _capped(content: str) -> list[str]:
+    """The whole file as one chunk, truncated. Last resort when no grammar parses it."""
+    return [content[: CHUNK_CAPACITY[1]]] if len(content) > CHUNK_CAPACITY[1] else [content]
 
 
 class VectorIndexBusy(RuntimeError):
@@ -118,6 +149,13 @@ class ProjectGraphIndex:
         # Legacy fallback for projects not in registry
         return VECTORS_ROOT / project_name
 
+    def release(self, project_name: str) -> None:
+        """Drop a project's cached store. The index caches a FalkorDB per project and
+        never evicts, so a sweep over twenty repos otherwise ends holding twenty open
+        embedded databases — which is why callers used to spawn a process per project
+        and pay the embedding-model load again each time."""
+        self._dbs.pop(project_name, None)
+
     def _get_graph(self, project_name: str):
         """Get or create a FalkorDBLite graph for a project (lazy)."""
         if project_name not in self._dbs:
@@ -176,29 +214,18 @@ class ProjectGraphIndex:
             if self._md_splitter is None:
                 self._md_splitter = get_markdown_splitter()
             raw_chunks = self._md_splitter.chunks(content)
-        elif lang in TS_GRAMMAR_MAP:
-            splitter = get_code_splitter(lang)
-            if splitter:
-                try:
-                    raw_chunks = splitter.chunks(content)
-                except Exception:
-                    raw_chunks = [content[: CHUNK_CAPACITY[1]]] if len(content) > CHUNK_CAPACITY[1] else [content]
-            else:
-                raw_chunks = [content[: CHUNK_CAPACITY[1]]] if len(content) > CHUNK_CAPACITY[1] else [content]
         else:
-            raw_chunks = [content[: CHUNK_CAPACITY[1]]] if len(content) > CHUNK_CAPACITY[1] else [content]
+            # get_code_splitter already answers "do we have a grammar for this", so
+            # asking again with `lang in GRAMMAR_MAP` only creates a second place that
+            # has to agree. One truncating fallback, for both no-grammar and a parse
+            # that blows up.
+            splitter = get_code_splitter(lang)
+            try:
+                raw_chunks = splitter.chunks(content) if splitter else _capped(content)
+            except Exception:
+                raw_chunks = _capped(content)
 
-        # Drop fragments. CHUNK_CAPACITY's lower bound is a target the splitter aims
-        # for, not a floor it honours: an AST boundary can end a chunk anywhere, and
-        # what comes out includes `;`, `() =>` and `describe`. Measured 22 Aug 2026 on
-        # a 43,156-chunk store, 4,472 of them — 10.4% — were under 20 characters, and
-        # a two-character chunk still gets a 384-dimension embedding that can outrank
-        # real code on a short query.
-        #
-        # Only when the file produced more than one chunk: a genuinely tiny file is
-        # still a file, and dropping it would make it unsearchable rather than tidy.
-        if len(raw_chunks) > 1:
-            raw_chunks = [c for c in raw_chunks if len(c.strip()) >= MIN_CHUNK_CHARS]
+        raw_chunks = _merge_fragments(raw_chunks)
 
         chunks = []
         total = len(raw_chunks)

@@ -536,7 +536,9 @@ def session_search_cmd(ctx, query, project, limit, vectors_path, backend):
 
 
 @cli.command("index-projects")
-@click.option("--project", "-p", default=None, help="Index only this project")
+@click.option(
+    "--project", "-p", "projects", multiple=True, help="Index only these projects, in the order given. Repeatable."
+)
 @click.option(
     "--registry",
     "-r",
@@ -551,7 +553,7 @@ def session_search_cmd(ctx, query, project, limit, vectors_path, backend):
     help="Embedding backend",
 )
 @click.pass_context
-def index_projects_cmd(ctx, project, registry, backend):
+def index_projects_cmd(ctx, projects, registry, backend):
     """Index project source code and docs into per-project FalkorDB vector DBs."""
     from .scanner.registry import scan_registry
     from .vectors.project_graph_index import ProjectGraphIndex, VectorIndexBusy
@@ -561,12 +563,18 @@ def index_projects_cmd(ctx, project, registry, backend):
         click.echo(f"Registry not found: {registry_path}")
         raise SystemExit(1)
 
-    projects = scan_registry(registry_path)
-    if project:
-        projects = [p for p in projects if p.name == project]
-        if not projects:
-            click.echo(f"Project not found: {project}")
+    found = scan_registry(registry_path)
+    if projects:
+        # The order given on the command line, not registry order. A caller that wants
+        # the busiest repo first says so in the arguments rather than rewriting the
+        # registry file to convey it.
+        by_name = {p.name: p for p in found}
+        missing = [n for n in projects if n not in by_name]
+        if missing:
+            click.echo(f"Not in the registry: {', '.join(missing)}")
             raise SystemExit(1)
+        found = [by_name[n] for n in projects]
+    projects = found
 
     idx = ProjectGraphIndex(backend=backend)
     click.echo(f"Indexing {len(projects)} project(s) into FalkorDB...\n")
@@ -593,12 +601,7 @@ def index_projects_cmd(ctx, project, registry, backend):
             f"({stats['code_chunks']} code + {stats['doc_chunks']} doc)"
         )
         total_chunks += stats["chunks"]
-        # Release this project's store before opening the next one. ProjectGraphIndex
-        # caches a FalkorDB per project and never evicts, so a sweep over twenty repos
-        # otherwise ends holding twenty open embedded databases — which is also why
-        # callers were driving one process per project and paying the model load again
-        # each time.
-        idx._dbs.pop(proj.name, None)
+        idx.release(proj.name)
 
     click.echo(f"\nTotal: {total_chunks} chunks indexed (FalkorDB)")
     if busy:

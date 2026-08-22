@@ -38,6 +38,7 @@ LANG_MAP = {
     ".bash": "bash",
     ".sql": "sql",
     ".toml": "toml",
+    ".json": "json",
     ".swift": "swift",
     ".ts": "typescript",
     ".tsx": "tsx",
@@ -65,7 +66,16 @@ TEXT_EXTENSIONS = {
     ".twig": "text",
     ".jinja": "text",
     ".j2": "text",
+    ".xml": "text",
+    ".tmpl": "text",
+    ".tfvars": "text",
 }
+
+# Everything else git tracks that we have no grammar for. An allowlist was already
+# stale the day after it was written — .tfvars, .tmpl and .xml were tracked and
+# missing — and the next template language will do it again. Safe only because the
+# file universe is git-tracked: a repo's own text, not node_modules.
+TEXT_FALLBACK = "text"
 
 # Languages that share query definitions with another language
 _QUERY_ALIASES = {"tsx": "typescript"}
@@ -126,7 +136,7 @@ SKIP_DIRS = {
 }
 
 # File patterns to skip
-SKIP_FILES = {".DS_Store", "package-lock.json", "yarn.lock", "uv.lock"}
+SKIP_FILES = {".DS_Store", "package-lock.json"}
 
 # Suffixes that mark a file as build output or a vendored library rather than source.
 # Measured 22 Aug 2026 on epiphan/legacy_crm_php: canvasjs.min.js (488 KB), jquery and
@@ -171,35 +181,40 @@ def tracked_files(project_path: Path) -> list[Path] | None:
     return [project_path / name for name in r.stdout.decode("utf-8", "replace").split("\0") if name]
 
 
-def project_files(project_path: Path, extensions) -> list[tuple[Path, str]]:
+def project_files(project_path: Path, extensions, text_fallback: bool = False) -> list[tuple[Path, str]]:
     """(path, language) for every source file in a project, git-tracked when possible.
 
     `extensions` maps suffix to language name. Falls back to walking the tree with
     SKIP_DIRS when the project is not a git checkout, which is the only case where
     guessing is still necessary.
     """
+
+    def keep(fp: Path, lang: str) -> bool:
+        """One filter chain. Written twice it drifted within a day — the git branch
+        checked is_file() and the walk branch did not."""
+        if is_skipped_file(fp):
+            return False
+        if lang == "markdown" and any(part in SKIP_DOC_DIRS for part in fp.parts):
+            return False
+        return fp.is_file()
+
     tracked = tracked_files(project_path)
     if tracked is not None:
         out = []
         for fp in tracked:
             lang = extensions.get(fp.suffix)
-            if lang and not is_skipped_file(fp) and fp.is_file():
-                if lang == "markdown" and any(part in SKIP_DOC_DIRS for part in fp.parts):
-                    continue
+            if lang is None and text_fallback and fp.suffix:
+                lang = TEXT_FALLBACK
+            if lang and keep(fp, lang):
                 out.append((fp, lang))
         return out
 
-    out = []
-    for ext, lang in extensions.items():
-        for fp in project_path.rglob(f"*{ext}"):
-            if any(part in SKIP_DIRS for part in fp.parts):
-                continue
-            if lang == "markdown" and any(part in SKIP_DOC_DIRS for part in fp.parts):
-                continue
-            if is_skipped_file(fp):
-                continue
-            out.append((fp, lang))
-    return out
+    return [
+        (fp, lang)
+        for ext, lang in extensions.items()
+        for fp in project_path.rglob(f"*{ext}")
+        if not any(part in SKIP_DIRS for part in fp.parts) and keep(fp, lang)
+    ]
 
 
 def is_skipped_file(path: Path) -> bool:
@@ -281,22 +296,11 @@ def get_grammar(lang: str):
 
 
 def get_ts_language(lang: str):
-    """Get tree-sitter Language object, handling typescript API differences.
-
-    tree-sitter-typescript v0.23+ uses language_typescript()/language_tsx()
-    instead of language(). Other grammars use language().
-    """
-    import importlib
-
+    """The grammar wrapped for tree_sitter.Parser. See get_grammar for the raw pointer."""
     from tree_sitter import Language
 
-    if lang not in GRAMMAR_MAP:
-        return None
-
-    module_name, func_name = GRAMMAR_MAP[lang]
-    grammar_mod = importlib.import_module(module_name)
-    lang_func = getattr(grammar_mod, func_name)
-    return Language(lang_func())
+    grammar = get_grammar(lang)
+    return Language(grammar) if grammar is not None else None
 
 
 def scan_files(project_path: Path, project_name: str) -> list[FileNode]:
@@ -318,8 +322,114 @@ def scan_files(project_path: Path, project_name: str) -> list[FileNode]:
     return files
 
 
+# Which languages contribute symbols, and the tree-sitter query that finds them.
+# Module level, not rebuilt per file: a full scan calls extract_symbols thousands
+# of times and was reconstructing this dict every one of them.
+#
+# A grammar without an entry here is deliberate — html tags, yaml keys, json keys
+# and css selectors are not symbols, and putting them in a code graph is noise.
+# Those languages still get AST chunking; SYMBOL_LANGS is what says so.
+SYMBOL_QUERIES = {
+    "python": """
+            (function_definition name: (identifier) @func.def)
+            (class_definition name: (identifier) @class.def)
+        """,
+    "swift": """
+            (function_declaration name: (simple_identifier) @func.def)
+            (class_declaration name: (type_identifier) @class.def)
+            (protocol_declaration name: (type_identifier) @protocol.def)
+        """,
+    # method_definition and arrow-function declarators were missing until 22 Aug
+    # 2026, so a class method and `const handler = () => {}` — most of a modern TS
+    # codebase — produced no symbol at all. The javascript block below captures
+    # them; the two cannot be aliased because TS names classes with type_identifier
+    # and JS with identifier.
+    "typescript": """
+            (function_declaration name: (identifier) @func.def)
+            (method_definition name: (property_identifier) @func.def)
+            (class_declaration name: (type_identifier) @class.def)
+            (variable_declarator name: (identifier) @func.def value: (arrow_function))
+        """,
+    "kotlin": """
+            (function_declaration (identifier) @func.def)
+            (class_declaration (identifier) @class.def)
+            (object_declaration (identifier) @class.def)
+        """,
+    "rust": """
+            (function_item name: (identifier) @func.def)
+            (struct_item name: (type_identifier) @class.def)
+            (enum_item name: (type_identifier) @class.def)
+            (trait_item name: (type_identifier) @protocol.def)
+        """,
+    "go": """
+            (function_declaration name: (identifier) @func.def)
+            (method_declaration name: (field_identifier) @func.def)
+            (type_declaration (type_spec name: (type_identifier) @class.def))
+        """,
+    "java": """
+            (method_declaration name: (identifier) @func.def)
+            (class_declaration name: (identifier) @class.def)
+            (interface_declaration name: (identifier) @protocol.def)
+            (enum_declaration name: (identifier) @class.def)
+        """,
+    "ruby": """
+            (method name: (identifier) @func.def)
+            (class name: (constant) @class.def)
+            (module name: (constant) @class.def)
+        """,
+    "c": """
+            (function_definition declarator: (function_declarator declarator: (identifier) @func.def))
+            (struct_specifier name: (type_identifier) @class.def)
+            (enum_specifier name: (type_identifier) @class.def)
+        """,
+    "cpp": """
+            (function_definition declarator: (function_declarator declarator: (identifier) @func.def))
+            (class_specifier name: (type_identifier) @class.def)
+            (struct_specifier name: (type_identifier) @class.def)
+            (enum_specifier name: (type_identifier) @class.def)
+        """,
+    "php": """
+            (function_definition name: (name) @func.def)
+            (method_declaration name: (name) @func.def)
+            (class_declaration name: (name) @class.def)
+            (interface_declaration name: (name) @class.def)
+            (trait_declaration name: (name) @class.def)
+        """,
+    # HCL has no functions. Its unit is the labelled block, and both labels are
+    # worth a symbol: `resource "aws_s3_bucket" "telemetry"` should be findable by
+    # the type and by the name, because people search for either.
+    "hcl": """
+            (block (string_lit) @class.def)
+        """,
+    "bash": """
+            (function_definition name: (word) @func.def)
+        """,
+    "sql": """
+            (create_table (object_reference name: (identifier) @class.def))
+            (create_view (object_reference name: (identifier) @class.def))
+            (create_function (object_reference name: (identifier) @func.def))
+        """,
+    "javascript": """
+            (function_declaration name: (identifier) @func.def)
+            (method_definition name: (property_identifier) @func.def)
+            (class_declaration name: (identifier) @class.def)
+            (variable_declarator name: (identifier) @func.def value: (arrow_function))
+        """,
+}
+
+SYMBOL_LANGS = frozenset(SYMBOL_QUERIES) | set(_QUERY_ALIASES)
+
+
 def extract_symbols(file_path: Path, project_name: str, lang: str, rel_path: str = "") -> list[SymbolNode]:
     """Extract function/class definitions from a file using tree-sitter."""
+    # Before building a parser: html, css, yaml, toml and json have grammars for
+    # chunking but contribute no symbols, and parsing ~250 files per scan only to
+    # return [] is work nobody asked for.
+    query_lang = _QUERY_ALIASES.get(lang, lang)
+    query_str = SYMBOL_QUERIES.get(query_lang)
+    if not query_str:
+        return []
+
     try:
         from tree_sitter import Parser, Query, QueryCursor
 
@@ -338,102 +448,6 @@ def extract_symbols(file_path: Path, project_name: str, lang: str, rel_path: str
 
     rel_path = rel_path or str(file_path.name)
     symbols = []
-
-    # Language-specific queries
-    queries_by_lang = {
-        "python": """
-            (function_definition name: (identifier) @func.def)
-            (class_definition name: (identifier) @class.def)
-        """,
-        "swift": """
-            (function_declaration name: (simple_identifier) @func.def)
-            (class_declaration name: (type_identifier) @class.def)
-            (protocol_declaration name: (type_identifier) @protocol.def)
-        """,
-        # method_definition and arrow-function declarators were missing until 22 Aug
-        # 2026, so a class method and `const handler = () => {}` — most of a modern TS
-        # codebase — produced no symbol at all. The javascript block below captures
-        # them; the two cannot be aliased because TS names classes with type_identifier
-        # and JS with identifier.
-        "typescript": """
-            (function_declaration name: (identifier) @func.def)
-            (method_definition name: (property_identifier) @func.def)
-            (class_declaration name: (type_identifier) @class.def)
-            (variable_declarator name: (identifier) @func.def value: (arrow_function))
-        """,
-        "kotlin": """
-            (function_declaration (identifier) @func.def)
-            (class_declaration (identifier) @class.def)
-            (object_declaration (identifier) @class.def)
-        """,
-        "rust": """
-            (function_item name: (identifier) @func.def)
-            (struct_item name: (type_identifier) @class.def)
-            (enum_item name: (type_identifier) @class.def)
-            (trait_item name: (type_identifier) @protocol.def)
-        """,
-        "go": """
-            (function_declaration name: (identifier) @func.def)
-            (method_declaration name: (field_identifier) @func.def)
-            (type_declaration (type_spec name: (type_identifier) @class.def))
-        """,
-        "java": """
-            (method_declaration name: (identifier) @func.def)
-            (class_declaration name: (identifier) @class.def)
-            (interface_declaration name: (identifier) @protocol.def)
-            (enum_declaration name: (identifier) @class.def)
-        """,
-        "ruby": """
-            (method name: (identifier) @func.def)
-            (class name: (constant) @class.def)
-            (module name: (constant) @class.def)
-        """,
-        "c": """
-            (function_definition declarator: (function_declarator declarator: (identifier) @func.def))
-            (struct_specifier name: (type_identifier) @class.def)
-            (enum_specifier name: (type_identifier) @class.def)
-        """,
-        "cpp": """
-            (function_definition declarator: (function_declarator declarator: (identifier) @func.def))
-            (class_specifier name: (type_identifier) @class.def)
-            (struct_specifier name: (type_identifier) @class.def)
-            (enum_specifier name: (type_identifier) @class.def)
-        """,
-        "php": """
-            (function_definition name: (name) @func.def)
-            (method_declaration name: (name) @func.def)
-            (class_declaration name: (name) @class.def)
-            (interface_declaration name: (name) @class.def)
-            (trait_declaration name: (name) @class.def)
-        """,
-        # HCL has no functions. Its unit is the labelled block, and both labels are
-        # worth a symbol: `resource "aws_s3_bucket" "telemetry"` should be findable by
-        # the type and by the name, because people search for either.
-        "hcl": """
-            (block (string_lit) @class.def)
-        """,
-        # Kept beside typescript rather than aliased to it: TS names classes with
-        # type_identifier and JS with identifier, so one query cannot serve both.
-        "bash": """
-            (function_definition name: (word) @func.def)
-        """,
-        "sql": """
-            (create_table (object_reference name: (identifier) @class.def))
-            (create_view (object_reference name: (identifier) @class.def))
-            (create_function (object_reference name: (identifier) @func.def))
-        """,
-        "javascript": """
-            (function_declaration name: (identifier) @func.def)
-            (method_definition name: (property_identifier) @func.def)
-            (class_declaration name: (identifier) @class.def)
-            (variable_declarator name: (identifier) @func.def value: (arrow_function))
-        """,
-    }
-
-    query_lang = _QUERY_ALIASES.get(lang, lang)
-    query_str = queries_by_lang.get(query_lang)
-    if not query_str:
-        return []
 
     try:
         query = Query(ts_lang, query_str)

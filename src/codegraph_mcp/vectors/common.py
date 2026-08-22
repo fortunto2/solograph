@@ -9,19 +9,12 @@ Both produce 384-dimensional vectors compatible with FalkorDB cosine similarity.
 
 from pathlib import Path
 
-from ..scanner.code import GRAMMAR_MAP, LANG_MAP, TEXT_EXTENSIONS, project_files
+from ..scanner.code import LANG_MAP, TEXT_EXTENSIONS, project_files
 
 VECTORS_ROOT = Path.home() / ".solo" / "vectors"
 
 # Extensions for markdown docs
 DOC_EXTENSIONS = {".md", ".mdx", ".rst", ".txt"}
-
-# All scannable extensions (code + docs)
-ALL_EXTENSIONS = set(LANG_MAP.keys()) | DOC_EXTENSIONS
-
-# Kept as a name so existing imports keep working; the grammars themselves come from
-# scanner.code, which is the one place that knows each package's entry point.
-TS_GRAMMAR_MAP = GRAMMAR_MAP
 
 # Chunk capacity range (min, max) in characters
 CHUNK_CAPACITY = (200, 1500)
@@ -352,4 +345,6 @@ def scan_project_files(project_path: Path) -> list[tuple[Path, str]]:
     # Only the vector lane takes these: the code graph indexes symbols, and there is
     # no grammar to get symbols from.
     extended_lang_map.update(TEXT_EXTENSIONS)
-    return project_files(project_path, extended_lang_map)
+    # text_fallback: the vector lane can search anything with words in it. The
+    # code graph cannot, so it does not pass this.
+    return project_files(project_path, extended_lang_map, text_fallback=True)
