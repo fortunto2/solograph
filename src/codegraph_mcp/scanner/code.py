@@ -1092,6 +1092,68 @@ def extract_deep(
     return imports, calls, inherits
 
 
+# Extensions an import specifier may omit, in the order a bundler would try them.
+_IMPORT_EXTS = (
+    ".ts",
+    ".tsx",
+    ".d.ts",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".py",
+    ".go",
+    ".rb",
+    ".php",
+    ".swift",
+    ".kt",
+    ".rs",
+)
+
+
+def resolve_internal_import(module: str, source_file: str, known: set[str]) -> str | None:
+    """The one file an internal import names, or None.
+
+    This used to be `WHERE tgt.path CONTAINS '<fragment>'`, matched against every path
+    in the project. `import './qualify'` therefore linked to qualify.ts AND
+    qualify-pipeline.ts AND qualify-lead.ts AND qualify-lead-def.ts AND the tests AND
+    the route — 21 edges from one specifier, and among them a circular dependency that
+    does not exist. An architectural read of the graph was reading noise.
+
+    So: resolve the specifier the way the language does. Relative paths against the
+    importing file's directory, `@/x` against src/, then the extensions a bundler
+    would try, then `<dir>/index.<ext>`. An unresolvable specifier produces no edge,
+    because a missing edge is a gap and a wrong one is a lie.
+    """
+    import posixpath
+
+    if module.startswith("@/"):
+        bases = [posixpath.join("src", module[2:]), module[2:]]
+    elif module.startswith("."):
+        here = posixpath.dirname(source_file)
+        # Python writes `from .foo import x`; JS writes `./foo`. Both mean "sibling",
+        # and normpath handles the JS form once the leading dot is a path component.
+        rel = (
+            module
+            if module.startswith("./") or module.startswith("../")
+            else posixpath.join(*(["."] * (len(module) - len(module.lstrip("."))) + module.lstrip(".").split(".")))
+        )
+        bases = [posixpath.normpath(posixpath.join(here, rel))]
+    else:
+        return None
+
+    for base in bases:
+        if base in known:
+            return base
+        for ext in _IMPORT_EXTS:
+            if base + ext in known:
+                return base + ext
+        for ext in _IMPORT_EXTS:
+            if f"{base}/index{ext}" in known:
+                return f"{base}/index{ext}"
+    return None
+
+
 def ingest_imports(graph, imports: list[ImportEdge], rust_index: dict | None = None) -> tuple[int, int]:
     """Create IMPORTS edges. Returns (internal_count, external_count).
 
@@ -1105,6 +1167,14 @@ def ingest_imports(graph, imports: list[ImportEdge], rust_index: dict | None = N
     internal = 0
     external = 0
     resolved_pairs: list[tuple[str, str, str]] = []
+    _paths_cache: dict[str, set[str]] = {}
+
+    def _project_paths(g, project: str) -> set[str]:
+        """Every file path in a project, once per ingest rather than once per import."""
+        if project not in _paths_cache:
+            rows = g.query("MATCH (f:File {project: $p}) RETURN f.path", {"p": project})
+            _paths_cache[project] = {r[0] for r in rows.result_set if r[0]}
+        return _paths_cache[project]
 
     if rust_index:
         remaining = []
@@ -1139,16 +1209,15 @@ def ingest_imports(graph, imports: list[ImportEdge], rust_index: dict | None = N
         src_escaped = imp.source_file.replace("'", "\\'")
         module_escaped = imp.module.replace("'", "\\'")
         if imp.kind == "internal":
-            # Internal: File → File (target path contains module name)
-            # Convert relative import to path fragment (e.g. ".utils" → "utils")
-            path_fragment = imp.module.lstrip(".").replace(".", "/")
-            if not path_fragment:
+            known = _project_paths(graph, imp.project)
+            target = resolve_internal_import(imp.module, imp.source_file, known)
+            if not target or target == imp.source_file:
                 continue
+            tgt_escaped = target.replace("'", "\\'")
             try:
                 result = graph.query(
                     f"MATCH (src:File {{path: '{src_escaped}', project: '{imp.project}'}}), "
-                    f"(tgt:File {{project: '{imp.project}'}}) "
-                    f"WHERE tgt.path CONTAINS '{path_fragment}' AND src <> tgt "
+                    f"(tgt:File {{path: '{tgt_escaped}', project: '{imp.project}'}}) "
                     f"MERGE (src)-[:IMPORTS]->(tgt)"
                 )
                 if result.relationships_created > 0:
