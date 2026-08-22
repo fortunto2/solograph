@@ -74,11 +74,13 @@ while IFS='|' read -r name path; do
     since=$(cat "$stamp" 2>/dev/null || date -v-7d +%Y-%m-%dT%H:%M:%S)
     started=$(date +%Y-%m-%dT%H:%M:%S)
 
-    moved=$(git -C "$path" log --since="$since" --oneline 2>/dev/null | head -1)
-    [ -n "$moved" ] || { quiet=$((quiet + 1)); continue; }
+    # No `git log --since` gate any more: --incremental asks git itself,
+    # from the commit the graph was actually stamped at, and it also sees
+    # uncommitted and untracked work — which a log window cannot. A project
+    # with nothing to do costs about a second and says "unchanged".
 
     say "scanning $name"
-    if nice -n 10 "$SOLOGRAPH/.venv/bin/solograph-cli" scan --project "$name" --deep >> "$LOG" 2>&1; then
+    if nice -n 10 "$SOLOGRAPH/.venv/bin/solograph-cli" scan --project "$name" --deep --incremental >> "$LOG" 2>&1; then
         echo "$started" > "$stamp"        # stamp only a pass that finished
         scanned=$((scanned + 1))
     else

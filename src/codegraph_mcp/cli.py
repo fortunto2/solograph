@@ -101,12 +101,24 @@ def init(ctx, projects_dir, deep):
     is_flag=True,
     help="Extract imports, calls, inheritance (tree-sitter deep analysis)",
 )
+@click.option(
+    "--incremental",
+    "-i",
+    is_flag=True,
+    help="Only rescan files git says changed since the last scan of this project",
+)
 @click.pass_context
-def scan(ctx, project, registry, deep):
+def scan(ctx, project, registry, deep, incremental):
     """Scan projects and build the code graph."""
     from .scanner.code import extract_symbols, ingest_files, ingest_symbols, scan_files
     from .scanner.deps import ingest_packages, scan_deps
     from .scanner.git import ingest_modifications, scan_git_log
+    from .scanner.incremental import (
+        delta_since_last_scan,
+        forget_files,
+        record_scan,
+        should_full_rescan,
+    )
     from .scanner.registry import ingest_projects, scan_registry
 
     registry_path = Path(registry) if registry else DEFAULT_REGISTRY
@@ -143,14 +155,32 @@ def scan(ctx, project, registry, deep):
             console.print(f"  [yellow]Skipping {proj.name}[/yellow] (path not found)")
             continue
 
-        # Clear old data for this project
-        cg_db.clear_project(graph, proj.name)
+        # Full or partial? Partial is asked for, possible only when this
+        # project has been scanned before, and forced back to full every
+        # FULL_RESCAN_EVERY passes so cross-file drift cannot accumulate.
+        delta = None
+        partial = False
+        if incremental:
+            delta = delta_since_last_scan(graph, proj.name, proj_path)
+            partial = delta.from_commit is not None and not should_full_rescan(graph, proj.name)
+            if partial and delta.is_noop:
+                console.print(f"  [dim]{proj.name}: unchanged[/dim]")
+                continue
+
+        if partial:
+            # Only the files that moved leave the graph.
+            forget_files(graph, proj.name, delta.changed + delta.deleted)
+        else:
+            cg_db.clear_project(graph, proj.name)
 
         # Projects
         ingest_projects(graph, [proj])
 
         # Files
         files = scan_files(proj_path, proj.name)
+        if partial:
+            touched = set(delta.changed)
+            files = [f for f in files if f.path in touched]
         ingest_files(graph, files)
 
         # Symbols (tree-sitter)
@@ -161,15 +191,19 @@ def scan(ctx, project, registry, deep):
         if all_symbols:
             ingest_symbols(graph, all_symbols)
 
-        # Dependencies
-        packages = scan_deps(proj_path)
-        if packages:
-            ingest_packages(graph, packages, proj.name)
+        # Dependencies and git history describe the project, not a file, so
+        # a partial pass leaves them alone — they were not invalidated by the
+        # three files that changed, and re-reading them is most of the cost
+        # this pass exists to avoid.
+        packages = []
+        if not partial:
+            packages = scan_deps(proj_path)
+            if packages:
+                ingest_packages(graph, packages, proj.name)
 
-        # Git modifications
-        mods = scan_git_log(proj_path, proj.name)
-        if mods:
-            ingest_modifications(graph, mods)
+            mods = scan_git_log(proj_path, proj.name)
+            if mods:
+                ingest_modifications(graph, mods)
 
         print_scan_progress(proj.name, proj.stack, len(files), len(all_symbols), len(packages))
 
@@ -196,6 +230,16 @@ def scan(ctx, project, registry, deep):
                 f"{len(all_calls)} calls ({calls_created} edges), "
                 f"{len(all_inherits)} inherits ({inherits_created} edges)[/dim]"
             )
+
+        # Stamp what we scanned, so the next pass knows where to start.
+        if delta is None:
+            from .scanner.incremental import delta_since_last_scan as _d
+
+            head = _d(graph, proj.name, proj_path).head
+        else:
+            head = delta.head
+        if head:
+            record_scan(graph, proj.name, head, incremental=partial)
 
     # Summary
     stats = cg_db.graph_stats(graph)

@@ -29,6 +29,16 @@ def scan_deps(project_path: Path) -> list[PackageNode]:
     if pkg_swift.exists():
         packages.extend(_parse_package_swift(pkg_swift))
 
+    # Cargo.toml (Rust) — the workspace root and every member crate.
+    #
+    # Rust was simply missing: npm, Python, SPM and Gradle were all read and
+    # Cargo was not, so a workspace of 281 Rust files had zero dependency
+    # edges and every `use serde::…` in it resolved to nothing. The import
+    # side of the graph looked broken when it was the manifest side that had
+    # never been parsed.
+    for cargo in _find_dep_files(project_path, "Cargo.toml"):
+        packages.extend(_parse_cargo_toml(cargo))
+
     # build.gradle.kts (Kotlin)
     gradle = project_path / "app" / "build.gradle.kts"
     if not gradle.exists():
@@ -172,3 +182,44 @@ def ingest_packages(graph, packages: list[PackageNode], project_name: str) -> in
         )
         count += 1
     return count
+
+
+def _parse_cargo_toml(path: Path) -> list[PackageNode]:
+    """Parse Cargo.toml — [dependencies], dev/build, and [workspace.dependencies].
+
+    A dependency is a name and a version *or* a table (`{ version = "1", features
+    = [...] }`, `{ path = "../x" }`, `{ workspace = true }`). Path deps keep
+    their name: in this workspace they are how the app reaches the sibling
+    `video-*` crates, which is exactly the edge worth having.
+    """
+    try:
+        import tomllib
+
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    packages: list[PackageNode] = []
+    seen: set[str] = set()
+
+    sections = [
+        data.get("dependencies", {}),
+        data.get("dev-dependencies", {}),
+        data.get("build-dependencies", {}),
+        data.get("workspace", {}).get("dependencies", {}),
+    ]
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        for name, spec in section.items():
+            if name in seen:
+                continue
+            seen.add(name)
+            if isinstance(spec, str):
+                version = spec
+            elif isinstance(spec, dict):
+                version = spec.get("version") or ("path" if spec.get("path") else "")
+            else:
+                version = ""
+            packages.append(PackageNode(name=name, version=str(version) or None, source="cargo"))
+    return packages
