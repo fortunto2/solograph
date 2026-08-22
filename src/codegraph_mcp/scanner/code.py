@@ -16,11 +16,28 @@ LANG_MAP = {
     # legacy_crm_php is 681 .php and got 89; .js/.mjs covers 105 files in legacy_crm_php
     # and the harness tooling. A language nobody can search is a repo nobody can search.
     ".php": "php",
+    # .inc is PHP in the legacy CRM here — 18 tracked files of real includes that
+    # looked like data because of the extension.
+    ".inc": "php",
     ".tf": "hcl",
     ".hcl": "hcl",
     ".js": "javascript",
     ".mjs": "javascript",
     ".cjs": "javascript",
+    # Added 22 Aug 2026 after counting every tracked extension across the set. These
+    # are not exotic: 134 .html and 37 .mustache of CRM templates, 66 .yml/.yaml of CI
+    # and Ansible, 31 .sql, 23 .sh. Config and templates are where half the answers to
+    # an infra question live, and they were invisible.
+    ".html": "html",
+    ".htm": "html",
+    ".css": "css",
+    ".scss": "css",
+    ".yml": "yaml",
+    ".yaml": "yaml",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".sql": "sql",
+    ".toml": "toml",
     ".swift": "swift",
     ".ts": "typescript",
     ".tsx": "tsx",
@@ -35,6 +52,19 @@ LANG_MAP = {
     ".cc": "cpp",
     ".cxx": "cpp",
     ".hpp": "cpp",
+}
+
+# Extensions with no tree-sitter grammar on PyPI that are still worth searching.
+# They carry real content — 79 .astro pages and 37 .mustache templates in this set —
+# and a file nobody can search is a file nobody knows exists. They get text chunking
+# and no symbols, which is honest: we can find the words, not the structure.
+TEXT_EXTENSIONS = {
+    ".astro": "text",
+    ".mustache": "text",
+    ".hbs": "text",
+    ".twig": "text",
+    ".jinja": "text",
+    ".j2": "text",
 }
 
 # Languages that share query definitions with another language
@@ -222,6 +252,13 @@ GRAMMAR_MAP = {
     "php": ("tree_sitter_php", "language_php"),
     "hcl": ("tree_sitter_hcl", "language"),
     "javascript": ("tree_sitter_javascript", "language"),
+    "html": ("tree_sitter_html", "language"),
+    "css": ("tree_sitter_css", "language"),
+    "yaml": ("tree_sitter_yaml", "language"),
+    "bash": ("tree_sitter_bash", "language"),
+    "sql": ("tree_sitter_sql", "language"),
+    "toml": ("tree_sitter_toml", "language"),
+    "json": ("tree_sitter_json", "language"),
 }
 
 
@@ -377,6 +414,14 @@ def extract_symbols(file_path: Path, project_name: str, lang: str, rel_path: str
         """,
         # Kept beside typescript rather than aliased to it: TS names classes with
         # type_identifier and JS with identifier, so one query cannot serve both.
+        "bash": """
+            (function_definition name: (word) @func.def)
+        """,
+        "sql": """
+            (create_table (object_reference name: (identifier) @class.def))
+            (create_view (object_reference name: (identifier) @class.def))
+            (create_function (object_reference name: (identifier) @func.def))
+        """,
         "javascript": """
             (function_declaration name: (identifier) @func.def)
             (method_definition name: (property_identifier) @func.def)

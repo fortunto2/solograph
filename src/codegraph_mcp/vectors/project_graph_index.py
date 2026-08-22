@@ -24,6 +24,7 @@ from .common import (
     VECTORS_ROOT,
     get_code_splitter,
     get_markdown_splitter,
+    get_text_splitter,
     init_embedding_function,
     scan_project_files,
 )
@@ -88,6 +89,7 @@ class ProjectGraphIndex:
         self._dbs: dict[str, FalkorDB] = {}
         self._paths: dict[str, Path] = {}  # name → project_path
         self._md_splitter = None
+        self._text_splitter = None
         self._registry_loaded = False
 
     def _ensure_registry(self):
@@ -163,9 +165,13 @@ class ProjectGraphIndex:
         if "\x00" in content or sum(1 for c in content[:2000] if ord(c) < 32 and c not in "\n\r\t") > 20:
             return []
 
-        chunk_type = "doc" if lang == "markdown" else "code"
+        chunk_type = "doc" if lang in ("markdown", "text") else "code"
 
-        if lang == "markdown":
+        if lang == "text":
+            if self._text_splitter is None:
+                self._text_splitter = get_text_splitter()
+            raw_chunks = self._text_splitter.chunks(content)
+        elif lang == "markdown":
             if self._md_splitter is None:
                 self._md_splitter = get_markdown_splitter()
             raw_chunks = self._md_splitter.chunks(content)

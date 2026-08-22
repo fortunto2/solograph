@@ -1,6 +1,6 @@
 [project]
 name = "solograph"
-version = "0.3.1"
+version = "0.4.0"
 description = "Code intelligence MCP server — multi-project code graph, semantic search, session history, knowledge base, web search"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -45,6 +45,13 @@ dependencies = [
     "tree-sitter-php>=0.24.1",
     "tree-sitter-hcl>=1.2.0",
     "tree-sitter-javascript>=0.25.0",
+    "tree-sitter-html>=0.23.2",
+    "tree-sitter-css>=0.25.0",
+    "tree-sitter-yaml>=0.7.2",
+    "tree-sitter-bash>=0.25.1",
+    "tree-sitter-sql>=0.3.11",
+    "tree-sitter-toml>=0.7.0",
+    "tree-sitter-json>=0.24.8",
 ]
 
 [project.optional-dependencies]

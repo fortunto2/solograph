@@ -9,7 +9,7 @@ Both produce 384-dimensional vectors compatible with FalkorDB cosine similarity.
 
 from pathlib import Path
 
-from ..scanner.code import GRAMMAR_MAP, LANG_MAP, project_files
+from ..scanner.code import GRAMMAR_MAP, LANG_MAP, TEXT_EXTENSIONS, project_files
 
 VECTORS_ROOT = Path.home() / ".solo" / "vectors"
 
@@ -345,4 +345,7 @@ def scan_project_files(project_path: Path) -> list[tuple[Path, str]]:
     extended_lang_map = dict(LANG_MAP)
     for ext in DOC_EXTENSIONS:
         extended_lang_map[ext] = "markdown"
+    # Only the vector lane takes these: the code graph indexes symbols, and there is
+    # no grammar to get symbols from.
+    extended_lang_map.update(TEXT_EXTENSIONS)
     return project_files(project_path, extended_lang_map)
