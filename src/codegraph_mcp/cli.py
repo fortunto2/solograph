@@ -220,7 +220,15 @@ def scan(ctx, project, registry, deep, incremental):
                 all_calls.extend(cal)
                 all_inherits.extend(inh)
 
-            int_imp, ext_imp = ingest_imports(graph, all_imports)
+            # The Rust module map is built from the files this pass saw, so
+            # a `use crate::a::b` can find the file it names. On a partial
+            # pass that is only the changed files, which is why an
+            # incremental run resolves fewer internal imports than a full
+            # one — and why every twentieth pass is full.
+            from .scanner.rust_modules import build_index as build_rust_index
+
+            rust_index = build_rust_index(files)
+            int_imp, ext_imp = ingest_imports(graph, all_imports, rust_index)
             calls_created = ingest_calls(graph, all_calls)
             inherits_created = ingest_inherits(graph, all_inherits)
 

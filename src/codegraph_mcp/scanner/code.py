@@ -824,10 +824,49 @@ def extract_deep(
     return imports, calls, inherits
 
 
-def ingest_imports(graph, imports: list[ImportEdge]) -> tuple[int, int]:
-    """Create IMPORTS edges. Returns (internal_count, external_count)."""
+def ingest_imports(graph, imports: list[ImportEdge], rust_index: dict | None = None) -> tuple[int, int]:
+    """Create IMPORTS edges. Returns (internal_count, external_count).
+
+    `rust_index` comes from `rust_modules.build_index` and is what lets a
+    `use crate::a::b` find the file it names. Without it Rust resolved to
+    nothing at all — a module path is not a path fragment, which is the
+    assumption the generic branch below is built on.
+    """
+    from .rust_modules import resolve as resolve_rust
+
     internal = 0
     external = 0
+    resolved_pairs: list[tuple[str, str, str]] = []
+
+    if rust_index:
+        remaining = []
+        for imp in imports:
+            if imp.source_file.endswith(".rs"):
+                target = resolve_rust(imp.module, imp.source_file, rust_index)
+                if target:
+                    resolved_pairs.append((imp.source_file, target, imp.project))
+                    continue
+                # An unresolved Rust path is either an external crate or a
+                # module this scan did not see; fall through so the external
+                # branch can still match it against a Package.
+            remaining.append(imp)
+        imports = remaining
+
+    for chunk_start in range(0, len(resolved_pairs), 500):
+        chunk = resolved_pairs[chunk_start : chunk_start + 500]
+        rows = [{"src": a, "tgt": b, "project": c} for a, b, c in chunk]
+        try:
+            result = graph.query(
+                "UNWIND $rows AS r "
+                "MATCH (src:File {path: r.src, project: r.project}), "
+                "(tgt:File {path: r.tgt, project: r.project}) "
+                "MERGE (src)-[:IMPORTS]->(tgt)",
+                {"rows": rows},
+            )
+            internal += result.relationships_created
+        except Exception:
+            pass
+
     for imp in imports:
         src_escaped = imp.source_file.replace("'", "\\'")
         module_escaped = imp.module.replace("'", "\\'")
