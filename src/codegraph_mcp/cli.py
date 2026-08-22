@@ -650,9 +650,12 @@ def project_search_cmd(ctx, query, project, limit, chunk_type, hybrid, backend):
         )
         if r.get("sibling_chunks"):
             click.echo(f"   siblings: chunks {r['sibling_chunks']}")
-        lines = r["snippet"].strip().split("\n")[:2]
+        # Lines that carry something. Printing the first two verbatim meant a chunk
+        # opening on `"""` or `{` was displayed as a delimiter, and a correct hit read
+        # as a broken index.
+        lines = [ln for ln in r["snippet"].strip().split("\n") if len(ln.strip()) > 3][:3]
         for line in lines:
-            click.echo(f"   {line[:120]}")
+            click.echo(f"   {line.strip()[:120]}")
         click.echo()
 
 

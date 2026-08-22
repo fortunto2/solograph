@@ -26,6 +26,10 @@ TS_GRAMMAR_MAP = GRAMMAR_MAP
 # Chunk capacity range (min, max) in characters
 CHUNK_CAPACITY = (200, 1500)
 
+# Below this a chunk carries no retrievable meaning — see the note in
+# ProjectGraphIndex._chunk_file for the measurement.
+MIN_CHUNK_CHARS = 40
+
 # Embedding dimension (both MLX and ST models use 384)
 EMBEDDING_DIM = 384
 

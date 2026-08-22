@@ -20,6 +20,7 @@ from redislite.falkordb_client import FalkorDB
 from .common import (
     CHUNK_CAPACITY,
     EMBEDDING_DIM,
+    MIN_CHUNK_CHARS,
     TS_GRAMMAR_MAP,
     VECTORS_ROOT,
     get_code_splitter,
@@ -186,6 +187,18 @@ class ProjectGraphIndex:
                 raw_chunks = [content[: CHUNK_CAPACITY[1]]] if len(content) > CHUNK_CAPACITY[1] else [content]
         else:
             raw_chunks = [content[: CHUNK_CAPACITY[1]]] if len(content) > CHUNK_CAPACITY[1] else [content]
+
+        # Drop fragments. CHUNK_CAPACITY's lower bound is a target the splitter aims
+        # for, not a floor it honours: an AST boundary can end a chunk anywhere, and
+        # what comes out includes `;`, `() =>` and `describe`. Measured 22 Aug 2026 on
+        # a 43,156-chunk store, 4,472 of them — 10.4% — were under 20 characters, and
+        # a two-character chunk still gets a 384-dimension embedding that can outrank
+        # real code on a short query.
+        #
+        # Only when the file produced more than one chunk: a genuinely tiny file is
+        # still a file, and dropping it would make it unsearchable rather than tidy.
+        if len(raw_chunks) > 1:
+            raw_chunks = [c for c in raw_chunks if len(c.strip()) >= MIN_CHUNK_CHARS]
 
         chunks = []
         total = len(raw_chunks)
