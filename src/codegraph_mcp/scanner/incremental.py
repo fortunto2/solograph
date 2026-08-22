@@ -88,9 +88,50 @@ def should_full_rescan(graph, project: str) -> bool:
 
 
 def delta_since_last_scan(graph, project: str, path: Path) -> Delta:
-    """Ask git what moved. An unscanned or non-git project asks for everything."""
+    """Ask git what moved, then reconcile against what the code graph holds."""
+    delta = git_delta(path, scanned_commit(graph, project))
+    if delta.from_commit is None:
+        return delta
+
+    # Files the graph holds that are no longer on disk. git cannot tell us
+    # about these when they were never tracked: an untracked file that is
+    # created and then deleted leaves a symbol behind forever, because
+    # neither `diff` nor `ls-files --others` mentions something that is gone.
+    # Measured — a probe file removed this way stayed in the graph and the
+    # pass reported "unchanged". One existence check per known file is
+    # microseconds and runs only on a partial pass.
+    for row in graph.query("MATCH (f:File {project: $p}) RETURN f.path", {"p": project}).result_set:
+        rel = row[0]
+        if rel and not (path / rel).exists() and rel not in delta.deleted:
+            delta.deleted.append(rel)
+    return delta
+
+
+def working_tree_files(path: Path) -> list[str]:
+    """Paths that differ from HEAD right now: modified, staged or untracked.
+
+    A pass that indexes uncommitted work has to remember it did so. `git diff` reports a
+    file while the edit exists and stops the moment it is reverted, so a store written
+    from a dirty tree keeps the old text forever unless the next pass re-checks exactly
+    these paths. Measured — an edit was indexed, reverted, and the next incremental pass
+    reported "0 files" while the search still returned the reverted line.
+    """
+    out: list[str] = []
+    for args in (("diff", "--name-only", "HEAD"), ("ls-files", "--others", "--exclude-standard")):
+        for rel in _git(path, *args).splitlines():
+            if rel and rel not in out:
+                out.append(rel)
+    return out
+
+
+def git_delta(path: Path, previous: str | None) -> Delta:
+    """What moved between `previous` and HEAD, from git alone.
+
+    Split out from delta_since_last_scan so the vector index can reuse it: that store
+    keeps its own commit stamp per project and has no Symbol nodes, so it needs the git
+    half without the code-graph half. One diff parser, not two that drift.
+    """
     head = _git(path, "rev-parse", "HEAD")
-    previous = scanned_commit(graph, project)
 
     if not head or not previous:
         return Delta(head=head, changed=[], deleted=[], from_commit=None)
@@ -124,24 +165,9 @@ def delta_since_last_scan(graph, project: str, path: Path) -> Delta:
     # has not been told about, so a brand-new file was invisible until it was
     # committed. Measured: a fresh Swift file, scanned incrementally, did not
     # reach the graph at all.
-    for rel in _git(path, "diff", "--name-only", "HEAD").splitlines():
-        if rel and rel not in changed:
+    for rel in working_tree_files(path):
+        if rel not in changed:
             changed.append(rel)
-    for rel in _git(path, "ls-files", "--others", "--exclude-standard").splitlines():
-        if rel and rel not in changed:
-            changed.append(rel)
-
-    # Files the graph holds that are no longer on disk. git cannot tell us
-    # about these when they were never tracked: an untracked file that is
-    # created and then deleted leaves a symbol behind forever, because
-    # neither `diff` nor `ls-files --others` mentions something that is gone.
-    # Measured — a probe file removed this way stayed in the graph and the
-    # pass reported "unchanged". One existence check per known file is
-    # microseconds and runs only on a partial pass.
-    for row in graph.query("MATCH (f:File {project: $p}) RETURN f.path", {"p": project}).result_set:
-        rel = row[0]
-        if rel and not (path / rel).exists() and rel not in deleted:
-            deleted.append(rel)
 
     return Delta(head=head, changed=changed, deleted=deleted, from_commit=previous)
 

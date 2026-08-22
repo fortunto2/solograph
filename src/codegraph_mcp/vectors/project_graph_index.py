@@ -61,6 +61,17 @@ def _merge_fragments(chunks: list[str]) -> list[str]:
     return out
 
 
+def _git_head(path: Path) -> str:
+    """HEAD, or "" when this is not a git checkout."""
+    import subprocess
+
+    try:
+        r = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=15)
+    except Exception:
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def _capped(content: str) -> list[str]:
     """The whole file as one chunk, truncated. Last resort when no grammar parses it."""
     return [content[: CHUNK_CAPACITY[1]]] if len(content) > CHUNK_CAPACITY[1] else [content]
@@ -250,11 +261,18 @@ class ProjectGraphIndex:
             )
         return chunks
 
-    def index_project(self, project_path: Path, project_name: str) -> dict:
-        """Index all code and doc files in a project.
+    def index_project(self, project_path: Path, project_name: str, incremental: bool = False) -> dict:
+        """Index a project's code and docs.
 
         Creates File and Chunk nodes with embeddings, linked by HAS_CHUNK edges.
         Returns stats: {chunks, files, code_chunks, doc_chunks}.
+
+        `incremental` re-embeds only what git says moved since this store was last
+        written. Without it the only way to refresh search was a full re-embed of every
+        repo, so the lane people actually query went stale at every commit while the
+        code graph stayed current — a post-commit hook could refresh only half the
+        index. Falls back to a full pass when the store carries no commit stamp, when
+        the project is not a git checkout, or when partial passes have accumulated.
 
         Raises VectorIndexBusy if another process holds this project's lock.
         """
@@ -262,25 +280,101 @@ class ProjectGraphIndex:
         self._paths[project_name] = project_path
 
         with _exclusive(self._db_dir(project_name), project_name):
+            if incremental:
+                partial = self._index_partial(project_path, project_name)
+                if partial is not None:
+                    return partial
             return self._index_locked(project_path, project_name)
 
-    def _index_locked(self, project_path: Path, project_name: str) -> dict:
-        """The write itself. Always called with the project's lock held."""
-        import gc
+    def _index_partial(self, project_path: Path, project_name: str) -> dict | None:
+        """Re-embed only what moved. None when a full pass is required instead."""
+        from ..scanner.incremental import FULL_RESCAN_EVERY, git_delta, working_tree_files
 
         graph = self._get_graph(project_name)
-        file_count = 0
-        total_chunks = 0
-        code_chunks = 0
-        doc_chunks = 0
+        rows = graph.query("MATCH (m:Meta) RETURN m.commit, m.passes, m.dirty").result_set
+        previous = rows[0][0] if rows and rows[0][0] else None
+        passes = int(rows[0][1]) if rows and rows[0][1] else 0
+        # Paths the last pass indexed from an uncommitted state. git stops reporting a
+        # file the moment the edit is reverted, so without carrying them forward the
+        # store keeps text that no longer exists — measured, and the pass reports
+        # "0 files" while the search still returns the reverted line.
+        was_dirty = list(rows[0][2]) if rows and rows[0][2] else []
+        # A partial pass never widens: it re-embeds the files that moved and nothing
+        # else, so a rename that other files reference stays stale until a full pass.
+        # Same reasoning and same counter as the code graph's incremental mode.
+        if previous is None or passes >= FULL_RESCAN_EVERY:
+            return None
 
-        # Clear old data
+        delta = git_delta(project_path, previous)
+        if delta.from_commit is None:
+            return None
+
+        # Files this store holds that are gone from disk. git cannot report an
+        # untracked file created and then deleted, and its chunks would otherwise keep
+        # answering searches forever.
+        held = {r[0] for r in graph.query("MATCH (f:File) RETURN f.path").result_set if r[0]}
+        gone = [rel for rel in held if not (project_path / rel).exists()]
+
+        # What the walker would take, restricted to what moved. Going through
+        # scan_project_files rather than filtering paths by hand keeps one definition of
+        # "is this a source file" across both kinds of pass.
+        moved = set(delta.changed) | set(was_dirty)
+        candidates = [
+            (fp, lang) for fp, lang in scan_project_files(project_path) if str(fp.relative_to(project_path)) in moved
+        ]
+
+        stale = sorted(moved | set(delta.deleted) | set(gone))
+        dirty_now = working_tree_files(project_path)
+        if not stale and not candidates:
+            self._stamp(graph, delta.head, passes + 1, dirty_now)
+            return {"chunks": 0, "files": 0, "code_chunks": 0, "doc_chunks": 0, "partial": True}
+
+        self._forget(graph, stale)
+        stats = self._embed_files(graph, project_path, candidates)
+        self._stamp(graph, delta.head, passes + 1, dirty_now)
+        stats["partial"] = True
+        return stats
+
+    def _forget(self, graph, paths: list[str]) -> None:
+        """Drop these files and their chunks. One query each, not one per path."""
+        if not paths:
+            return
+        graph.query("UNWIND $paths AS p MATCH (c:Chunk {file_path: p}) DETACH DELETE c", params={"paths": paths})
+        graph.query("UNWIND $paths AS p MATCH (f:File {path: p}) DETACH DELETE f", params={"paths": paths})
+
+    def _stamp(self, graph, head: str, passes: int, dirty: list[str] | None = None) -> None:
+        """The commit this store was written at, how many partial passes have run since
+        a full one — so cross-file drift cannot accumulate forever — and which paths
+        were indexed from an uncommitted state, so the next pass re-checks them."""
+        graph.query(
+            "MERGE (m:Meta) SET m.commit = $c, m.passes = $p, m.dirty = $d",
+            params={"c": head, "p": passes, "d": dirty or []},
+        )
+
+    def _index_locked(self, project_path: Path, project_name: str) -> dict:
+        """A full pass: clear the store and re-embed everything. Lock held."""
+        graph = self._get_graph(project_name)
         try:
             graph.query("MATCH (n) DETACH DELETE n")
         except Exception:
             pass
+        stats = self._embed_files(graph, project_path, scan_project_files(project_path))
+        head = _git_head(project_path)
+        if head:
+            from ..scanner.incremental import working_tree_files
 
-        files = scan_project_files(project_path)
+            self._stamp(graph, head, 0, working_tree_files(project_path))
+        return stats
+
+    def _embed_files(self, graph, project_path: Path, files) -> dict:
+        """Chunk, embed and insert these files. Shared by the full and partial passes,
+        so the two cannot disagree about how a file becomes chunks."""
+        import gc
+
+        file_count = 0
+        total_chunks = 0
+        code_chunks = 0
+        doc_chunks = 0
 
         # Process file by file, embed + insert in batches.
         #

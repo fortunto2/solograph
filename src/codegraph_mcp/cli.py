@@ -547,13 +547,19 @@ def session_search_cmd(ctx, query, project, limit, vectors_path, backend):
     help="Registry YAML path",
 )
 @click.option(
+    "--incremental",
+    "-i",
+    is_flag=True,
+    help="Re-embed only what git says changed since this store was written",
+)
+@click.option(
     "--backend",
     type=click.Choice(["mlx", "st"]),
     default=None,
     help="Embedding backend",
 )
 @click.pass_context
-def index_projects_cmd(ctx, projects, registry, backend):
+def index_projects_cmd(ctx, projects, incremental, registry, backend):
     """Index project source code and docs into per-project FalkorDB vector DBs."""
     from .scanner.registry import scan_registry
     from .vectors.project_graph_index import ProjectGraphIndex, VectorIndexBusy
@@ -590,15 +596,16 @@ def index_projects_cmd(ctx, projects, registry, backend):
 
         click.echo(f"  {proj.name}...", nl=False)
         try:
-            stats = idx.index_project(proj_path, proj.name)
+            stats = idx.index_project(proj_path, proj.name, incremental=incremental)
         except VectorIndexBusy as e:
             # One busy project must not abort a sweep over twenty others.
             click.echo(f" SKIPPED — {e}")
             busy.append(proj.name)
             continue
+        mode = " (partial)" if stats.get("partial") else ""
         click.echo(
             f" {stats['files']} files, {stats['chunks']} chunks "
-            f"({stats['code_chunks']} code + {stats['doc_chunks']} doc)"
+            f"({stats['code_chunks']} code + {stats['doc_chunks']} doc){mode}"
         )
         total_chunks += stats["chunks"]
         idx.release(proj.name)
