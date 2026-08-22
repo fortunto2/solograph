@@ -23,6 +23,14 @@ CHUNK_CAPACITY = (200, 1500)
 # ProjectGraphIndex._chunk_file for the measurement.
 MIN_CHUNK_CHARS = 40
 
+# Past this a file is data, not source, whatever its extension says. Measured
+# 22 Aug 2026: a 2.9 MB tina-lock.json took 96.8s to split into 5,655 chunks, each of
+# which then needs its own embedding, and one repo here commits a 48 MB index.json.
+# Splitting is superlinear, so the cost is unbounded while the value is near zero —
+# nobody searches a lockfile. Over the cap the file becomes one truncated chunk, which
+# keeps it findable by name without paying for its contents.
+MAX_CHUNKABLE_BYTES = 256_000
+
 # Embedding dimension (both MLX and ST models use 384)
 EMBEDDING_DIM = 384
 

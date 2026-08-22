@@ -20,6 +20,7 @@ from redislite.falkordb_client import FalkorDB
 from .common import (
     CHUNK_CAPACITY,
     EMBEDDING_DIM,
+    MAX_CHUNKABLE_BYTES,
     MIN_CHUNK_CHARS,
     VECTORS_ROOT,
     get_code_splitter,
@@ -206,7 +207,9 @@ class ProjectGraphIndex:
 
         chunk_type = "doc" if lang in ("markdown", "text") else "code"
 
-        if lang == "text":
+        if len(content) > MAX_CHUNKABLE_BYTES:
+            raw_chunks = _capped(content)
+        elif lang == "text":
             if self._text_splitter is None:
                 self._text_splitter = get_text_splitter()
             raw_chunks = self._text_splitter.chunks(content)

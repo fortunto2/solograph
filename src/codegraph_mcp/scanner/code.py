@@ -38,7 +38,6 @@ LANG_MAP = {
     ".bash": "bash",
     ".sql": "sql",
     ".toml": "toml",
-    ".json": "json",
     ".swift": "swift",
     ".ts": "typescript",
     ".tsx": "tsx",
@@ -148,7 +147,43 @@ SKIP_SUFFIXES = (".map", ".lock")
 # `.min.` anywhere in the name, not just as a suffix: the first file this rule was
 # written against is `slides.min.jquery.js`, where the minified marker sits in the
 # middle. Same for bundles.
-SKIP_MARKERS = (".min.", ".bundle.", "-min.", ".pack.")
+SKIP_MARKERS = (".min.", ".bundle.", "-min.", ".pack.", "-lock.")
+
+# Never worth reading. The text fallback sends anything tracked with an extension to
+# the chunker, which reads and UTF-8-decodes the whole file before a control-character
+# heuristic rejects it — so a committed PDF or font is read in full to be thrown away.
+BINARY_SUFFIXES = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".ico",
+    ".svg",
+    ".webp",
+    ".pdf",
+    ".zip",
+    ".gz",
+    ".tar",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".otf",
+    ".eot",
+    ".mp4",
+    ".mov",
+    ".mp3",
+    ".wav",
+    ".docx",
+    ".xlsx",
+    ".pptx",
+    ".jar",
+    ".so",
+    ".dylib",
+    ".dll",
+    ".exe",
+    ".pyc",
+    ".pem",
+)
 
 
 def tracked_files(project_path: Path) -> list[Path] | None:
@@ -192,6 +227,13 @@ def project_files(project_path: Path, extensions, text_fallback: bool = False) -
     def keep(fp: Path, lang: str) -> bool:
         """One filter chain. Written twice it drifted within a day — the git branch
         checked is_file() and the walk branch did not."""
+        # SKIP_DIRS applies to tracked files too, and that is not redundant with git:
+        # the two answer different questions. Git says whether a file ships with the
+        # project; SKIP_DIRS says whether it is the project's own code. A vendored Go
+        # module is both — edge-mcp commits 675 files of golang.org/x, and a search for
+        # a retry loop came back with zerrors_linux.go.
+        if any(part in SKIP_DIRS for part in fp.parts):
+            return False
         if is_skipped_file(fp):
             return False
         if lang == "markdown" and any(part in SKIP_DOC_DIRS for part in fp.parts):
@@ -273,7 +315,6 @@ GRAMMAR_MAP = {
     "bash": ("tree_sitter_bash", "language"),
     "sql": ("tree_sitter_sql", "language"),
     "toml": ("tree_sitter_toml", "language"),
-    "json": ("tree_sitter_json", "language"),
 }
 
 
