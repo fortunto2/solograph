@@ -111,6 +111,67 @@ SKIP_SUFFIXES = (".map", ".lock")
 SKIP_MARKERS = (".min.", ".bundle.", "-min.", ".pack.")
 
 
+def tracked_files(project_path: Path) -> list[Path] | None:
+    """The files git tracks in this project, or None when it is not a checkout.
+
+    This replaces guessing. SKIP_DIRS can only ever list the build and vendor
+    directories somebody has already been bitten by, and the list is never finished —
+    every new toolchain invents another one. What a project considers its own source
+    is already written down, in .gitignore, and git will read it for us.
+
+    Measured 22 Aug 2026 across a client set: sgr-chat-agent tracks 3,143 files and
+    holds 113,207 on disk; epiphan-web tracks 822 and holds 83,725. Two orders of
+    magnitude of node_modules, .next and vendored assets that no skip list caught.
+
+    SKIP_DOC_DIRS and SKIP_MARKERS still apply on top, because generated reports and
+    vendored minified libraries are frequently committed on purpose.
+    """
+    import subprocess
+
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(project_path), "ls-files", "-z"],
+            capture_output=True,
+            timeout=60,
+        )
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    return [project_path / name for name in r.stdout.decode("utf-8", "replace").split("\0") if name]
+
+
+def project_files(project_path: Path, extensions) -> list[tuple[Path, str]]:
+    """(path, language) for every source file in a project, git-tracked when possible.
+
+    `extensions` maps suffix to language name. Falls back to walking the tree with
+    SKIP_DIRS when the project is not a git checkout, which is the only case where
+    guessing is still necessary.
+    """
+    tracked = tracked_files(project_path)
+    if tracked is not None:
+        out = []
+        for fp in tracked:
+            lang = extensions.get(fp.suffix)
+            if lang and not is_skipped_file(fp) and fp.is_file():
+                if lang == "markdown" and any(part in SKIP_DOC_DIRS for part in fp.parts):
+                    continue
+                out.append((fp, lang))
+        return out
+
+    out = []
+    for ext, lang in extensions.items():
+        for fp in project_path.rglob(f"*{ext}"):
+            if any(part in SKIP_DIRS for part in fp.parts):
+                continue
+            if lang == "markdown" and any(part in SKIP_DOC_DIRS for part in fp.parts):
+                continue
+            if is_skipped_file(fp):
+                continue
+            out.append((fp, lang))
+    return out
+
+
 def is_skipped_file(path: Path) -> bool:
     """One predicate for both scanners, so the code graph and the vector index cannot
     disagree about what counts as source."""
@@ -182,27 +243,19 @@ def _get_ts_language(lang: str):
 def scan_files(project_path: Path, project_name: str) -> list[FileNode]:
     """Scan project directory for source code files."""
     files = []
-    for ext in LANG_MAP:
-        for fp in project_path.rglob(f"*{ext}"):
-            # Skip excluded dirs
-            if any(part in SKIP_DIRS for part in fp.parts):
-                continue
-            if is_skipped_file(fp):
-                continue
-            try:
-                lines = fp.read_text(encoding="utf-8", errors="ignore").count("\n") + 1
-            except Exception:
-                lines = 0
-
-            rel = str(fp.relative_to(project_path))
-            files.append(
-                FileNode(
-                    path=rel,
-                    project=project_name,
-                    lang=LANG_MAP[ext],
-                    lines=lines,
-                )
+    for fp, lang in project_files(project_path, LANG_MAP):
+        try:
+            lines = fp.read_text(encoding="utf-8", errors="ignore").count("\n") + 1
+        except Exception:
+            lines = 0
+        files.append(
+            FileNode(
+                path=str(fp.relative_to(project_path)),
+                project=project_name,
+                lang=lang,
+                lines=lines,
             )
+        )
     return files
 
 
