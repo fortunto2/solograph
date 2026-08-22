@@ -201,7 +201,49 @@ SKIP_DOC_DIRS = {
 }
 
 
-def _get_ts_language(lang: str):
+# language name -> (python package, entry-point function). The entry point differs per
+# package — tree-sitter-typescript has language_typescript and language_tsx, tree-sitter-php
+# has language_php — which is exactly why this must exist once and be imported, not
+# retyped somewhere else with `mod.language()` assumed.
+GRAMMAR_MAP = {
+    "python": ("tree_sitter_python", "language"),
+    "swift": ("tree_sitter_swift", "language"),
+    "typescript": ("tree_sitter_typescript", "language_typescript"),
+    "tsx": ("tree_sitter_typescript", "language_tsx"),
+    "kotlin": ("tree_sitter_kotlin", "language"),
+    "rust": ("tree_sitter_rust", "language"),
+    "go": ("tree_sitter_go", "language"),
+    "java": ("tree_sitter_java", "language"),
+    "ruby": ("tree_sitter_ruby", "language"),
+    "c": ("tree_sitter_c", "language"),
+    "cpp": ("tree_sitter_cpp", "language"),
+    # language_php parses full .php files (text plus <?php ... ?>); language_php_only
+    # would reject everything outside the tags, which is most of a legacy CRM file.
+    "php": ("tree_sitter_php", "language_php"),
+    "hcl": ("tree_sitter_hcl", "language"),
+    "javascript": ("tree_sitter_javascript", "language"),
+}
+
+
+def get_grammar(lang: str):
+    """The raw grammar pointer from the tree-sitter package for a language.
+
+    Separate from get_ts_language because the two consumers want different things:
+    tree_sitter.Parser needs a wrapped Language, semantic_text_splitter.CodeSplitter
+    needs the bare pointer and rejects the wrapper.
+    """
+    import importlib
+
+    if lang not in GRAMMAR_MAP:
+        return None
+    module_name, func_name = GRAMMAR_MAP[lang]
+    try:
+        return getattr(importlib.import_module(module_name), func_name)()
+    except Exception:
+        return None
+
+
+def get_ts_language(lang: str):
     """Get tree-sitter Language object, handling typescript API differences.
 
     tree-sitter-typescript v0.23+ uses language_typescript()/language_tsx()
@@ -211,30 +253,10 @@ def _get_ts_language(lang: str):
 
     from tree_sitter import Language
 
-    grammar_map = {
-        "python": ("tree_sitter_python", "language"),
-        "swift": ("tree_sitter_swift", "language"),
-        "typescript": ("tree_sitter_typescript", "language_typescript"),
-        "tsx": ("tree_sitter_typescript", "language_tsx"),
-        "kotlin": ("tree_sitter_kotlin", "language"),
-        "rust": ("tree_sitter_rust", "language"),
-        "go": ("tree_sitter_go", "language"),
-        "java": ("tree_sitter_java", "language"),
-        "ruby": ("tree_sitter_ruby", "language"),
-        "c": ("tree_sitter_c", "language"),
-        "cpp": ("tree_sitter_cpp", "language"),
-        # language_php parses full .php files (text + <?php ... ?>); language_php_only
-        # would reject everything outside the tags, which is most of a WordPress or
-        # legacy CRM file.
-        "php": ("tree_sitter_php", "language_php"),
-        "hcl": ("tree_sitter_hcl", "language"),
-        "javascript": ("tree_sitter_javascript", "language"),
-    }
-
-    if lang not in grammar_map:
+    if lang not in GRAMMAR_MAP:
         return None
 
-    module_name, func_name = grammar_map[lang]
+    module_name, func_name = GRAMMAR_MAP[lang]
     grammar_mod = importlib.import_module(module_name)
     lang_func = getattr(grammar_mod, func_name)
     return Language(lang_func())
@@ -264,7 +286,7 @@ def extract_symbols(file_path: Path, project_name: str, lang: str, rel_path: str
     try:
         from tree_sitter import Parser, Query, QueryCursor
 
-        ts_lang = _get_ts_language(lang)
+        ts_lang = get_ts_language(lang)
         if ts_lang is None:
             return []
         parser = Parser(ts_lang)
@@ -866,7 +888,7 @@ def extract_deep(
     try:
         from tree_sitter import Parser, Query, QueryCursor
 
-        ts_lang = _get_ts_language(lang)
+        ts_lang = get_ts_language(lang)
         if ts_lang is None:
             return [], [], []
         parser = Parser(ts_lang)

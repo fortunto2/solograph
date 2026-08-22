@@ -9,7 +9,7 @@ Both produce 384-dimensional vectors compatible with FalkorDB cosine similarity.
 
 from pathlib import Path
 
-from ..scanner.code import LANG_MAP, project_files
+from ..scanner.code import GRAMMAR_MAP, LANG_MAP, project_files
 
 VECTORS_ROOT = Path.home() / ".solo" / "vectors"
 
@@ -19,13 +19,9 @@ DOC_EXTENSIONS = {".md", ".mdx", ".rst", ".txt"}
 # All scannable extensions (code + docs)
 ALL_EXTENSIONS = set(LANG_MAP.keys()) | DOC_EXTENSIONS
 
-# tree-sitter grammar module mapping
-TS_GRAMMAR_MAP = {
-    "python": "tree_sitter_python",
-    "swift": "tree_sitter_swift",
-    "typescript": "tree_sitter_typescript",
-    "kotlin": "tree_sitter_kotlin",
-}
+# Kept as a name so existing imports keep working; the grammars themselves come from
+# scanner.code, which is the one place that knows each package's entry point.
+TS_GRAMMAR_MAP = GRAMMAR_MAP
 
 # Chunk capacity range (min, max) in characters
 CHUNK_CAPACITY = (200, 1500)
@@ -110,17 +106,29 @@ def init_embedding_function(backend: str | None = None):
 
 
 def get_code_splitter(lang: str):
-    """Create a CodeSplitter for the given language."""
-    import importlib
+    """An AST-aware splitter for a language, or None if we have no grammar for it.
 
+    This used to carry its own four-entry grammar map and call `mod.language()` on it.
+    tree-sitter-typescript exposes `language_typescript`, not `language`, so the call
+    raised and was swallowed — and every other language the symbol scanner knew about
+    was simply missing from the map. Measured 22 Aug 2026: only python, swift and
+    kotlin got AST chunks. TypeScript, Go, Rust, PHP, JavaScript and HCL fell through
+    to `content[:1500]`, one chunk per file, everything past 1500 characters never
+    indexed at all — 1011 .ts files in one repo here, 654 .go in another.
+
+    So it now asks scanner.code, which already resolves each grammar's entry point for
+    symbol extraction. One map, and a language cannot be searchable for symbols while
+    silently unsearchable for text.
+    """
     from semantic_text_splitter import CodeSplitter
 
-    grammar_module = TS_GRAMMAR_MAP.get(lang)
-    if not grammar_module:
+    from ..scanner.code import get_grammar
+
+    grammar = get_grammar(lang)
+    if grammar is None:
         return None
     try:
-        mod = importlib.import_module(grammar_module)
-        return CodeSplitter(mod.language(), CHUNK_CAPACITY)
+        return CodeSplitter(grammar, CHUNK_CAPACITY)
     except Exception:
         return None
 
