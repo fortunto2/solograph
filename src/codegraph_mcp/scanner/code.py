@@ -33,6 +33,13 @@ _QUERY_ALIASES = {"tsx": "typescript"}
 SKIP_DIRS = {
     # VCS / env
     ".git",
+    # Agent worktrees: a full second copy of the repo, checked out under
+    # .claude/worktrees/. Measured 22 Aug 2026 on video-analyzer — 566 of
+    # 1138 scanned files came from one abandoned worktree, so every symbol
+    # in the project existed twice and search returned paths inside a dead
+    # branch as if they were the code. A copy of the repo is not the repo,
+    # for the same reason .git is not.
+    ".claude",
     ".venv",
     "venv",
     "env",
@@ -40,6 +47,7 @@ SKIP_DIRS = {
     "__pycache__",
     # Build artifacts
     ".build",
+    "target",  # Rust: absent here only because CARGO_TARGET_DIR moves it
     "DerivedData",
     "build",
     ".next",
