@@ -67,17 +67,36 @@ def scan_git_log(project_path: Path, project_name: str, max_commits: int = 100) 
 
 
 def ingest_modifications(graph, mods: list[ModifiedEdge]) -> int:
-    """Create MODIFIED edges between commits and files."""
+    """Create MODIFIED edges between commits and files, a batch at a time.
+
+    MERGE, not CREATE. Every scan re-reads the last 100 commits, so CREATE
+    wrote the same history again on each pass: the edge count grew with the
+    number of scans rather than with the number of commits, and nothing in
+    the graph said which copy was which. Keyed on (file, commit), because
+    that is what makes a modification the same modification.
+    """
     count = 0
-    for m in mods:
-        path_escaped = m.file_path.replace("'", "\\'")
-        author_escaped = m.author.replace("'", "\\'")
-        # Only link to files that exist in the graph
+    for i in range(0, len(mods), 500):
+        chunk = mods[i : i + 500]
+        rows = [
+            {
+                "path": m.file_path,
+                "project": m.project,
+                "author": m.author,
+                "date": m.date,
+                "added": m.lines_added,
+                "removed": m.lines_removed,
+                "commit": m.commit_hash,
+            }
+            for m in chunk
+        ]
         graph.query(
-            f"MATCH (f:File {{path: '{path_escaped}', project: '{m.project}'}}) "
-            f"CREATE (f)<-[:MODIFIED {{author: '{author_escaped}', date: '{m.date}', "
-            f"lines_added: {m.lines_added}, lines_removed: {m.lines_removed}, "
-            f"commit: '{m.commit_hash}'}}]-(f)"
+            "UNWIND $rows AS r "
+            "MATCH (f:File {path: r.path, project: r.project}) "
+            "MERGE (f)<-[e:MODIFIED {commit: r.commit}]-(f) "
+            "SET e.author = r.author, e.date = r.date, "
+            "e.lines_added = r.added, e.lines_removed = r.removed",
+            {"rows": rows},
         )
-        count += 1
+        count += len(chunk)
     return count

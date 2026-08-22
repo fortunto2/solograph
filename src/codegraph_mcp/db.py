@@ -27,19 +27,35 @@ def init_schema(graph) -> None:
     speed up MATCH queries significantly.
     """
     indexes = [
-        "CREATE INDEX IF NOT EXISTS FOR (p:Project) ON (p.name)",
-        "CREATE INDEX IF NOT EXISTS FOR (f:File) ON (f.path)",
-        "CREATE INDEX IF NOT EXISTS FOR (f:File) ON (f.project)",
-        "CREATE INDEX IF NOT EXISTS FOR (s:Symbol) ON (s.name)",
-        "CREATE INDEX IF NOT EXISTS FOR (pkg:Package) ON (pkg.name)",
-        "CREATE INDEX IF NOT EXISTS FOR (sess:Session) ON (sess.session_id)",
-        "CREATE INDEX IF NOT EXISTS FOR (sess:Session) ON (sess.project_name)",
+        "CREATE INDEX FOR (p:Project) ON (p.name)",
+        "CREATE INDEX FOR (f:File) ON (f.path)",
+        "CREATE INDEX FOR (f:File) ON (f.project)",
+        "CREATE INDEX FOR (s:Symbol) ON (s.name)",
+        # Symbol.project and Symbol.file were missing, and every scan pays
+        # for it twice: clear_project deletes by project, and each MERGE
+        # matches on (name, project, file). Without them both are a scan of
+        # every Symbol in the database — hundreds of thousands of nodes to
+        # write one project of forty thousand.
+        "CREATE INDEX FOR (s:Symbol) ON (s.project)",
+        "CREATE INDEX FOR (s:Symbol) ON (s.file)",
+        "CREATE INDEX FOR (pkg:Package) ON (pkg.name)",
+        "CREATE INDEX FOR (sess:Session) ON (sess.session_id)",
+        "CREATE INDEX FOR (sess:Session) ON (sess.project_name)",
     ]
+    # `IF NOT EXISTS` is not valid here — FalkorDB answers "Invalid input 'I'",
+    # and because the loop swallowed every exception, all seven indexes were
+    # silently never created. Measured 22 Aug 2026: `CALL db.indexes()` came
+    # back empty on a graph of 35,000 symbols, so every MERGE on
+    # (name, project, file) and every clear_project was a full scan — one
+    # batch of 500 symbols took 11 seconds. The swallow stays, because
+    # re-creating an existing index legitimately raises, but it now only
+    # swallows that.
     for idx in indexes:
         try:
             graph.query(idx)
-        except Exception:
-            pass  # Index may already exist
+        except Exception as e:
+            if "already indexed" not in str(e).lower():
+                print(f"  index refused: {idx} → {e}")
 
 
 def clear_project(graph, project_name: str) -> None:

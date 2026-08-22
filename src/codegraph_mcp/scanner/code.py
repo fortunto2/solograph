@@ -254,40 +254,78 @@ def extract_symbols(file_path: Path, project_name: str, lang: str, rel_path: str
     return symbols
 
 
+# How many rows go to the graph in one query.
+#
+# The scan used to send two queries per node, one node at a time: 43,674
+# symbols in video-analyzer meant ~87,000 round-trips, and the scan took
+# 3m43s at 9% CPU — almost all of it waiting on the socket rather than
+# parsing. Batched, the same project is a fraction of that. 500 keeps any
+# single query small enough to stay well inside the driver's limits.
+BATCH = 500
+
+# A callee name defined more often than this is not resolvable by name, so no
+# CALLS edge is written for it. See ingest_calls for the measurement.
+AMBIGUOUS_NAME_LIMIT = 8
+
+
+def _batched(rows: list, size: int = BATCH):
+    for i in range(0, len(rows), size):
+        yield rows[i : i + size]
+
+
 def ingest_files(graph, files: list[FileNode]) -> int:
-    """Create File nodes and HAS_FILE edges."""
+    """Create File nodes and HAS_FILE edges, a batch at a time."""
     count = 0
-    for f in files:
-        path_escaped = f.path.replace("'", "\\'")
+    for chunk in _batched(files):
+        rows = [{"path": f.path, "project": f.project, "lang": f.lang, "lines": f.lines} for f in chunk]
+        # Parameters, not interpolation: a path or a symbol name carrying a
+        # quote used to need escaping by hand, and one backslash short of
+        # correct is a broken query rather than a wrong answer.
         graph.query(
-            f"MERGE (f:File {{path: '{path_escaped}', project: '{f.project}'}}) "
-            f"SET f.lang = '{f.lang}', f.lines = {f.lines}"
+            "UNWIND $rows AS r "
+            "MERGE (f:File {path: r.path, project: r.project}) "
+            "SET f.lang = r.lang, f.lines = r.lines",
+            {"rows": rows},
         )
         graph.query(
-            f"MATCH (p:Project {{name: '{f.project}'}}), "
-            f"(f:File {{path: '{path_escaped}', project: '{f.project}'}}) "
-            f"MERGE (p)-[:HAS_FILE]->(f)"
+            "UNWIND $rows AS r "
+            "MATCH (p:Project {name: r.project}), "
+            "(f:File {path: r.path, project: r.project}) "
+            "MERGE (p)-[:HAS_FILE]->(f)",
+            {"rows": rows},
         )
-        count += 1
+        count += len(chunk)
     return count
 
 
 def ingest_symbols(graph, symbols: list[SymbolNode]) -> int:
-    """Create Symbol nodes and DEFINES edges."""
+    """Create Symbol nodes and DEFINES edges, a batch at a time."""
     count = 0
-    for s in symbols:
-        name_escaped = s.name.replace("'", "\\'")
-        file_escaped = s.file.replace("'", "\\'")
+    for chunk in _batched(symbols):
+        rows = [
+            {
+                "name": sym.name,
+                "project": sym.project,
+                "file": sym.file,
+                "kind": sym.kind,
+                "line": sym.line,
+            }
+            for sym in chunk
+        ]
         graph.query(
-            f"MERGE (s:Symbol {{name: '{name_escaped}', project: '{s.project}', file: '{file_escaped}'}}) "
-            f"SET s.kind = '{s.kind}', s.line = {s.line}"
+            "UNWIND $rows AS r "
+            "MERGE (s:Symbol {name: r.name, project: r.project, file: r.file}) "
+            "SET s.kind = r.kind, s.line = r.line",
+            {"rows": rows},
         )
         graph.query(
-            f"MATCH (f:File {{path: '{file_escaped}', project: '{s.project}'}}), "
-            f"(s:Symbol {{name: '{name_escaped}', project: '{s.project}', file: '{file_escaped}'}}) "
-            f"MERGE (f)-[:DEFINES]->(s)"
+            "UNWIND $rows AS r "
+            "MATCH (f:File {path: r.file, project: r.project}), "
+            "(s:Symbol {name: r.name, project: r.project, file: r.file}) "
+            "MERGE (f)-[:DEFINES]->(s)",
+            {"rows": rows},
         )
-        count += 1
+        count += len(chunk)
     return count
 
 
@@ -826,21 +864,63 @@ def ingest_imports(graph, imports: list[ImportEdge]) -> tuple[int, int]:
 
 
 def ingest_calls(graph, calls: list[CallEdge]) -> int:
-    """Create CALLS edges (File → Symbol). Returns count of edges created."""
+    """Create CALLS edges (File → Symbol), a batch at a time.
+
+    This is where a deep scan spent its time. One query per call edge, and
+    video-analyzer has 45,114 of them: the scan sat at 6% CPU for four
+    minutes, waiting on the socket. The work per edge is a two-node match,
+    so batching turns 45,000 round-trips into ninety.
+    """
+    # One row per distinct (file, callee): a file calling `len` forty times
+    # is one edge, and the graph has no place to put the other thirty-nine.
+    # Sending them anyway is what made a batched scan slower than the
+    # per-edge loop it replaced — the work is in the two-node match, and it
+    # was being done once per call site rather than once per pair.
+    seen: set[tuple[str, str, str]] = set()
+    unique = []
+    for c in calls:
+        key = (c.source_file, c.callee_name, c.project)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(c)
+
+    # Drop names that too many files define. A CALLS edge is matched on the
+    # callee's *name*, so `X::new()` links to every `new` in the project:
+    # measured on video-analyzer, `new` came back with 2548 calling files in
+    # a project that has 573, and the edge count for one project was 790,284.
+    # An edge that points at every candidate answers no question — "who calls
+    # new" is not a question anybody can act on — while costing a two-node
+    # match each. Rust's `new`/`default`/`clone` and Swift's protocol
+    # witnesses are the whole of this: names defined once still link exactly.
+    if unique:
+        project = unique[0].project
+        ambiguous = {
+            row[0]
+            for row in graph.query(
+                "MATCH (s:Symbol {project: $p}) WITH s.name AS n, count(*) AS c WHERE c > $lim RETURN n",
+                {"p": project, "lim": AMBIGUOUS_NAME_LIMIT},
+            ).result_set
+        }
+        unique = [c for c in unique if c.callee_name not in ambiguous]
+
     count = 0
-    for call in calls:
-        src_escaped = call.source_file.replace("'", "\\'")
-        callee_escaped = call.callee_name.replace("'", "\\'")
+    for chunk in _batched(unique):
+        rows = [{"src": c.source_file, "project": c.project, "callee": c.callee_name} for c in chunk]
         try:
             result = graph.query(
-                f"MATCH (src:File {{path: '{src_escaped}', project: '{call.project}'}}), "
-                f"(sym:Symbol {{name: '{callee_escaped}', project: '{call.project}'}}) "
-                f"WHERE src.path <> sym.file "
-                f"MERGE (src)-[:CALLS]->(sym)"
+                "UNWIND $rows AS r "
+                "MATCH (src:File {path: r.src, project: r.project}), "
+                "(sym:Symbol {name: r.callee, project: r.project}) "
+                "WHERE src.path <> sym.file "
+                "MERGE (src)-[:CALLS]->(sym)",
+                {"rows": rows},
             )
-            if result.relationships_created > 0:
-                count += result.relationships_created
+            count += result.relationships_created
         except Exception:
+            # A batch that fails takes its edges with it, where a per-edge
+            # loop lost only one. Deliberate: an edge is an optimisation for
+            # search, and a scan that dies on one bad name is worse.
             pass
     return count
 
