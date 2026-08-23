@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """
-Solograph MCP Server — code intelligence, knowledge base, sessions, sources, web search.
+Solograph MCP Server — code intelligence, knowledge base, sessions, sources.
 
-17 tools for Claude Code. Configure via environment variables:
+15 tools for Claude Code. Web search is NOT here: it lives on the standalone
+searxng MCP server, so a broken import in this module cannot take search down
+with it, and so search runs without FalkorDB or embeddings.
+
+One codebase, several stores. Everything below is per-instance, so the same
+server serves the personal graph and a client one from separate registrations:
+
   CODEGRAPH_DB_PATH     — FalkorDB path (default: ~/.solo/codegraph.db)
   CODEGRAPH_REGISTRY    — registry.yaml path (default: auto-detect)
   KB_PATH               — Knowledge base root (markdown files)
-  TAVILY_API_URL        — Tavily-compatible search URL (default: http://localhost:8013)
-  TAVILY_API_KEY        — API key for Tavily (ignored for SearXNG)
+  CLAUDE_SESSIONS_DIR   — Claude config dir whose projects/ holds the session
+                          logs (default: ~/.claude; e.g. ~/.claude-epiphan)
+  CODEGRAPH_SESSIONS_DB — where session vectors live (default: ~/.solo/sessions)
 
 Run:
   solograph                         # via entry point
@@ -32,6 +39,10 @@ _real_stdout = sys.stdout
 CODEGRAPH_DB_PATH = os.environ.get("CODEGRAPH_DB_PATH", str(Path.home() / ".solo" / "codegraph.db"))
 CODEGRAPH_REGISTRY = os.environ.get("CODEGRAPH_REGISTRY", "")
 KB_PATH = os.environ.get("KB_PATH", "")
+# Claude config dir whose projects/ holds the session logs. Without this an
+# instance serving a client graph would ingest the personal sessions from
+# ~/.claude, because scan_all_sessions() defaults there.
+CLAUDE_SESSIONS_DIR = os.environ.get("CLAUDE_SESSIONS_DIR", "")
 
 
 def _detect_kb_path() -> str:
@@ -56,9 +67,6 @@ def _detect_kb_path() -> str:
             continue
     return ""
 
-
-TAVILY_API_URL = os.environ.get("TAVILY_API_URL", "http://localhost:8013")
-TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 
 # ── Lazy singletons ──────────────────────────────────────────────
 
@@ -327,7 +335,8 @@ def _auto_scan_sessions_if_empty(idx):
         )
 
         sessions, edges, summaries = [], [], []
-        for s, e, sm in scan_all_sessions():
+        claude_dir = Path(CLAUDE_SESSIONS_DIR).expanduser() if CLAUDE_SESSIONS_DIR else None
+        for s, e, sm in scan_all_sessions(claude_dir=claude_dir):
             sessions.append(s)
             edges.extend(e)
             summaries.append(sm)
@@ -474,130 +483,6 @@ def project_info(name: str | None = None) -> list[dict] | dict:
             return p
 
     return {"error": f"Project '{name}' not found in registry"}
-
-
-@mcp.tool()
-async def web_search(
-    query: str,
-    max_results: int = 10,
-    engines: str | None = None,
-    include_raw_content: bool = False,
-) -> dict:
-    """Search the web via SearXNG (Tavily-compatible API).
-
-    Uses smart engine routing: auto-selects engines based on query keywords.
-    Override with engines param for specific sources.
-
-    Engine groups (auto-detected):
-      - academic: arxiv, google scholar (keywords: research, paper, algorithm)
-      - tech: github, stackoverflow (keywords: python, react, code, framework)
-      - product: brave, reddit, app stores (keywords: app, competitor, pricing, vs)
-      - news: google news, hacker news (keywords: news, latest, 2026, trend)
-      - general: google, duckduckgo, brave, reddit (default fallback)
-
-    Args:
-        query: Search query
-        max_results: Number of results (default 10)
-        engines: Override engine selection (e.g. "reddit", "hacker news", "arxiv,google scholar")
-        include_raw_content: Include full page content (up to 5000 chars per page)
-    """
-    payload = {
-        "query": query,
-        "max_results": max_results,
-        "include_raw_content": include_raw_content,
-    }
-    if engines:
-        payload["engines"] = engines
-
-    headers = {}
-    if TAVILY_API_KEY:
-        headers["Authorization"] = f"Bearer {TAVILY_API_KEY}"
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(f"{TAVILY_API_URL}/search", json=payload, headers=headers)
-        if resp.status_code != 200:
-            return {
-                "error": f"Search returned {resp.status_code}",
-                "detail": resp.text[:500],
-            }
-        data = resp.json()
-
-    # Empty results plus suspended engines is a ban, not an absence.
-    down = data.get("unresponsive_engines") or []
-    if down and not data.get("results"):
-        names = ", ".join(f"{e[0]} ({e[1]})" for e in down if e)
-        data["hint"] = (
-            f"No results, and every engine asked for is unavailable: {names}. "
-            "Suspensions last 2-10 minutes; retry or pass a different engines= set."
-        )
-    return data
-
-
-@mcp.tool()
-async def web_extract(
-    url: str,
-    size: str = "m",
-    page: int = 1,
-) -> dict:
-    """Extract a page's main content as clean markdown, sized to a context budget.
-
-    Prefer this over web_fetch for articles and documentation: the adapter runs the
-    page through trafilatura, which drops navigation, ads and footers by structure
-    (web_fetch strips tags with a regex and keeps all of it) and preserves tables,
-    headings and links as markdown.
-
-    Sites that serve their own markdown are negotiated first, so the result is the
-    site's authored prose rather than an extraction guess. The response's "source"
-    field says which happened: "negotiated" or "extracted".
-
-    Extractions are cached server-side for 30 minutes, so paging costs no refetch.
-
-    Args:
-        url: Page to extract
-        size: "s" 5000 chars, "m" 10000 (default), "l" 25000, "f" full document
-              paginated at 25000 per page
-        page: Page number, only meaningful with size="f". Page 1 returns
-              pages.next when more remain.
-    """
-    if size not in ("s", "m", "l", "f"):
-        return {"error": f"size must be s, m, l or f (got {size!r})"}
-    if page < 1:
-        return {"error": f"page must be >= 1 (got {page})"}
-
-    headers = {}
-    if TAVILY_API_KEY:
-        headers["Authorization"] = f"Bearer {TAVILY_API_KEY}"
-
-    async with httpx.AsyncClient(timeout=60) as client:
-        try:
-            resp = await client.post(
-                f"{TAVILY_API_URL}/extract",
-                json={"url": url, "size": size},
-                headers=headers,
-            )
-        except httpx.ConnectError:
-            return {
-                "error": "Extract service unreachable",
-                "detail": f"No adapter at {TAVILY_API_URL}. Start it: make search-up",
-            }
-        if resp.status_code != 200:
-            return {
-                "error": f"Extract returned {resp.status_code}",
-                "detail": resp.text[:500],
-            }
-        data = resp.json()
-
-        # Paging is a second call against the cached extraction.
-        if page > 1:
-            resp = await client.get(f"{TAVILY_API_URL}/extract/{data['id']}/{page}", headers=headers)
-            if resp.status_code != 200:
-                return {
-                    "error": f"Page {page} returned {resp.status_code}",
-                    "detail": resp.text[:500],
-                }
-            data = resp.json()
-
-        return data
 
 
 # ── Random User-Agent pool for web_fetch ────────────────────────
