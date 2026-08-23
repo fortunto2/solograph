@@ -2,7 +2,7 @@
 """
 Solograph MCP Server — code intelligence, knowledge base, sessions, sources, web search.
 
-13 tools for Claude Code. Configure via environment variables:
+17 tools for Claude Code. Configure via environment variables:
   CODEGRAPH_DB_PATH     — FalkorDB path (default: ~/.solo/codegraph.db)
   CODEGRAPH_REGISTRY    — registry.yaml path (default: auto-detect)
   KB_PATH               — Knowledge base root (markdown files)
@@ -521,6 +521,69 @@ async def web_search(
                 "detail": resp.text[:500],
             }
         return resp.json()
+
+
+@mcp.tool()
+async def web_extract(
+    url: str,
+    size: str = "m",
+    page: int = 1,
+) -> dict:
+    """Extract a page's main content as clean markdown, sized to a context budget.
+
+    Prefer this over web_fetch for articles and documentation: the adapter runs the
+    page through trafilatura, which drops navigation, ads and footers by structure
+    (web_fetch strips tags with a regex and keeps all of it) and preserves tables,
+    headings and links as markdown.
+
+    Extractions are cached server-side for 30 minutes, so paging costs no refetch.
+
+    Args:
+        url: Page to extract
+        size: "s" 5000 chars, "m" 10000 (default), "l" 25000, "f" full document
+              paginated at 25000 per page
+        page: Page number, only meaningful with size="f". Page 1 returns
+              pages.next when more remain.
+    """
+    if size not in ("s", "m", "l", "f"):
+        return {"error": f"size must be s, m, l or f (got {size!r})"}
+    if page < 1:
+        return {"error": f"page must be >= 1 (got {page})"}
+
+    headers = {}
+    if TAVILY_API_KEY:
+        headers["Authorization"] = f"Bearer {TAVILY_API_KEY}"
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        try:
+            resp = await client.post(
+                f"{TAVILY_API_URL}/extract",
+                json={"url": url, "size": size},
+                headers=headers,
+            )
+        except httpx.ConnectError:
+            return {
+                "error": "Extract service unreachable",
+                "detail": f"No adapter at {TAVILY_API_URL}. Start it: make search-up",
+            }
+        if resp.status_code != 200:
+            return {
+                "error": f"Extract returned {resp.status_code}",
+                "detail": resp.text[:500],
+            }
+        data = resp.json()
+
+        # Paging is a second call against the cached extraction.
+        if page > 1:
+            resp = await client.get(f"{TAVILY_API_URL}/extract/{data['id']}/{page}", headers=headers)
+            if resp.status_code != 200:
+                return {
+                    "error": f"Page {page} returned {resp.status_code}",
+                    "detail": resp.text[:500],
+                }
+            data = resp.json()
+
+        return data
 
 
 # ── Random User-Agent pool for web_fetch ────────────────────────

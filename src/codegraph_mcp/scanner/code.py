@@ -929,10 +929,48 @@ _INHERIT_QUERIES: dict[str, str] = {
 }
 
 
-def _classify_import(module_text: str, lang: str) -> tuple[str, str]:
+def tsconfig_aliases(project_path: Path) -> dict[str, str]:
+    """`compilerOptions.paths` from a project's tsconfig, as prefix -> target.
+
+    An alias is not an npm scope, and telling them apart by the leading `@` gets it
+    wrong. `@/lib/db` was classified external and turned into a Package edge to a
+    package named `@/lib` that no package.json declares, so no edge was created at
+    all — measured in epiphan/sgr-chat-agent, 1,784 `@/` imports against 426 relative
+    ones and 37 File->File edges for the whole project. An import graph that is blind
+    to four imports in five is worse than a noisy one: absence reads as "no coupling".
+
+    Read from the project rather than hardcoded, because the mapping is per-project:
+    this set maps `@/*` to `./src/*`, and other checkouts map it to `./*`.
+    """
+    import json
+    import re
+
+    cfg = project_path / "tsconfig.json"
+    if not cfg.exists():
+        return {}
+    try:
+        raw = re.sub(r"//[^\n]*", "", cfg.read_text(encoding="utf-8", errors="ignore"))
+        opts = json.loads(raw).get("compilerOptions", {})
+    except Exception:
+        return {}
+    base = (opts.get("baseUrl") or ".").rstrip("/")
+    out = {}
+    for pattern, targets in (opts.get("paths") or {}).items():
+        if not targets:
+            continue
+        prefix = pattern.rstrip("*").rstrip("/")
+        target = str(targets[0]).rstrip("*").rstrip("/").lstrip("./")
+        if base not in (".", ""):
+            target = f"{base.lstrip('./')}/{target}" if target else base.lstrip("./")
+        out[prefix] = target
+    return out
+
+
+def _classify_import(module_text: str, lang: str, aliases: dict[str, str] | None = None) -> tuple[str, str]:
     """Classify an import as internal/external and return normalized module name.
 
-    Returns (kind, module_name).
+    Returns (kind, module_name). `aliases` comes from tsconfig_aliases and turns a
+    path alias into an internal import instead of a phantom npm scope.
     """
     if lang == "python":
         if module_text.startswith("."):
@@ -942,6 +980,9 @@ def _classify_import(module_text: str, lang: str) -> tuple[str, str]:
         clean = module_text.strip("'\"")
         if clean.startswith(".") or clean.startswith("/"):
             return "internal", clean
+        for prefix, target in (aliases or {}).items():
+            if clean == prefix or clean.startswith(prefix + "/"):
+                return "internal", target + clean[len(prefix) :]
         parts = clean.split("/")
         if clean.startswith("@") and len(parts) >= 2:
             return "external", f"{parts[0]}/{parts[1]}"
@@ -980,6 +1021,7 @@ def extract_deep(
     project_name: str,
     lang: str,
     rel_path: str = "",
+    aliases: dict[str, str] | None = None,
 ) -> tuple[list[ImportEdge], list[CallEdge], list[InheritsEdge]]:
     """Extract imports, calls, and inheritance from a file (single parse).
 
@@ -1019,7 +1061,7 @@ def extract_deep(
             for _capture_name, nodes in captures.items():
                 for node in nodes:
                     module_text = node.text.decode("utf-8")
-                    kind, module_name = _classify_import(module_text, query_lang)
+                    kind, module_name = _classify_import(module_text, query_lang, aliases)
                     if module_name not in seen_modules:
                         seen_modules.add(module_name)
                         imports.append(
@@ -1127,20 +1169,21 @@ def resolve_internal_import(module: str, source_file: str, known: set[str]) -> s
     """
     import posixpath
 
-    if module.startswith("@/"):
-        bases = [posixpath.join("src", module[2:]), module[2:]]
+    if not module.startswith("."):
+        # Already root-relative: _classify_import resolved a tsconfig path alias, so
+        # `@/lib/db` arrives here as `src/lib/db`, relative to the project root.
+        bases = [module.lstrip("/")]
     elif module.startswith("."):
         here = posixpath.dirname(source_file)
-        # Python writes `from .foo import x`; JS writes `./foo`. Both mean "sibling",
-        # and normpath handles the JS form once the leading dot is a path component.
-        rel = (
-            module
-            if module.startswith("./") or module.startswith("../")
-            else posixpath.join(*(["."] * (len(module) - len(module.lstrip("."))) + module.lstrip(".").split(".")))
-        )
+        if module.startswith(("./", "../")):
+            rel = module  # JS: "./foo", "../foo/bar"
+        else:
+            # Python: ".foo" is a sibling, "..foo" is one package up. The first form
+            # built ["."] * n and let normpath collapse it, which turned "..foo" into
+            # "./foo" — a sibling, not a parent.
+            dots = len(module) - len(module.lstrip("."))
+            rel = "../" * (dots - 1) + module.lstrip(".").replace(".", "/")
         bases = [posixpath.normpath(posixpath.join(here, rel))]
-    else:
-        return None
 
     for base in bases:
         if base in known:
@@ -1190,6 +1233,31 @@ def ingest_imports(graph, imports: list[ImportEdge], rust_index: dict | None = N
             remaining.append(imp)
         imports = remaining
 
+    for imp in imports:
+        src_escaped = imp.source_file.replace("'", "\\'")
+        module_escaped = imp.module.replace("'", "\\'")
+        if imp.kind == "internal":
+            known = _project_paths(graph, imp.project)
+            target = resolve_internal_import(imp.module, imp.source_file, known)
+            if target and target != imp.source_file:
+                # Into the same UNWIND batch the Rust branch above uses. One query per
+                # import was ~0.66ms of socket round-trip each, and this project has
+                # 2,183 internal imports — 1.4s of a scan spent waiting, for edges that
+                # batch five hundred at a time.
+                resolved_pairs.append((imp.source_file, target, imp.project))
+            continue
+        else:
+            # External: File → Package
+            try:
+                result = graph.query(
+                    f"MATCH (src:File {{path: '{src_escaped}', project: '{imp.project}'}}), "
+                    f"(pkg:Package {{name: '{module_escaped}'}}) "
+                    f"MERGE (src)-[:IMPORTS]->(pkg)"
+                )
+                if result.relationships_created > 0:
+                    external += result.relationships_created
+            except Exception:
+                pass
     for chunk_start in range(0, len(resolved_pairs), 500):
         chunk = resolved_pairs[chunk_start : chunk_start + 500]
         rows = [{"src": a, "tgt": b, "project": c} for a, b, c in chunk]
@@ -1205,37 +1273,6 @@ def ingest_imports(graph, imports: list[ImportEdge], rust_index: dict | None = N
         except Exception:
             pass
 
-    for imp in imports:
-        src_escaped = imp.source_file.replace("'", "\\'")
-        module_escaped = imp.module.replace("'", "\\'")
-        if imp.kind == "internal":
-            known = _project_paths(graph, imp.project)
-            target = resolve_internal_import(imp.module, imp.source_file, known)
-            if not target or target == imp.source_file:
-                continue
-            tgt_escaped = target.replace("'", "\\'")
-            try:
-                result = graph.query(
-                    f"MATCH (src:File {{path: '{src_escaped}', project: '{imp.project}'}}), "
-                    f"(tgt:File {{path: '{tgt_escaped}', project: '{imp.project}'}}) "
-                    f"MERGE (src)-[:IMPORTS]->(tgt)"
-                )
-                if result.relationships_created > 0:
-                    internal += result.relationships_created
-            except Exception:
-                pass
-        else:
-            # External: File → Package
-            try:
-                result = graph.query(
-                    f"MATCH (src:File {{path: '{src_escaped}', project: '{imp.project}'}}), "
-                    f"(pkg:Package {{name: '{module_escaped}'}}) "
-                    f"MERGE (src)-[:IMPORTS]->(pkg)"
-                )
-                if result.relationships_created > 0:
-                    external += result.relationships_created
-            except Exception:
-                pass
     return internal, external
 
 

@@ -147,6 +147,7 @@ def scan(ctx, project, registry, deep, incremental):
             ingest_calls,
             ingest_imports,
             ingest_inherits,
+            tsconfig_aliases,
         )
 
     for proj in projects:
@@ -212,10 +213,13 @@ def scan(ctx, project, registry, deep, incremental):
             all_imports = []
             all_calls = []
             all_inherits = []
+            # Once per project: a path alias is a per-project fact, and reading it is
+            # what stops `@/lib/db` being filed as an npm scope that owns no package.
+            aliases = tsconfig_aliases(proj_path)
             for f in files:
                 if not f.lang:
                     continue
-                imp, cal, inh = extract_deep(proj_path / f.path, proj.name, f.lang, rel_path=f.path)
+                imp, cal, inh = extract_deep(proj_path / f.path, proj.name, f.lang, rel_path=f.path, aliases=aliases)
                 all_imports.extend(imp)
                 all_calls.extend(cal)
                 all_inherits.extend(inh)
