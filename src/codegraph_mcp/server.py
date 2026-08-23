@@ -20,9 +20,9 @@ import sys
 from pathlib import Path
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
-mcp = FastMCP("solograph")
+mcp = MCPServer("solograph")
 
 # Redirect print() to stderr — MCP uses stdout for JSON-RPC
 _real_stdout = sys.stdout
@@ -520,7 +520,17 @@ async def web_search(
                 "error": f"Search returned {resp.status_code}",
                 "detail": resp.text[:500],
             }
-        return resp.json()
+        data = resp.json()
+
+    # Empty results plus suspended engines is a ban, not an absence.
+    down = data.get("unresponsive_engines") or []
+    if down and not data.get("results"):
+        names = ", ".join(f"{e[0]} ({e[1]})" for e in down if e)
+        data["hint"] = (
+            f"No results, and every engine asked for is unavailable: {names}. "
+            "Suspensions last 2-10 minutes; retry or pass a different engines= set."
+        )
+    return data
 
 
 @mcp.tool()
@@ -535,6 +545,10 @@ async def web_extract(
     page through trafilatura, which drops navigation, ads and footers by structure
     (web_fetch strips tags with a regex and keeps all of it) and preserves tables,
     headings and links as markdown.
+
+    Sites that serve their own markdown are negotiated first, so the result is the
+    site's authored prose rather than an extraction guess. The response's "source"
+    field says which happened: "negotiated" or "extracted".
 
     Extractions are cached server-side for 30 minutes, so paging costs no refetch.
 

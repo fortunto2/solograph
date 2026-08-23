@@ -36,7 +36,7 @@ dependencies = [
     "click>=8.1",
     "rich>=13.0.0",
     # MCP
-    "mcp>=1.26.0,<2", # 2.0 removed mcp.server.fastmcp; migrate to the standalone fastmcp pkg to lift this
+    "mcp>=2.0.0",
     # HTTP (web search)
     "httpx>=0.28.1",
     "httpcore>=1.0.7", # pin explicitly — uvx can drop transitive deps
