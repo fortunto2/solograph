@@ -39,10 +39,6 @@ _real_stdout = sys.stdout
 CODEGRAPH_DB_PATH = os.environ.get("CODEGRAPH_DB_PATH", str(Path.home() / ".solo" / "codegraph.db"))
 CODEGRAPH_REGISTRY = os.environ.get("CODEGRAPH_REGISTRY", "")
 KB_PATH = os.environ.get("KB_PATH", "")
-# Claude config dir whose projects/ holds the session logs. Without this an
-# instance serving a client graph would ingest the personal sessions from
-# ~/.claude, because scan_all_sessions() defaults there.
-CLAUDE_SESSIONS_DIR = os.environ.get("CLAUDE_SESSIONS_DIR", "")
 
 
 def _detect_kb_path() -> str:
@@ -335,8 +331,7 @@ def _auto_scan_sessions_if_empty(idx):
         )
 
         sessions, edges, summaries = [], [], []
-        claude_dir = Path(CLAUDE_SESSIONS_DIR).expanduser() if CLAUDE_SESSIONS_DIR else None
-        for s, e, sm in scan_all_sessions(claude_dir=claude_dir):
+        for s, e, sm in scan_all_sessions():
             sessions.append(s)
             edges.extend(e)
             summaries.append(sm)

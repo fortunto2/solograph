@@ -7,6 +7,7 @@ Reads ~/.claude/projects/*/uuid.jsonl files, extracts:
 """
 
 import json
+import os
 from collections import defaultdict
 from collections.abc import Iterator
 from pathlib import Path
@@ -276,7 +277,12 @@ def scan_all_sessions(
 ) -> Iterator[tuple[SessionNode, list[SessionFileEdge], SessionSummary]]:
     """Iterate over all session files in ~/.claude/projects/."""
     if claude_dir is None:
-        claude_dir = Path.home() / ".claude"
+        # Read here rather than threaded in from one caller: the MCP server was the
+        # only path that passed it, so `solograph sessions scan` and the post-commit
+        # hook kept ingesting the personal ~/.claude into a client graph. Its
+        # sibling CODEGRAPH_SESSIONS_DB is read at the store for the same reason.
+        env = os.environ.get("CLAUDE_SESSIONS_DIR", "")
+        claude_dir = Path(env).expanduser() if env else Path.home() / ".claude"
 
     projects_dir = claude_dir / "projects"
     if not projects_dir.exists():
