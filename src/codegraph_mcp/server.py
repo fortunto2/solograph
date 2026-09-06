@@ -302,7 +302,74 @@ def session_search(
     """
     idx = _get_session_index()
     _auto_scan_sessions_if_empty(idx)
-    return idx.search(query, n_results=n_results, project=project)
+    return {
+        "results": idx.search(query, n_results=n_results, project=project),
+        "coverage": _session_coverage(idx),
+    }
+
+
+def _session_coverage(idx) -> dict:
+    """What this answer could not see.
+
+    The index is rebuilt on demand, and the auto-scan below fires only when it is
+    completely empty — so after the first scan it never looks at the disk again.
+    Measured on a live machine while answering a question about agent memory: 652
+    sessions indexed against 747 transcripts on disk. Thirteen per cent of what
+    happened was unreachable and every search still answered with full confidence.
+
+    A confident answer over a stale index is the same failure as a passing suite
+    that collected zero tests: nothing is wrong with the result, the result is
+    just not about what was asked. So the coverage rides with the answer instead
+    of living in documentation.
+
+    `indexed_sessions` can be a number while the disk count is missing. That is
+    not "complete", it is "we could not look", and it says so.
+
+    The count comes from the index the search actually reads, not from
+    `codegraph_stats`. Those two disagree on the same machine — 652 Session nodes
+    in the graph against 640 SessionDoc rows in the vector store — and quoting the
+    larger one here would overstate coverage by exactly the sessions a search
+    cannot reach.
+    """
+    from codegraph_mcp.scanner.sessions import count_session_files
+
+    try:
+        indexed = idx.count()
+    except Exception as e:  # a store that cannot be counted is not an empty store
+        return {"status": "unknown", "why": f"index could not be counted: {e}"}
+
+    on_disk = count_session_files()
+    if on_disk is None:
+        return {
+            "status": "unknown",
+            "indexed_sessions": indexed,
+            "why": "the session directory is missing or unreadable, so completeness cannot be judged",
+        }
+
+    missing = on_disk - indexed
+    cov = {
+        "indexed_sessions": indexed,
+        "sessions_on_disk": on_disk,
+        "not_indexed": max(missing, 0),
+    }
+    if missing > 0:
+        cov["status"] = "stale"
+        cov["why"] = (
+            f"{missing} session transcript(s) on disk are not in the index, so this "
+            f"answer cannot be about them. Run `solograph sessions scan` to close the gap."
+        )
+    elif missing < 0:
+        # More indexed than exist: transcripts were deleted, or the graph was built
+        # against another profile. Either way it is not "complete".
+        cov["status"] = "stale"
+        cov["not_indexed"] = 0
+        cov["why"] = (
+            f"the index holds {indexed} sessions but only {on_disk} transcripts exist "
+            f"on disk — it was built against a different directory, or files were removed"
+        )
+    else:
+        cov["status"] = "complete"
+    return cov
 
 
 _sessions_auto_scanned = False

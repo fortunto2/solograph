@@ -271,6 +271,28 @@ def scan_session(
     return session, edges, summary
 
 
+def count_session_files(claude_dir: Path | None = None) -> int | None:
+    """How many session transcripts exist on disk, or None if we cannot tell.
+
+    None rather than 0 when the directory is missing or unreadable. Zero is a
+    measurement — "there are no sessions" — and an unreadable directory is not one.
+    Reporting the second as the first turns "we cannot see your history" into
+    "you have no history", which is the same shape as a lint tool that is absent
+    being read as a lint tool that found nothing.
+    """
+    if claude_dir is None:
+        env = os.environ.get("CLAUDE_SESSIONS_DIR", "")
+        claude_dir = Path(env).expanduser() if env else Path.home() / ".claude"
+
+    projects_dir = claude_dir / "projects"
+    try:
+        if not projects_dir.is_dir():
+            return None
+        return sum(1 for _ in projects_dir.rglob("*.jsonl"))
+    except OSError:
+        return None
+
+
 def scan_all_sessions(
     claude_dir: Path | None = None,
     project_filter: str | None = None,
