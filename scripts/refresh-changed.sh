@@ -1,5 +1,6 @@
 #!/bin/bash
-# Reindex the projects that moved, walking the registry rather than the disk.
+# Keep the code graph current: add new checkouts to the registry, then reindex
+# what moved, walking the registry rather than the disk.
 #
 # Why the registry: `solograph-cli scan --project NAME` validates NAME against
 # ~/.solo/registry.yaml, and the registry carries each project's path — including
@@ -10,16 +11,21 @@
 # that are not in the registry failed with "Project not found" and were counted
 # as done. Walking the registry makes the mismatch impossible by construction.
 #
-# Scope: which projects belong together is a fact about the product, not about
-# this tool, so it lives with the product. The script walks up from where it is
-# run (or from SOLOGRAPH_ROOT) looking for `.solograph.yaml` and takes its
-# `scope:` list. Without one it scans every registry entry. SOLOGRAPH_SCOPE
-# overrides both: a space-separated list, or "all".
+# The registry itself is refreshed first (`solograph-cli registry`: merges, never
+# replaces). It had been generated once, in February, and by October 40 projects
+# in active/ were not in it, so no amount of nightly scanning reached them.
 #
-# Run by ~/Library/LaunchAgents/com.solograph.refresh.plist, nightly.
+# Scope: nightly, the whole registry minus SOLOGRAPH_SKIP. Run by hand from
+# inside a product, the script walks up looking for `.solograph.yaml` and takes
+# its `scope:` list (life2film keeps one). SOLOGRAPH_SCOPE overrides both: a
+# space-separated list, or "all".
+#
+# Run by ~/Library/LaunchAgents/com.solograph.refresh.plist, nightly; by
+# `make scan` in solopreneur on demand.
 set -u
 
 SOLOGRAPH="$HOME/startups/shared/solograph"
+CLI="$SOLOGRAPH/.venv/bin/solograph-cli"
 REGISTRY="$HOME/.solo/registry.yaml"
 STAMP_DIR="$SOLOGRAPH/.refresh-stamps"
 LOG="$SOLOGRAPH/.refresh.log"
@@ -28,7 +34,15 @@ LOG="$SOLOGRAPH/.refresh.log"
 # from that night every run died reading the registry and logged "done —
 # scanned 0, failed 0". 70 nights, zero projects scanned, nothing red.
 PY="$SOLOGRAPH/.venv/bin/python"
-say() { echo "$(date +%FT%T) $*" >> "$LOG"; }
+# rust-code is a symlink to shared/rust-code: 2075 Rust files, and a deep scan
+# of it took over 27 minutes on 22 Aug, more than the rest of the portfolio.
+# Scan it on its own when it is needed: SOLOGRAPH_SCOPE=rust-code SOLOGRAPH_SKIP=
+SKIP="${SOLOGRAPH_SKIP-rust-code}"
+
+# The log always; the terminal too when someone is watching (`make scan`).
+say() {
+    if [ -t 1 ]; then echo "$(date +%FT%T) $*" | tee -a "$LOG"; else echo "$(date +%FT%T) $*" >> "$LOG"; fi
+}
 # Walk up for a project config, the way git finds its root.
 find_scope_file() {
     dir="${SOLOGRAPH_ROOT:-$PWD}"
@@ -56,13 +70,20 @@ fi
 
 mkdir -p "$STAMP_DIR"
 
-# Load average, not the hour: the machine is busy at night too when agents run,
-# and an unattended reindex must never be the reason a build feels slow.
+# Load average, not the hour — but only as a last resort. The job already runs
+# as a launchd Background process (E-cores, low-priority I/O) plus nice 10, so
+# it yields to anything interactive by itself. The old gate of 8 on a 10-core
+# Mac skipped 17 of 70 nights, at loads of 16-61 from agents working at night,
+# and a skipped night is a stale graph. Four runnable threads per core is a
+# machine in trouble; below that, run.
+limit=$(( $(sysctl -n hw.ncpu) * 4 ))
 load=$(sysctl -n vm.loadavg | awk '{print int($2)}')
-if [ "$load" -gt 8 ]; then
-    say "skipped, load $load"
+if [ "$load" -gt "$limit" ]; then
+    say "skipped, load $load > $limit"
     exit 0
 fi
+
+"$CLI" registry >> "$LOG" 2>&1 || { say "FAILED refreshing $REGISTRY"; exit 1; }
 
 # Read the registry before the loop, not in a process substitution: a crash
 # there is invisible to the loop, which just sees no lines and reports success.
@@ -73,6 +94,7 @@ for p in d.get('projects', []):
     print(f\"{p['name']}|{p['path']}\")
 " 2>>"$LOG") || { say "FAILED reading $REGISTRY"; exit 1; }
 [ -n "$PROJECTS" ] || { say "FAILED: $REGISTRY lists no projects"; exit 1; }
+[ -n "$SKIP" ] && say "skipping: $SKIP (SOLOGRAPH_SKIP)"
 
 scanned=0; failed=0; quiet=0
 while IFS='|' read -r name path; do
@@ -80,6 +102,7 @@ while IFS='|' read -r name path; do
     if [ -n "$WANTED" ]; then
         case " $WANTED " in *" $name "*) ;; *) continue ;; esac
     fi
+    case " $SKIP " in *" $name "*) continue ;; esac
     [ -d "$path/.git" ] || { say "no git checkout: $name"; continue; }
 
     # One stamp per project, so a failure anywhere leaves the others alone —
@@ -92,12 +115,17 @@ while IFS='|' read -r name path; do
     # from the commit the graph was actually stamped at, and it also sees
     # uncommitted and untracked work — which a log window cannot. A project
     # with nothing to do costs about a second and says "unchanged".
-
-    say "scanning $name"
-    if nice -n 10 "$SOLOGRAPH/.venv/bin/solograph-cli" scan --project "$name" --deep --incremental >> "$LOG" 2>&1; then
+    if out=$(nice -n 10 "$CLI" scan --project "$name" --deep --incremental 2>&1); then
+        echo "$out" >> "$LOG"
         echo "$started" > "$stamp"        # stamp only a pass that finished
-        scanned=$((scanned + 1))
+        if echo "$out" | grep -q "$name: unchanged"; then
+            quiet=$((quiet + 1))
+        else
+            say "scanned $name"
+            scanned=$((scanned + 1))
+        fi
     else
+        echo "$out" >> "$LOG"
         say "FAILED $name — stamp left alone, it will retry"
         failed=$((failed + 1))
     fi

@@ -9,10 +9,14 @@ Usage:
     python scripts/project_registry.py stacks        # List available stack templates
 """
 
+import json
 import os
+import shutil
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from datetime import datetime
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Literal
 
@@ -58,90 +62,80 @@ STACK_DETECTORS: list[tuple[str, int, str]] = [
 ]
 
 
-def _find_files(root: Path, pattern: str, max_depth: int) -> list[Path]:
-    """Find files matching glob pattern up to max_depth."""
-    results = []
-    for p in root.rglob(pattern):
-        # Calculate depth relative to root
+_VENDORED = {"node_modules", ".next", "dist", "build"}
+
+
+def _shallow_entries(root: Path, max_depth: int = 3) -> list[tuple[int, Path]]:
+    """Every file and directory up to max_depth below root, with its depth.
+
+    Walks only as deep as the deepest marker, and never enters hidden or vendored
+    directories. The first version ran `rglob` per marker and filtered depth
+    afterwards, so it walked every node_modules in full: 74 s for the 87
+    directories in active/ and epiphan/ (balalar-app alone 14 s), most of it in
+    the kernel.
+    """
+    out: list[tuple[int, Path]] = []
+
+    def walk(d: Path, depth: int) -> None:
         try:
-            rel = p.relative_to(root)
-            if len(rel.parts) <= max_depth:
-                # Skip node_modules, .venv, etc.
-                if not any(
-                    part.startswith(".") or part in ("node_modules", ".next", "dist", "build")
-                    for part in rel.parts[:-1]
-                ):
-                    results.append(p)
-        except ValueError:
-            continue
-    return results
+            entries = list(os.scandir(d))
+        except OSError:
+            return
+        for e in entries:
+            out.append((depth, Path(e.path)))
+            if (
+                depth < max_depth
+                and e.is_dir(follow_symlinks=False)
+                and not e.name.startswith(".")
+                and e.name not in _VENDORED
+            ):
+                walk(Path(e.path), depth + 1)
+
+    walk(root, 1)
+    return out
 
 
-def _read_package_json_deps(project_path: Path) -> dict[str, str]:
-    """Read merged dependencies from package.json files in project root."""
-    for pkg_json in project_path.rglob("package.json"):
+def _package_json_deps(entries: list[tuple[int, Path]]) -> dict[str, str]:
+    """Merged dependencies of the shallowest package.json within two levels."""
+    for _, pkg_json in sorted((d, p) for d, p in entries if d <= 2 and p.name == "package.json"):
         try:
-            rel = pkg_json.relative_to(project_path)
-            if len(rel.parts) > 2:
-                continue
-            if any(part in ("node_modules", ".next", "dist") for part in rel.parts[:-1]):
-                continue
-            import json
-
             data = json.loads(pkg_json.read_text())
-            return {
-                **data.get("dependencies", {}),
-                **data.get("devDependencies", {}),
-            }
+            return {**data.get("dependencies", {}), **data.get("devDependencies", {})}
         except Exception:
             continue
     return {}
 
 
-def _detect_nextjs(project_path: Path) -> bool:
-    """Detect Next.js by checking package.json for 'next' dependency."""
-    deps = _read_package_json_deps(project_path)
-    return "next" in deps
-
-
-def _detect_ai_sdk(project_path: Path) -> bool:
-    """Detect Vercel AI SDK by checking package.json for 'ai' dependency."""
-    deps = _read_package_json_deps(project_path)
-    return "ai" in deps
-
-
-def _detect_fastapi(project_path: Path) -> bool:
-    """Detect FastAPI by checking pyproject.toml for 'fastapi' dependency."""
-    for pyproject in project_path.rglob("pyproject.toml"):
-        try:
-            rel = pyproject.relative_to(project_path)
-            if len(rel.parts) > 2:
+def _mentions_fastapi(entries: list[tuple[int, Path]]) -> bool:
+    for depth, pyproject in entries:
+        if depth <= 2 and pyproject.name == "pyproject.toml":
+            try:
+                if "fastapi" in pyproject.read_text().lower():
+                    return True
+            except Exception:
                 continue
-            content = pyproject.read_text()
-            if "fastapi" in content.lower():
-                return True
-        except Exception:
-            continue
     return False
 
 
 def detect_stacks(project_path: Path) -> list[str]:
     """Detect stacks used in a project."""
+    entries = _shallow_entries(project_path, max(d for _, d, _ in STACK_DETECTORS))
     detected = set()
 
     for pattern, max_depth, stack in STACK_DETECTORS:
-        if _find_files(project_path, pattern, max_depth):
+        if any(d <= max_depth and fnmatch(p.name, pattern) for d, p in entries):
             detected.add(stack)
 
     # Next.js needs special detection (via package.json deps)
     # AI agents stack = Next.js + Vercel AI SDK ('ai' package), always includes supabase
-    if _detect_nextjs(project_path):
+    deps = _package_json_deps(entries)
+    if "next" in deps:
         detected.add("nextjs-supabase")
-        if _detect_ai_sdk(project_path):
+        if "ai" in deps:
             detected.add("nextjs-ai-agents")
 
     # FastAPI: upgrade python-ml to python-api
-    if "python-ml" in detected and _detect_fastapi(project_path):
+    if "python-ml" in detected and _mentions_fastapi(entries):
         detected.discard("python-ml")
         detected.add("python-api")
 
@@ -182,30 +176,35 @@ def get_description(project_path: Path) -> str:
     return ""
 
 
+def is_project_dir(path: Path) -> bool:
+    """A real git checkout, and nothing else.
+
+    A worktree (`.git` is a file) is a second copy of a repo that is already
+    listed: epiphan/ holds four of sgr-chat-agent. A directory without git has
+    nothing for `scan --incremental` to diff against, and the nightly refresh
+    skips it anyway. Zip files and loose notes are not directories at all.
+    """
+    return path.is_dir() and not path.name.startswith(".") and (path / ".git").is_dir()
+
+
+def _project_info(project_dir: Path, status: str = "active") -> ProjectInfo:
+    return ProjectInfo(
+        name=project_dir.name,
+        path=str(project_dir),
+        status=status,
+        stacks=detect_stacks(project_dir),
+        has_git=(project_dir / ".git").is_dir(),
+        has_claude_md=(project_dir / "CLAUDE.md").is_file(),
+        last_commit=get_last_commit(project_dir),
+        description=get_description(project_dir),
+    )
+
+
 def _scan_dir(scan_dir: Path, status: str = "active") -> list[ProjectInfo]:
     """Scan a directory for projects."""
-    projects = []
     if not scan_dir.exists():
-        return projects
-
-    for project_dir in sorted(scan_dir.iterdir()):
-        if not project_dir.is_dir() or project_dir.name.startswith("."):
-            continue
-
-        info = ProjectInfo(
-            name=project_dir.name,
-            path=str(project_dir),
-            status=status,
-            stacks=detect_stacks(project_dir),
-            has_git=(project_dir / ".git").is_dir(),
-            has_claude_md=(project_dir / "CLAUDE.md").is_file(),
-            last_commit=get_last_commit(project_dir),
-            description=get_description(project_dir),
-        )
-
-        projects.append(info)
-
-    return projects
+        return []
+    return [_project_info(d, status) for d in sorted(scan_dir.iterdir()) if is_project_dir(d)]
 
 
 def scan_projects(include_old: bool = False) -> ProjectRegistry:
@@ -237,26 +236,103 @@ def scan_projects(include_old: bool = False) -> ProjectRegistry:
     return registry
 
 
-def save_registry(registry: ProjectRegistry) -> None:
+def save_registry(registry: ProjectRegistry, path: Path | None = None) -> None:
     """Save registry to YAML."""
-    REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    path = path or REGISTRY_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     data = registry.model_dump()
-    with open(REGISTRY_PATH, "w", encoding="utf-8") as f:
+    with open(path, "w", encoding="utf-8") as f:
         yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
-    print(f"Registry saved: {REGISTRY_PATH}")
+    print(f"Registry saved: {path}")
 
 
-def load_registry() -> ProjectRegistry | None:
+def load_registry(path: Path | None = None) -> ProjectRegistry | None:
     """Load registry from YAML."""
-    if not REGISTRY_PATH.exists():
+    path = path or REGISTRY_PATH
+    if not path.exists():
         return None
 
-    with open(REGISTRY_PATH, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     return ProjectRegistry(**data)
+
+
+_KEEP_BACKUPS = 5
+
+
+@dataclass
+class RefreshReport:
+    added: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)
+    collisions: list[str] = field(default_factory=list)
+    backup: Path | None = None
+    total: int = 0
+
+
+def refresh_registry(scan_paths: list[Path] | None = None, path: Path | None = None) -> RefreshReport:
+    """Bring the registry up to date with the disk without losing what was put there.
+
+    Entries already listed stay, in their order, with metadata re-read: some live
+    outside every scan path on purpose (a nested repo, a shared package). An entry
+    whose directory is gone leaves and is named. A new checkout in a scan path is
+    appended, unless its name is taken: the graph keys projects by name, so a
+    second `api` would silently overwrite the first.
+
+    `scan_paths` defaults to the env var when set, else to the paths the registry
+    recorded last time — the nightly job runs with neither configured.
+    """
+    path = path or REGISTRY_PATH
+    existing = load_registry(path) or ProjectRegistry()
+    if scan_paths is None:
+        recorded = existing.scan_path or _scan_raw
+        raw = os.environ.get("CODEGRAPH_SCAN_PATH") or recorded
+        scan_paths = [Path(p.strip()).expanduser() for p in raw.split(",") if p.strip()]
+
+    report = RefreshReport()
+    kept: list[ProjectInfo] = []
+    for p in existing.projects:
+        d = Path(p.path)
+        if not d.exists():
+            report.removed.append(p.name)
+            continue
+        fresh = _project_info(d, p.status)
+        kept.append(p.model_copy(update=fresh.model_dump(exclude={"name", "status", "prd_path"})))
+
+    known_paths = {str(Path(p.path)) for p in kept}
+    known_names = {p.name for p in kept}
+    for scan_dir in scan_paths:
+        if not scan_dir.exists():
+            print(f"Scan path not found: {scan_dir}")
+            continue
+        for d in sorted(scan_dir.iterdir()):
+            if str(d) in known_paths or not is_project_dir(d):
+                continue
+            if d.name in known_names:
+                report.collisions.append(str(d))
+                continue
+            kept.append(_project_info(d))
+            known_paths.add(str(d))
+            known_names.add(d.name)
+            report.added.append(d.name)
+
+    if path.exists():
+        report.backup = path.with_name(f"{path.name}.{datetime.now():%Y%m%d-%H%M%S-%f}.bak")
+        shutil.copy2(path, report.backup)
+        # The nightly job refreshes every night; keep the last few, not a year of them.
+        for old in sorted(path.parent.glob(f"{path.name}.*.bak"))[:-_KEEP_BACKUPS]:
+            old.unlink()
+
+    registry = ProjectRegistry(
+        projects=kept,
+        scan_path=",".join(str(p) for p in scan_paths),
+        last_scan=datetime.now().isoformat(),
+    )
+    save_registry(registry, path)
+    report.total = len(kept)
+    return report
 
 
 def list_available_stacks() -> None:
@@ -351,12 +427,11 @@ def main():
     command = sys.argv[1]
 
     if command == "scan":
-        include_old = "--old" in sys.argv
-        paths_str = ", ".join(str(p) for p in SCAN_PATHS)
-        print(f"Scanning {paths_str}..." + (" + old" if include_old else ""))
-        registry = scan_projects(include_old=include_old)
-        save_registry(registry)
-        print_projects(registry)
+        paths = SCAN_PATHS + ([OLD_PATH] if "--old" in sys.argv else [])
+        print(f"Scanning {', '.join(str(p) for p in paths)}...")
+        report = refresh_registry(paths)
+        print(f"added {report.added}, removed {report.removed}, name taken {report.collisions}")
+        print_projects(load_registry() or ProjectRegistry())
 
     elif command == "list":
         registry = load_registry()

@@ -43,7 +43,7 @@ def init(ctx, projects_dir, deep):
       solograph-cli init                      # interactive prompt
       solograph-cli init ~/projects --deep    # with deep analysis
     """
-    from .registry import REGISTRY_PATH, SCAN_PATHS, save_registry, scan_projects
+    from .registry import REGISTRY_PATH, SCAN_PATHS, load_registry, refresh_registry
 
     codegraph_dir = Path.home() / ".solo"
 
@@ -61,20 +61,14 @@ def init(ctx, projects_dir, deep):
     codegraph_dir.mkdir(parents=True, exist_ok=True)
     console.print(f"[green]✓[/green] {codegraph_dir}")
 
-    # 3. Scan projects → registry.yaml
-    os.environ["CODEGRAPH_SCAN_PATH"] = str(projects_path)
-    # Re-import to pick up new env
-    from . import registry as reg
-
-    reg.SCAN_PATHS = [projects_path]
-    reg.SCAN_PATH = projects_path
-
-    registry = scan_projects()
-    save_registry(registry)
-    n = len(registry.projects)
+    # 3. Scan projects → registry.yaml, merged into what is already there:
+    # a second `init` on another directory used to replace the whole file.
+    report = refresh_registry([projects_path])
+    registry = load_registry()
+    n = report.total
     console.print(f"[green]✓[/green] {n} projects found → {REGISTRY_PATH}")
 
-    for p in registry.projects:
+    for p in registry.projects if registry else []:
         stacks = ", ".join(p.stacks) if p.stacks else "?"
         console.print(f"  {p.name} [dim]({stacks})[/dim]")
 
@@ -256,6 +250,27 @@ def scan(ctx, project, registry, deep, incremental):
     # Summary
     stats = cg_db.graph_stats(graph)
     print_scan_summary(stats)
+
+
+@cli.command("registry")
+def registry_cmd():
+    """Add new checkouts to the registry, drop vanished ones, keep the rest.
+
+    Scan paths: CODEGRAPH_SCAN_PATH if set, else the ones the registry recorded.
+    The previous file is kept next to it as registry.yaml.<stamp>.bak.
+    """
+    from .registry import REGISTRY_PATH, refresh_registry
+
+    report = refresh_registry()
+    console.print(f"[green]✓[/green] {report.total} projects in {REGISTRY_PATH}")
+    if report.added:
+        console.print(f"  added ({len(report.added)}): {', '.join(report.added)}")
+    if report.removed:
+        console.print(
+            f"  [yellow]removed, directory gone ({len(report.removed)}):[/yellow] {', '.join(report.removed)}"
+        )
+    for path in report.collisions:
+        console.print(f"  [red]not added, name already taken:[/red] {path}")
 
 
 @cli.command()
