@@ -25,7 +25,7 @@ typecheck: ## Run ty type-checker (informational)
 # --- Testing ---
 
 test: ## Run tests (pytest)
-	uv run pytest tests/ -v
+	uv run --with pytest python -m pytest tests/ -v
 
 # --- Hooks ---
 

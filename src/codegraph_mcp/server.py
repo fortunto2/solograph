@@ -289,7 +289,7 @@ def session_search(
     query: str,
     n_results: int = 5,
     project: str | None = None,
-) -> list[dict]:
+) -> dict:
     """Semantic search over Claude Code chat session history.
 
     Finds past sessions by what was discussed or worked on.

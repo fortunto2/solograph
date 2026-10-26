@@ -23,6 +23,12 @@ SOLOGRAPH="$HOME/startups/shared/solograph"
 REGISTRY="$HOME/.solo/registry.yaml"
 STAMP_DIR="$SOLOGRAPH/.refresh-stamps"
 LOG="$SOLOGRAPH/.refresh.log"
+# The project's own interpreter, never `python3` from PATH: launchd's PATH puts
+# Homebrew first, Homebrew moved python3 to 3.14 on 21 Aug without PyYAML, and
+# from that night every run died reading the registry and logged "done —
+# scanned 0, failed 0". 70 nights, zero projects scanned, nothing red.
+PY="$SOLOGRAPH/.venv/bin/python"
+say() { echo "$(date +%FT%T) $*" >> "$LOG"; }
 # Walk up for a project config, the way git finds its root.
 find_scope_file() {
     dir="${SOLOGRAPH_ROOT:-$PWD}"
@@ -37,11 +43,11 @@ if [ -n "${SOLOGRAPH_SCOPE:-}" ]; then
     [ "$SOLOGRAPH_SCOPE" = "all" ] && WANTED="" || WANTED="$SOLOGRAPH_SCOPE"
     SCOPE_SRC="SOLOGRAPH_SCOPE"
 elif [ -n "$SCOPE_FILE" ]; then
-    WANTED=$(python3 -c "
+    WANTED=$("$PY" -c "
 import yaml, pathlib, sys
 d = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text()) or {}
 print(' '.join(d.get('scope', [])))
-" "$SCOPE_FILE")
+" "$SCOPE_FILE" 2>>"$LOG") || { say "FAILED reading scope $SCOPE_FILE"; exit 1; }
     SCOPE_SRC="$SCOPE_FILE"
 else
     WANTED=""
@@ -49,7 +55,6 @@ else
 fi
 
 mkdir -p "$STAMP_DIR"
-say() { echo "$(date +%FT%T) $*" >> "$LOG"; }
 
 # Load average, not the hour: the machine is busy at night too when agents run,
 # and an unattended reindex must never be the reason a build feels slow.
@@ -58,6 +63,16 @@ if [ "$load" -gt 8 ]; then
     say "skipped, load $load"
     exit 0
 fi
+
+# Read the registry before the loop, not in a process substitution: a crash
+# there is invisible to the loop, which just sees no lines and reports success.
+PROJECTS=$("$PY" -c "
+import yaml, pathlib
+d = yaml.safe_load(pathlib.Path('$REGISTRY').read_text())
+for p in d.get('projects', []):
+    print(f\"{p['name']}|{p['path']}\")
+" 2>>"$LOG") || { say "FAILED reading $REGISTRY"; exit 1; }
+[ -n "$PROJECTS" ] || { say "FAILED: $REGISTRY lists no projects"; exit 1; }
 
 scanned=0; failed=0; quiet=0
 while IFS='|' read -r name path; do
@@ -71,7 +86,6 @@ while IFS='|' read -r name path; do
     # a single shared stamp marked crashed projects as fresh and they stayed
     # behind for good.
     stamp="$STAMP_DIR/$name"
-    since=$(cat "$stamp" 2>/dev/null || date -v-7d +%Y-%m-%dT%H:%M:%S)
     started=$(date +%Y-%m-%dT%H:%M:%S)
 
     # No `git log --since` gate any more: --incremental asks git itself,
@@ -87,12 +101,7 @@ while IFS='|' read -r name path; do
         say "FAILED $name — stamp left alone, it will retry"
         failed=$((failed + 1))
     fi
-done < <(python3 -c "
-import yaml, pathlib
-d = yaml.safe_load(pathlib.Path('$REGISTRY').read_text())
-for p in d.get('projects', []):
-    print(f\"{p['name']}|{p['path']}\")
-")
+done <<< "$PROJECTS"
 
 say "done — scanned $scanned, unchanged $quiet, failed $failed (scope: $SCOPE_SRC)"
 [ "$failed" -eq 0 ]
