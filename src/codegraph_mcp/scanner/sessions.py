@@ -3,7 +3,9 @@
 Reads ~/.claude/projects/*/uuid.jsonl files, extracts:
 - Session metadata (project, dates, model, branch)
 - File interactions (Read→TOUCHED, Edit→EDITED, Write→CREATED)
-- Summary text for vector indexing
+
+The searchable text is not built here: session_search.read_transcript streams
+it from a byte offset, so a 400 MB live transcript is not re-read per search.
 """
 
 import json
@@ -12,7 +14,7 @@ from collections import defaultdict
 from collections.abc import Iterator
 from pathlib import Path
 
-from ..models import SessionFileEdge, SessionNode, SessionSummary
+from ..models import SessionFileEdge, SessionNode
 
 # Tools → action mapping
 _TOOL_FILE_KEY = {
@@ -25,11 +27,6 @@ _TOOL_FILE_KEY = {
 
 # Lines to skip
 _SKIP_TYPES = {"progress", "file-history-snapshot"}
-
-# Max chars per assistant text block in summary
-_TEXT_LIMIT = 200
-_THINKING_LIMIT = 100
-_SUMMARY_LIMIT = 2000
 
 
 def _derive_project_name(project_dir_name: str) -> str:
@@ -73,9 +70,7 @@ def _make_relative(file_path: str, project_path: str) -> str:
         return file_path
 
 
-def scan_session(
-    session_path: Path, project_dir_name: str
-) -> tuple[SessionNode, list[SessionFileEdge], SessionSummary] | None:
+def scan_session(session_path: Path, project_dir_name: str) -> tuple[SessionNode, list[SessionFileEdge]] | None:
     """Parse one JSONL session file. Streams line-by-line.
 
     Returns None for empty/broken sessions.
@@ -96,11 +91,6 @@ def scan_session(
 
     # For file edges
     file_actions: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-
-    # For summary
-    user_prompts: list[str] = []
-    assistant_texts: list[str] = []
-    thinking_texts: list[str] = []
 
     try:
         with open(session_path, encoding="utf-8") as f:
@@ -136,7 +126,6 @@ def scan_session(
                         # Skip tool_results and system messages
                         if not content.startswith("<") and len(content) > 5:
                             user_prompt_count += 1
-                            user_prompts.append(content[:300])
                     elif isinstance(content, list):
                         # Array of content blocks
                         for block in content:
@@ -145,7 +134,6 @@ def scan_session(
                                     text = block["text"]
                                     if not text.startswith("<") and len(text) > 5:
                                         user_prompt_count += 1
-                                        user_prompts.append(text[:300])
 
                 elif msg_type == "assistant":
                     msg = obj.get("message", {})
@@ -171,16 +159,6 @@ def scan_session(
                                 _, action = _TOOL_FILE_KEY[tool_name]
                                 rel = _make_relative(fp, project_path)
                                 file_actions[rel][action] += 1
-
-                        elif block.get("type") == "text":
-                            text = block.get("text", "")
-                            if text and len(text) > 10:
-                                assistant_texts.append(text[:_TEXT_LIMIT])
-
-                        elif block.get("type") == "thinking":
-                            text = block.get("thinking", "")
-                            if text and len(text) > 10:
-                                thinking_texts.append(text[:_THINKING_LIMIT])
 
                 elif msg_type == "system":
                     if obj.get("subtype") == "turn_duration":
@@ -225,50 +203,7 @@ def scan_session(
             )
         )
 
-    # Build summary
-    summary_parts = []
-    if project_name:
-        header = f"[Project: {project_name}"
-        if git_branch:
-            header += f" | Branch: {git_branch}"
-        if started_at:
-            header += f" | {started_at[:10]}"
-        header += "]"
-        summary_parts.append(header)
-
-    if user_prompts:
-        summary_parts.append("\nPrompts:")
-        for i, p in enumerate(user_prompts[:5], 1):
-            clean = p.replace("\n", " ").strip()
-            summary_parts.append(f"{i}. {clean}")
-
-    if file_actions:
-        edited = [f for f, a in file_actions.items() if "EDITED" in a or "CREATED" in a]
-        touched = [f for f, a in file_actions.items() if f not in edited]
-        if edited:
-            summary_parts.append(f"\nEdited: {', '.join(edited[:10])}")
-        if touched:
-            summary_parts.append(f"Read: {', '.join(touched[:10])}")
-
-    if assistant_texts:
-        summary_parts.append("\nDecisions:")
-        for t in assistant_texts[:3]:
-            clean = t.replace("\n", " ").strip()
-            summary_parts.append(f"- {clean}")
-
-    summary_text = "\n".join(summary_parts)
-    if len(summary_text) > _SUMMARY_LIMIT:
-        summary_text = summary_text[:_SUMMARY_LIMIT] + "..."
-
-    summary = SessionSummary(
-        session_id=session_id,
-        project_name=project_name,
-        summary_text=summary_text,
-        started_at=started_at,
-        tags=[project_name] if project_name else [],
-    )
-
-    return session, edges, summary
+    return session, edges
 
 
 def count_session_files(claude_dir: Path | None = None) -> int | None:
@@ -296,7 +231,7 @@ def count_session_files(claude_dir: Path | None = None) -> int | None:
 def scan_all_sessions(
     claude_dir: Path | None = None,
     project_filter: str | None = None,
-) -> Iterator[tuple[SessionNode, list[SessionFileEdge], SessionSummary]]:
+) -> Iterator[tuple[SessionNode, list[SessionFileEdge]]]:
     """Iterate over all session files in ~/.claude/projects/."""
     if claude_dir is None:
         # Read here rather than threaded in from one caller: the MCP server was the

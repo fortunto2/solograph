@@ -253,12 +253,14 @@ def run_ph_scraper(
                 # Extract makers (structured)
                 makers_list = []
                 for m in node.get("makers", []):
-                    makers_list.append({
-                        "username": m.get("username", ""),
-                        "name": m.get("name", ""),
-                        "url": m.get("url", ""),
-                        "followers": m.get("followersCount", 0),
-                    })
+                    makers_list.append(
+                        {
+                            "username": m.get("username", ""),
+                            "name": m.get("name", ""),
+                            "url": m.get("url", ""),
+                            "followers": m.get("followersCount", 0),
+                        }
+                    )
 
                 # Extract product links (LinkedIn, Twitter, Website, etc.)
                 links = {}

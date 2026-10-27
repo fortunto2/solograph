@@ -7,7 +7,8 @@ function directly never runs that check. That is how session_search shipped on
 tests called the helper, all passed, and every real call through MCP failed with
 "Input should be a valid list" for seven weeks.
 
-So these go through `mcp.call_tool`, the same path a client takes.
+So these go through `mcp.call_tool`, the same path a client takes, against real
+stores in a temporary directory.
 """
 
 from __future__ import annotations
@@ -18,22 +19,34 @@ import json
 import codegraph_mcp.server as server
 
 
-class FakeSessionIndex:
-    def count(self):
-        return 1
-
-    def search(self, query, n_results=5, project=None):
-        return [{"session_id": "s1", "project": "p", "snippet": query}]
+def _call(name, args):
+    result = asyncio.run(server.mcp.call_tool(name, args))
+    assert not result.is_error, result.content[0].text
+    return result
 
 
 def test_session_search_passes_its_output_schema(monkeypatch, tmp_path):
-    monkeypatch.setattr(server, "_get_session_index", lambda: FakeSessionIndex())
-    monkeypatch.setattr(server, "_auto_scan_sessions_if_empty", lambda idx: None)
-    monkeypatch.setenv("CLAUDE_SESSIONS_DIR", str(tmp_path))
+    proj = tmp_path / "claude" / "projects" / "-w-app"
+    proj.mkdir(parents=True)
+    (proj / "s1.jsonl").write_text(
+        json.dumps({"type": "user", "cwd": "/w/app", "message": {"content": "graph rebuild"}}, separators=(",", ":"))
+        + "\n"
+    )
+    monkeypatch.setenv("CLAUDE_SESSIONS_DIR", str(tmp_path / "claude"))
+    monkeypatch.setenv("CODEGRAPH_SESSIONS_DB", str(tmp_path / "db"))
+    monkeypatch.setattr(server, "_sessions", None)
 
-    result = asyncio.run(server.mcp.call_tool("session_search", {"query": "graph"}))
+    payload = json.loads(_call("session_search", {"query": "graph"}).content[0].text)
 
-    assert not result.is_error, result.content[0].text
-    payload = json.loads(result.content[0].text)
     assert payload["results"][0]["session_id"] == "s1"
-    assert "status" in payload["coverage"]
+    assert payload["coverage"]["status"] == "complete"
+
+
+def test_kb_search_passes_its_output_schema(monkeypatch, tmp_path):
+    (tmp_path / "note.md").write_text("---\ntitle: Graph notes\n---\ntree-sitter")
+    monkeypatch.setattr(server, "KB_PATH", str(tmp_path))
+    monkeypatch.setattr(server, "_kb", None)
+
+    result = _call("kb_search", {"query": "graph"})
+
+    assert result.structured_content["result"][0]["file"] == "note.md"

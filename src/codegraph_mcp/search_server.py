@@ -11,10 +11,9 @@ Endpoints:
 
 import json
 import os
-from http.server import BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
-from http.server import HTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
 # Lazy-init to avoid slow startup
 _idx = None
@@ -66,10 +65,13 @@ class SearchHandler(BaseHTTPRequestHandler):
         if source:
             available = [s["source"] for s in idx.list_sources()]
             if source not in available:
-                self._json_response({
-                    "error": f"unknown source: {source}",
-                    "available": available,
-                }, 400)
+                self._json_response(
+                    {
+                        "error": f"unknown source: {source}",
+                        "available": available,
+                    },
+                    400,
+                )
                 return
 
         results = idx.search(query, source=source, n_results=n)
@@ -84,11 +86,13 @@ class SearchHandler(BaseHTTPRequestHandler):
         idx = _get_index()
         count = idx.count()
         sources = idx.list_sources()
-        self._json_response({
-            "status": "ok",
-            "total": count,
-            "sources": len(sources),
-        })
+        self._json_response(
+            {
+                "status": "ok",
+                "total": count,
+                "sources": len(sources),
+            }
+        )
 
     def _json_response(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode()
@@ -105,9 +109,9 @@ class SearchHandler(BaseHTTPRequestHandler):
 def main():
     port = int(os.environ.get("SOLOGRAPH_SEARCH_PORT", "8002"))
     print(f"Solograph search API starting on :{port}")
-    print(f"  GET /search?q=AI+tool&source=producthunt&n=5")
-    print(f"  GET /sources")
-    print(f"  GET /health")
+    print("  GET /search?q=AI+tool&source=producthunt&n=5")
+    print("  GET /sources")
+    print("  GET /health")
 
     # Pre-warm index
     _get_index()

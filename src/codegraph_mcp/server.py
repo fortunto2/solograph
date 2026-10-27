@@ -2,7 +2,7 @@
 """
 Solograph MCP Server — code intelligence, knowledge base, sessions, sources.
 
-15 tools for Claude Code. Web search is NOT here: it lives on the standalone
+13 tools for Claude Code. Web search is NOT here: it lives on the standalone
 searxng MCP server, so a broken import in this module cannot take search down
 with it, and so search runs without FalkorDB or embeddings.
 
@@ -14,7 +14,7 @@ server serves the personal graph and a client one from separate registrations:
   KB_PATH               — Knowledge base root (markdown files)
   CLAUDE_SESSIONS_DIR   — Claude config dir whose projects/ holds the session
                           logs (default: ~/.claude; e.g. ~/.claude-epiphan)
-  CODEGRAPH_SESSIONS_DB — where session vectors live (default: ~/.solo/sessions)
+  CODEGRAPH_SESSIONS_DB — where the session index lives (default: ~/.solo/sessions)
 
 Run:
   solograph                         # via entry point
@@ -67,9 +67,8 @@ def _detect_kb_path() -> str:
 # ── Lazy singletons ──────────────────────────────────────────────
 
 _kb = None
-_session_idx = None
+_sessions = None
 _source_idx = None
-_project_idx = None
 _graph = None
 _graph_db = None
 
@@ -80,23 +79,19 @@ def _get_kb():
         kb_path = _detect_kb_path()
         if not kb_path:
             return None
-        from codegraph_mcp.kb import KnowledgeEmbeddings
+        from codegraph_mcp.kb import KnowledgeBase
 
-        sys.stdout = sys.stderr
-        try:
-            _kb = KnowledgeEmbeddings(kb_path)
-        finally:
-            sys.stdout = _real_stdout
+        _kb = KnowledgeBase(kb_path)
     return _kb
 
 
-def _get_session_index():
-    global _session_idx
-    if _session_idx is None:
-        from codegraph_mcp.vectors.session_index import SessionIndex
+def _get_sessions():
+    global _sessions
+    if _sessions is None:
+        from codegraph_mcp.session_search import SessionSearch
 
-        _session_idx = SessionIndex()
-    return _session_idx
+        _sessions = SessionSearch()
+    return _sessions
 
 
 def _get_source_index():
@@ -106,19 +101,6 @@ def _get_source_index():
 
         _source_idx = SourceIndex()
     return _source_idx
-
-
-def _get_project_index():
-    global _project_idx
-    if _project_idx is None:
-        from codegraph_mcp.vectors.project_graph_index import ProjectGraphIndex
-
-        sys.stdout = sys.stderr
-        try:
-            _project_idx = ProjectGraphIndex(backend="st")
-        finally:
-            sys.stdout = _real_stdout
-    return _project_idx
 
 
 def _get_graph():
@@ -162,71 +144,6 @@ def _get_registry_path() -> Path | None:
     return None
 
 
-def _resolve_project_path(name: str) -> Path | None:
-    """Look up project path by name (registry) or by direct path.
-
-    Accepts:
-      - Project name: "my-app" → looks up in registry.yaml
-      - Absolute path: "/Users/x/projects/my-app" → uses directly
-      - Home-relative: "~/projects/my-app" → expands and uses
-    """
-    # Direct path — bypass registry entirely
-    if "/" in name or name.startswith("~"):
-        p = Path(name).expanduser().resolve()
-        return p if p.is_dir() else None
-
-    # Registry lookup
-    import yaml
-
-    registry_path = _get_registry_path()
-    if not registry_path:
-        return None
-
-    with open(registry_path, encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-
-    for p in data.get("projects", []):
-        if p["name"].lower() == name.lower():
-            proj_path = Path(p["path"]).expanduser()
-            return proj_path if proj_path.exists() else None
-    return None
-
-
-def _auto_index_if_needed(idx, project: str) -> bool:
-    """Auto-index a project if it has no vector index."""
-    # Resolve name for path-based projects
-    proj_name = project
-    if "/" in project or project.startswith("~"):
-        p = Path(project).expanduser().resolve()
-        if p.is_dir():
-            proj_name = p.name
-            idx._paths[proj_name] = p
-        else:
-            return False
-
-    db_dir = idx._db_dir(proj_name)
-    if db_dir.exists():
-        try:
-            graph = idx._get_graph(proj_name)
-            result = graph.query("MATCH (c:Chunk) RETURN count(c)")
-            if result.result_set and result.result_set[0][0] > 0:
-                return False
-        except Exception:
-            pass
-
-    proj_path = _resolve_project_path(project)
-    if not proj_path:
-        return False
-
-    sys.stdout = sys.stderr
-    try:
-        print(f"Auto-indexing {proj_name}...", file=sys.stderr)
-        idx.index_project(proj_path, proj_name)
-    finally:
-        sys.stdout = _real_stdout
-    return True
-
-
 # ── Tools ────────────────────────────────────────────────────────
 
 
@@ -237,51 +154,23 @@ def kb_search(
     doc_type: str | None = None,
     expand_graph: bool = False,
 ) -> list[dict]:
-    """Semantic search over the knowledge base.
+    """Full-text search over the knowledge base (markdown with YAML frontmatter).
 
-    Searches markdown documents with YAML frontmatter.
-    Understands Russian and English. Use expand_graph=true to include
-    knowledge graph neighbors (structurally related docs).
+    BM25 ranking with Russian and English stemming: "графами" finds "граф".
+    Matching is lexical, so use the words the document would use, in its
+    language. New and edited files are picked up on every call. `score` is
+    BM25: higher is better, comparable only within one answer.
 
     Args:
-        query: Search query (e.g. "privacy architecture", "API design patterns")
+        query: Search words (e.g. "privacy architecture", "агент память")
         n_results: Number of results (default 5)
-        doc_type: Filter by type (depends on your KB schema)
-        expand_graph: Expand results with knowledge graph neighbors (1-hop)
+        doc_type: Filter by frontmatter `type` (substring match)
+        expand_graph: Add knowledge-graph neighbours of the top hits (1-hop)
     """
     kb = _get_kb()
     if kb is None:
         return [{"error": "KB not configured. Set KB_PATH env var."}]
-
-    filter_dict = {"type": doc_type} if doc_type else None
-    sys.stdout = sys.stderr
-    try:
-        results = kb.search(
-            query,
-            n_results=n_results,
-            filter_dict=filter_dict,
-            expand_graph=expand_graph,
-        )
-    finally:
-        sys.stdout = _real_stdout
-
-    output = []
-    for i, meta in enumerate(results.get("metadatas", [])):
-        entry = {
-            "file": meta.get("file", ""),
-            "title": meta.get("title", ""),
-            "type": meta.get("type", ""),
-            "tags": meta.get("tags", ""),
-        }
-        if i < len(results.get("distances", [])):
-            entry["relevance"] = round(1 - results["distances"][i], 4)
-        if i < len(results.get("documents", [])):
-            entry["snippet"] = results["documents"][i][:300]
-        if meta.get("graph_source"):
-            entry["graph_source"] = meta["graph_source"]
-        output.append(entry)
-
-    return output
+    return kb.search(query, n_results=n_results, doc_type=doc_type, expand_graph=expand_graph)
 
 
 @mcp.tool()
@@ -290,131 +179,22 @@ def session_search(
     n_results: int = 5,
     project: str | None = None,
 ) -> dict:
-    """Semantic search over Claude Code chat session history.
+    """Full-text search over Claude Code session history — what was asked and answered.
 
-    Finds past sessions by what was discussed or worked on.
-    Useful for "how did I solve X?" or "when did I work on Y?" questions.
+    For "how did I solve X?", "when did I work on Y?", "what did we decide about Z?".
+    Searches every prompt and every answer, BM25-ranked, Russian and English
+    stemming. Matching is lexical: use the words the conversation would have
+    used, and try the other language if the first returns nothing — sessions
+    are mostly in Russian. Includes sessions Claude Code has already deleted
+    from disk (it keeps transcripts 30 days); those come back marked
+    `transcript: deleted`. Live ones carry a `resume` command.
 
     Args:
-        query: Search query (e.g. "knowledge graph implementation", "OCR receipt scanning")
+        query: Search words (e.g. "hubspot webhook", "транскрипция midi")
         n_results: Number of results (default 5)
-        project: Filter by project name (e.g. "my-app", "backend")
+        project: Filter by project name, substring (e.g. "life2film")
     """
-    idx = _get_session_index()
-    _auto_scan_sessions_if_empty(idx)
-    return {
-        "results": idx.search(query, n_results=n_results, project=project),
-        "coverage": _session_coverage(idx),
-    }
-
-
-def _session_coverage(idx) -> dict:
-    """What this answer could not see.
-
-    The index is rebuilt on demand, and the auto-scan below fires only when it is
-    completely empty — so after the first scan it never looks at the disk again.
-    Measured on a live machine while answering a question about agent memory: 652
-    sessions indexed against 747 transcripts on disk. Thirteen per cent of what
-    happened was unreachable and every search still answered with full confidence.
-
-    A confident answer over a stale index is the same failure as a passing suite
-    that collected zero tests: nothing is wrong with the result, the result is
-    just not about what was asked. So the coverage rides with the answer instead
-    of living in documentation.
-
-    `indexed_sessions` can be a number while the disk count is missing. That is
-    not "complete", it is "we could not look", and it says so.
-
-    The count comes from the index the search actually reads, not from
-    `codegraph_stats`. Those two disagree on the same machine — 652 Session nodes
-    in the graph against 640 SessionDoc rows in the vector store — and quoting the
-    larger one here would overstate coverage by exactly the sessions a search
-    cannot reach.
-    """
-    from codegraph_mcp.scanner.sessions import count_session_files
-
-    try:
-        indexed = idx.count()
-    except Exception as e:  # a store that cannot be counted is not an empty store
-        return {"status": "unknown", "why": f"index could not be counted: {e}"}
-
-    on_disk = count_session_files()
-    if on_disk is None:
-        return {
-            "status": "unknown",
-            "indexed_sessions": indexed,
-            "why": "the session directory is missing or unreadable, so completeness cannot be judged",
-        }
-
-    missing = on_disk - indexed
-    cov = {
-        "indexed_sessions": indexed,
-        "sessions_on_disk": on_disk,
-        "not_indexed": max(missing, 0),
-    }
-    if missing > 0:
-        cov["status"] = "stale"
-        cov["why"] = (
-            f"{missing} session transcript(s) on disk are not in the index, so this "
-            f"answer cannot be about them. Run `solograph sessions scan` to close the gap."
-        )
-    elif missing < 0:
-        # More indexed than exist: transcripts were deleted, or the graph was built
-        # against another profile. Either way it is not "complete".
-        cov["status"] = "stale"
-        cov["not_indexed"] = 0
-        cov["why"] = (
-            f"the index holds {indexed} sessions but only {on_disk} transcripts exist "
-            f"on disk — it was built against a different directory, or files were removed"
-        )
-    else:
-        cov["status"] = "complete"
-    return cov
-
-
-_sessions_auto_scanned = False
-
-
-def _auto_scan_sessions_if_empty(idx):
-    """Scan all Claude Code sessions into graph + vectors if index is empty."""
-    global _sessions_auto_scanned
-    if _sessions_auto_scanned:
-        return
-    _sessions_auto_scanned = True
-
-    try:
-        if idx.count() > 0:
-            return
-    except Exception:
-        return
-
-    try:
-        graph = _get_graph()
-        from codegraph_mcp.scanner.sessions import (
-            ingest_session_files,
-            ingest_sessions,
-            link_sessions_to_projects,
-            scan_all_sessions,
-        )
-
-        sessions, edges, summaries = [], [], []
-        for s, e, sm in scan_all_sessions():
-            sessions.append(s)
-            edges.extend(e)
-            summaries.append(sm)
-
-        if sessions:
-            sys.stdout = sys.stderr
-            try:
-                print(f"Auto-scanning {len(sessions)} sessions...", file=sys.stderr)
-                ingest_sessions(graph, sessions)
-                ingest_session_files(graph, edges)
-                link_sessions_to_projects(graph)
-                idx.upsert(summaries)
-            finally:
-                sys.stdout = _real_stdout
-    except Exception as exc:
-        print(f"Auto-scan sessions error: {exc}", file=sys.stderr)
+    return _get_sessions().search(query, n_results=n_results, project=project)
 
 
 @mcp.tool()
@@ -629,75 +409,6 @@ async def web_fetch(
         return {"url": url, "error": f"Connection failed: {e}", "status": 0}
     except Exception as e:
         return {"url": url, "error": str(e), "status": 0}
-
-
-@mcp.tool()
-def project_code_search(
-    query: str,
-    project: str | None = None,
-    n_results: int = 5,
-    chunk_type: str | None = None,
-) -> list[dict]:
-    """Semantic search over project source code and documentation.
-
-    Searches indexed project codebases (per-project FalkorDB vector DBs).
-    Auto-indexes the project on first search if no index exists.
-    Useful for finding code patterns, functions, classes, and docs across projects.
-
-    Args:
-        query: Search query (e.g. "authentication middleware", "API route handler")
-        n_results: Number of results (default 5)
-        project: Project name or path (e.g. "my-app", "~/projects/my-app"). Omit to search all.
-        chunk_type: Filter by "code" or "doc"
-    """
-    idx = _get_project_index()
-
-    # Resolve path-based project to name
-    proj_name = project
-    if project and ("/" in project or project.startswith("~")):
-        p = Path(project).expanduser().resolve()
-        if p.is_dir():
-            proj_name = p.name
-            idx._paths[proj_name] = p
-
-    if proj_name:
-        _auto_index_if_needed(idx, project)
-
-    sys.stdout = sys.stderr
-    try:
-        return idx.search(query, project=proj_name, n_results=n_results, chunk_type=chunk_type)
-    finally:
-        sys.stdout = _real_stdout
-
-
-@mcp.tool()
-def project_code_reindex(
-    project: str,
-) -> dict:
-    """Reindex a project's source code and docs into FalkorDB vectors.
-
-    Call this after significant code changes to update the search index.
-    Uses sentence-transformers backend (safe for memory).
-
-    Args:
-        project: Project name or path (e.g. "my-app", "~/projects/my-app")
-    """
-    proj_path = _resolve_project_path(project)
-    if not proj_path:
-        return {"error": f"Project '{project}' not found in registry. Pass an absolute path to index any project."}
-
-    # Use directory name as project key when path is passed directly
-    proj_name = proj_path.name if "/" in project or project.startswith("~") else project
-
-    idx = _get_project_index()
-    sys.stdout = sys.stderr
-    try:
-        stats = idx.index_project(proj_path, proj_name)
-    finally:
-        sys.stdout = _real_stdout
-    stats["project"] = proj_name
-    stats["path"] = str(proj_path)
-    return stats
 
 
 @mcp.tool()

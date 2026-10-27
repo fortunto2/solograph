@@ -84,16 +84,6 @@ class SessionFileEdge(BaseModel):
     count: int = 1
 
 
-class SessionSummary(BaseModel):
-    """Summary text for vector indexing."""
-
-    session_id: str
-    project_name: str
-    summary_text: str
-    started_at: str = ""
-    tags: list[str] = []
-
-
 class ImportEdge(BaseModel):
     """Edge: file imports a module/package."""
 

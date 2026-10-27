@@ -374,28 +374,16 @@ def shared_cmd(ctx):
     help="Claude config dir holding projects/ (default ~/.claude). "
     "A second workspace keeps its history elsewhere — point this at it.",
 )
-@click.option(
-    "--vectors-path",
-    type=click.Path(),
-    default=None,
-    help="Where session embeddings live (default ~/.solo/vectors/sessions).",
-)
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
 @click.pass_context
-def scan_sessions(ctx, project, claude_dir, vectors_path, backend):
-    """Scan Claude Code chat history into graph + vectors."""
+def scan_sessions(ctx, project, claude_dir):
+    """Scan Claude Code chat history into the graph and the search index."""
     from .scanner.sessions import (
         ingest_session_files,
         ingest_sessions,
         link_sessions_to_projects,
         scan_all_sessions,
     )
-    from .vectors.session_index import SessionIndex
+    from .session_search import SessionSearch
 
     fdb = cg_db.get_db(ctx.obj["db_path"])
     graph = cg_db.get_graph(fdb)
@@ -405,16 +393,14 @@ def scan_sessions(ctx, project, claude_dir, vectors_path, backend):
 
     all_sessions = []
     all_edges = []
-    all_summaries = []
     project_counts: dict[str, int] = {}
 
-    for session, edges, summary in scan_all_sessions(
+    for session, edges in scan_all_sessions(
         claude_dir=Path(claude_dir).expanduser() if claude_dir else None,
         project_filter=project,
     ):
         all_sessions.append(session)
         all_edges.extend(edges)
-        all_summaries.append(summary)
         project_counts[session.project_name] = project_counts.get(session.project_name, 0) + 1
 
     if not all_sessions:
@@ -432,11 +418,10 @@ def scan_sessions(ctx, project, claude_dir, vectors_path, backend):
     project_links = link_sessions_to_projects(graph)
     click.echo(f"  Linked to Project nodes: {project_links}")
 
-    # Index into FalkorDB vectors
-    click.echo(f"\nIndexing {len(all_summaries)} summaries into FalkorDB...")
-    idx = SessionIndex(backend=backend, db_path=vectors_path)
-    indexed = idx.upsert(all_summaries)
-    click.echo(f"  Indexed: {indexed}")
+    # Search index: new and grown transcripts only
+    root = Path(claude_dir).expanduser() if claude_dir else None
+    report = SessionSearch(sessions_root=root).sync()
+    click.echo(f"\nSearch index: {report.get('indexed', 0)} sessions, {report.get('read', 0)} read now")
 
     # Summary
     click.echo(f"\nProjects ({len(project_counts)}):")
@@ -516,229 +501,20 @@ def file_sessions_cmd(ctx, file_path):
 @click.argument("query")
 @click.option("--project", "-p", default=None, help="Filter by project")
 @click.option("--limit", "-n", default=5, help="Number of results")
-@click.option(
-    "--vectors-path",
-    type=click.Path(),
-    default=None,
-    help="Where session embeddings live — must match the scan-sessions run.",
-)
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
 @click.pass_context
-def session_search_cmd(ctx, query, project, limit, vectors_path, backend):
-    """Semantic search across session summaries."""
-    from .vectors.session_index import SessionIndex
+def session_search_cmd(ctx, query, project, limit):
+    """Full-text search across Claude Code sessions, deleted transcripts included."""
+    from .session_search import SessionSearch
 
-    idx = SessionIndex(backend=backend, db_path=vectors_path)
-    results = idx.search(query, n_results=limit, project=project)
-
-    if not results:
-        click.echo("No sessions found.")
+    out = SessionSearch().search(query, n_results=limit, project=project)
+    if not out["results"]:
+        click.echo(f"No sessions found. ({out['coverage']['status']})")
         return
-
-    click.echo(f"\nSearch: '{query}' ({len(results)} results):\n")
-    for i, r in enumerate(results, 1):
-        date = r["started_at"][:10] if r["started_at"] else "?"
-        click.echo(f"{i}. [{r['project_name']}] {date} (relevance: {r['relevance']:.0%})")
-        click.echo(f"   claude --resume {r['session_id']}")
-        # Show first line of summary
-        summary_line = r["summary"].split("\n")[0] if r["summary"] else ""
-        click.echo(f"   {summary_line}")
+    for i, r in enumerate(out["results"], 1):
+        click.echo(f"{i}. [{r['project']}] {r['started_at'][:10] or '?'}  score {r['score']}  {r['title'][:80]}")
+        click.echo(f"   {r.get('resume') or r.get('transcript', '')}")
+        click.echo(f"   {r['snippet'][:160]}")
         click.echo()
-
-
-# ── FalkorDB Graph Vector Commands ──────────────────────────────
-
-
-@cli.command("index-projects")
-@click.option(
-    "--project", "-p", "projects", multiple=True, help="Index only these projects, in the order given. Repeatable."
-)
-@click.option(
-    "--registry",
-    "-r",
-    type=click.Path(exists=True),
-    default=None,
-    help="Registry YAML path",
-)
-@click.option(
-    "--incremental",
-    "-i",
-    is_flag=True,
-    help="Re-embed only what git says changed since this store was written",
-)
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
-@click.pass_context
-def index_projects_cmd(ctx, projects, incremental, registry, backend):
-    """Index project source code and docs into per-project FalkorDB vector DBs."""
-    from .scanner.registry import scan_registry
-    from .vectors.project_graph_index import ProjectGraphIndex, VectorIndexBusy
-
-    registry_path = Path(registry) if registry else DEFAULT_REGISTRY
-    if not registry_path.exists():
-        click.echo(f"Registry not found: {registry_path}")
-        raise SystemExit(1)
-
-    found = scan_registry(registry_path)
-    if projects:
-        # The order given on the command line, not registry order. A caller that wants
-        # the busiest repo first says so in the arguments rather than rewriting the
-        # registry file to convey it.
-        by_name = {p.name: p for p in found}
-        missing = [n for n in projects if n not in by_name]
-        if missing:
-            click.echo(f"Not in the registry: {', '.join(missing)}")
-            raise SystemExit(1)
-        found = [by_name[n] for n in projects]
-    projects = found
-
-    idx = ProjectGraphIndex(backend=backend)
-    click.echo(f"Indexing {len(projects)} project(s) into FalkorDB...\n")
-
-    total_chunks = 0
-
-    busy: list[str] = []
-    for proj in projects:
-        proj_path = Path(proj.path)
-        if not proj_path.exists():
-            click.echo(f"  Skipping {proj.name} (path not found)")
-            continue
-
-        click.echo(f"  {proj.name}...", nl=False)
-        try:
-            stats = idx.index_project(proj_path, proj.name, incremental=incremental)
-        except VectorIndexBusy as e:
-            # One busy project must not abort a sweep over twenty others.
-            click.echo(f" SKIPPED — {e}")
-            busy.append(proj.name)
-            continue
-        mode = " (partial)" if stats.get("partial") else ""
-        click.echo(
-            f" {stats['files']} files, {stats['chunks']} chunks "
-            f"({stats['code_chunks']} code + {stats['doc_chunks']} doc){mode}"
-        )
-        total_chunks += stats["chunks"]
-        idx.release(proj.name)
-
-    click.echo(f"\nTotal: {total_chunks} chunks indexed (FalkorDB)")
-    if busy:
-        click.echo(f"Skipped, already being indexed elsewhere: {', '.join(busy)}")
-        raise SystemExit(1)
-
-
-@cli.command("project-search")
-@click.argument("query")
-@click.option("--project", "-p", default=None, help="Search in one project")
-@click.option("--limit", "-n", default=5, help="Number of results")
-@click.option(
-    "--type",
-    "chunk_type",
-    type=click.Choice(["code", "doc"]),
-    default=None,
-    help="Filter by chunk type",
-)
-@click.option("--hybrid", is_flag=True, default=False, help="Hybrid search (show sibling chunks)")
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
-@click.pass_context
-def project_search_cmd(ctx, query, project, limit, chunk_type, hybrid, backend):
-    """Semantic search over project source code and docs (FalkorDB)."""
-    from .vectors.project_graph_index import ProjectGraphIndex
-
-    idx = ProjectGraphIndex(backend=backend)
-
-    if hybrid and project:
-        results = idx.search_hybrid(query, project=project, n_results=limit)
-    else:
-        results = idx.search(query, project=project, n_results=limit, chunk_type=chunk_type)
-
-    if not results:
-        click.echo("No results found.")
-        return
-
-    engine = "FalkorDB"
-    scope = f"[{project}]" if project else "[all projects]"
-    click.echo(f"\nSearch: '{query}' {scope} ({len(results)} results, {engine}):\n")
-
-    for i, r in enumerate(results, 1):
-        click.echo(
-            f"{i}. [{r['project']}] {r['file']} ({r['language']}, {r['chunk_type']}) relevance: {r['relevance']:.0%}"
-        )
-        if r.get("sibling_chunks"):
-            click.echo(f"   siblings: chunks {r['sibling_chunks']}")
-        # Lines that carry something. Printing the first two verbatim meant a chunk
-        # opening on `"""` or `{` was displayed as a delimiter, and a correct hit read
-        # as a broken index.
-        lines = [ln for ln in r["snippet"].strip().split("\n") if len(ln.strip()) > 3][:3]
-        for line in lines:
-            click.echo(f"   {line.strip()[:120]}")
-        click.echo()
-
-
-@cli.command("project-collections")
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
-@click.pass_context
-def project_collections_cmd(ctx, backend):
-    """List indexed project vector databases (FalkorDB)."""
-    from .vectors.project_graph_index import ProjectGraphIndex
-
-    idx = ProjectGraphIndex(backend=backend)
-    projects = idx.list_projects()
-
-    if not projects:
-        click.echo("No projects indexed (FalkorDB). Run: solograph-cli index-projects")
-        return
-
-    click.echo(f"\nFalkorDB-indexed projects ({len(projects)}):\n")
-    total_chunks = 0
-    total_size = 0.0
-    for p in projects:
-        click.echo(f"  {p['name']}: {p['chunks']} chunks ({p['size_mb']} MB)")
-        total_chunks += p["chunks"]
-        total_size += p["size_mb"]
-
-    click.echo(f"\nTotal: {total_chunks} chunks, {total_size:.2f} MB")
-
-
-@cli.command("project-delete")
-@click.argument("project_name")
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
-@click.pass_context
-def project_delete_cmd(ctx, project_name, backend):
-    """Delete a project's FalkorDB vector database."""
-    from .vectors.project_graph_index import ProjectGraphIndex
-
-    idx = ProjectGraphIndex(backend=backend)
-    if idx.delete_project(project_name):
-        click.echo(f"Deleted FalkorDB vectors for {project_name}")
-    else:
-        click.echo(f"No FalkorDB vectors found for {project_name}")
-
-
-# ── Deep Analysis Commands ────────────────────────────────────────
 
 
 # ── Wow Features ─────────────────────────────────────────────────
@@ -1929,74 +1705,6 @@ def compact_cmd(min_chars, days, scan_dir, show_all):
     console.print("[dim]Sets compacted: true, replaces content with LLM summary[/dim]")
 
 
-@cli.command("watch")
-@click.argument("paths", nargs=-1, type=click.Path(exists=True))
-@click.option(
-    "--debounce-ms",
-    default=1500,
-    help="Debounce delay in milliseconds (default: 1500)",
-)
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
-def watch_cmd(paths, debounce_ms, backend):
-    """Watch KB directories for markdown changes and auto-reindex.
-
-    \b
-    Examples:
-      solograph-cli watch .                        # watch current dir
-      solograph-cli watch ~/kb ~/notes             # watch multiple dirs
-      solograph-cli watch . --debounce-ms 3000     # slower debounce
-    """
-    import signal
-    import time
-
-    from .kb import KnowledgeEmbeddings
-    from .watcher import KBWatcher
-
-    kb_path = os.environ.get("KB_PATH", "")
-    if not kb_path:
-        console.print("[red]Set KB_PATH env var[/red]")
-        raise SystemExit(1)
-
-    watch_paths = list(paths) if paths else [kb_path]
-
-    kb = KnowledgeEmbeddings(kb_path, backend=backend)
-    change_count = {"n": 0}
-
-    def on_change(event_type: str, file_path):
-        rel = file_path.name
-        change_count["n"] += 1
-        console.print(f"  [dim]{event_type}:[/dim] {rel}")
-        if event_type == "deleted":
-            console.print("    [yellow]Deleted (stale index entry remains until reindex)[/yellow]")
-        else:
-            kb.index_all_markdown()
-
-    watcher = KBWatcher(watch_paths, on_change, debounce_ms=debounce_ms)
-
-    console.print(f"[bold]Watching {len(watch_paths)} path(s)[/bold] (debounce: {debounce_ms}ms)")
-    for p in watch_paths:
-        console.print(f"  {p}")
-    console.print("[dim]Press Ctrl+C to stop[/dim]\n")
-
-    watcher.start()
-
-    def _shutdown(sig, frame):
-        console.print(f"\n[bold]Stopped.[/bold] {change_count['n']} changes processed.")
-        watcher.stop()
-        raise SystemExit(0)
-
-    signal.signal(signal.SIGINT, _shutdown)
-    signal.signal(signal.SIGTERM, _shutdown)
-
-    while True:
-        time.sleep(1)
-
-
 @cli.command("index-kb")
 @click.option(
     "--kb-path",
@@ -2004,28 +1712,16 @@ def watch_cmd(paths, debounce_ms, backend):
     default=None,
     help="Knowledge base path (default: KB_PATH env)",
 )
-@click.option("--force", is_flag=True, help="Force re-indexing of all documents")
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
-def index_kb_cmd(kb_path, force, backend):
-    """Index knowledge base markdown files into FalkorDB vectors."""
-    from .kb import KnowledgeEmbeddings
+def index_kb_cmd(kb_path):
+    """Sync the knowledge base search index now (searches also sync on their own)."""
+    from .kb import KnowledgeBase
 
     path = kb_path or os.environ.get("KB_PATH", "")
     if not path:
         console.print("[red]Set KB_PATH env var or pass --kb-path[/red]")
         raise SystemExit(1)
-
-    kb = KnowledgeEmbeddings(path, backend=backend)
-    kb.index_all_markdown(force=force)
-    stats = kb.get_stats()
-    console.print(
-        f"\n[bold green]KB indexed:[/bold green] {stats['total_documents']} documents ({stats['unique_tags']} unique tags)"
-    )
+    stats = KnowledgeBase(path).stats()
+    console.print(f"[bold green]KB index:[/bold green] {stats['documents']} documents, {stats['read_now']} read now")
 
 
 if __name__ == "__main__":

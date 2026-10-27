@@ -446,6 +446,7 @@ class SourceIndex:
                     pop = popularity or 0
                     if pop > 0:
                         import math
+
                         pop_boost = min(math.log10(pop + 1) / 25, 0.15)
                     else:
                         pop_boost = 0
