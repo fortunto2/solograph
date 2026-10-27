@@ -59,6 +59,11 @@ STACK_DETECTORS: list[tuple[str, int, str]] = [
     ("wrangler.toml", 2, "cloudflare-workers"),
     ("wrangler.jsonc", 2, "cloudflare-workers"),
     ("pyproject.toml", 2, "python-ml"),
+    # Missing until 26 Oct: 20 of 77 projects had no stack at all, supervox and
+    # airq among them, and codegraph_explain said "(no stack)" for each.
+    ("Cargo.toml", 2, "rust-native"),
+    ("Package.swift", 2, "ios-swift"),
+    ("next.config.*", 2, "nextjs-supabase"),
 ]
 
 

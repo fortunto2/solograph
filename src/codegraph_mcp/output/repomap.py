@@ -45,7 +45,7 @@ def generate_repomap(graph, project_name: str, max_files: int = 20) -> str:
     # 1. Check if project exists and get its path
     proj_result = graph.ro_query(f"MATCH (p:Project {{name: {cypher_str(project_name)}}}) RETURN p.path")
     if not proj_result.result_set:
-        return f"Error: Project {cypher_str(project_name)} not found in graph."
+        return f"Error: Project '{project_name}' not found in graph."
 
     project_path = proj_result.result_set[0][0]
 
@@ -57,7 +57,7 @@ def generate_repomap(graph, project_name: str, max_files: int = 20) -> str:
     )
 
     if not hub_result.result_set:
-        return f"No files found for project {cypher_str(project_name)}."
+        return f"No files found for project '{project_name}'."
 
     top_files = [row[0] for row in hub_result.result_set]
 

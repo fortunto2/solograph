@@ -17,7 +17,7 @@ def explain_project(graph, project_name: str) -> dict | str:
         f"MATCH (p:Project {{name: {cypher_str(project_name)}}}) RETURN p.stack, p.description"
     )
     if not proj_result.result_set:
-        return f"Project {cypher_str(project_name)} not found in graph."
+        return f"Project '{project_name}' not found in graph."
 
     stack = proj_result.result_set[0][0] or "(no stack)"
     description = proj_result.result_set[0][1] or ""

@@ -162,3 +162,17 @@ def test_stack_detection_sees_shallow_markers_and_ignores_node_modules(tmp_path)
     )
 
     assert detect_stacks(proj) == ["ios-swift", "nextjs-ai-agents", "nextjs-supabase"]
+
+
+def test_rust_swift_package_and_next_projects_get_a_stack(tmp_path):
+    from codegraph_mcp.registry import detect_stacks
+
+    for name, marker, stack in [
+        ("r", "Cargo.toml", "rust-native"),
+        ("s", "Package.swift", "ios-swift"),
+        ("n", "next.config.ts", "nextjs-supabase"),
+    ]:
+        d = tmp_path / name
+        d.mkdir()
+        (d / marker).write_text("")
+        assert stack in detect_stacks(d), marker
