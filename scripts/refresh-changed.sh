@@ -27,6 +27,10 @@ set -u
 
 SOLOGRAPH="$HOME/startups/shared/solograph"
 CLI="$SOLOGRAPH/.venv/bin/solograph-cli"
+# The Rust core (rust/, `make rust-install`) takes the same `registry` and
+# `scan --project NAME`, prints the same "NAME: unchanged", and syncs sessions
+# itself (see the end). Switching is this one line:
+# CLI="$HOME/.solo/bin/solograph"
 REGISTRY="$HOME/.solo/registry.yaml"
 STAMP_DIR="$SOLOGRAPH/.refresh-stamps"
 LOG="$SOLOGRAPH/.refresh.log"
@@ -136,11 +140,17 @@ say "done — scanned $scanned, unchanged $quiet, failed $failed (scope: $SCOPE_
 # The session index is the archive: Claude Code deletes transcripts after 30
 # days, and the index only reads them when someone searches. A month without a
 # session_search would lose that month, so read new and grown transcripts here.
-if sessions=$("$PY" -c "
+sync_rc=0
+if [ "$(basename "$CLI")" = solograph ]; then   # the Rust core
+    sessions=$("$CLI" sync-sessions 2>>"$LOG") || sync_rc=$?
+else
+    sessions=$("$PY" -c "
 from codegraph_mcp.session_search import SessionSearch
 r = SessionSearch().sync()
 print(f\"sessions — {r.get('read', 0)} read, {r.get('indexed', 0)} indexed, {r.get('gone', 0)} archived, {len(r.get('failed', []))} failed\")
-" 2>>"$LOG"); then
+" 2>>"$LOG") || sync_rc=$?
+fi
+if [ "$sync_rc" -eq 0 ]; then
     say "$sessions"
 else
     say "FAILED syncing the session index"

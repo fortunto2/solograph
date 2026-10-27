@@ -96,6 +96,31 @@ One FTS index at `$SOURCES_ROOT/search.db`, documents keyed `<source>/<id>`, plu
 
 `solograph-search` serves the sources index over HTTP (`GET /search?q=...&source=...&n=5`, `/sources`, `/health`, port `SOLOGRAPH_SEARCH_PORT`, default 8002) for a SearXNG engine.
 
+## Rust core
+
+`rust/` builds one `solograph` binary: the MCP server (the same 12 tools, arguments and result shapes) plus the commands the nightly job needs — `scan [--project NAME]`, `registry`, `sync-sessions`, `index-kb`. It reads and writes the same SQLite files with the same schemas, so Python and Rust can take turns on one store; the scrapers and indexers (YouTube, ProductHunt, TrustMRR, Telegram) stay in Python and write the sources index Rust reads.
+
+```bash
+make rust-test       # unit tests + an MCP contract test over stdio
+make rust-install    # → ~/.solo/bin/solograph, apart from the Python entry points
+```
+
+Measured on 27 Oct 2026 against copies of the real stores, each engine on its own copy:
+
+| | Python 0.8 | Rust |
+|---|---|---|
+| Same top-5, same order — 54 session, 8 KB, 8 symbol, 6 source queries | | 76 / 76 |
+| Session recall@5, 40 known-answer sessions | 30 | 30 |
+| stats, explain, shared, project_info, source_tags, source_related | | identical JSON |
+| Query stems, 28,576 RU+EN words from the KB and sessions | snowballstemmer 3.1.1 | 0 differ |
+| Portfolio from scratch, 77 projects: files / packages / symbols | 8,935 / 1,350 / 63,585 | 8,935 / 1,350 / 63,582 |
+| Full scan from scratch | 32.7 s | 9.8 s, registry merge included |
+| MCP start → initialize answered | 280–300 ms | 4 ms |
+| First / repeat `session_search` | 24 / 14 ms | 15 / 10 ms |
+| On disk | 97 MB venv | 33 MB binary |
+
+The English stemmer is a port of Snowball 3.1.1 (`english.rs`): rust-stemmers implements Snowball 2, and 24 of ~13,000 English words stemmed differently ("organization": organ vs organiz), which is a different prefix query. The three symbols Rust does not find are in files that do not parse cleanly (C++ inside a `.h` read with the C grammar, one Swift `async` method), where tree-sitter's error recovery differs between the core Python bundles (0.26.0) and the one on crates.io (0.26.13). The first launch after a rebuild takes ~0.9 s while macOS checks the new binary.
+
 ## Part of Solo Factory
 
 Solograph is the MCP backend for [Solo Factory](https://github.com/fortunto2/solo-factory). It also works standalone.

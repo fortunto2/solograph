@@ -1,0 +1,46 @@
+[package]
+name = "solograph"
+version = "0.9.0"
+edition = "2024"
+description = "Solograph core: MCP server and search indexes over SQLite FTS5"
+license = "MIT"
+
+[[bin]]
+name = "solograph"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+memchr = "2"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate"] }
+rmcp = { version = "3.8", features = ["server", "macros", "transport-io"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+rust-stemmers = "1.2"
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml = "0.9"
+streaming-iterator = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
+toml = "0.9"
+tree-sitter = "0.26"
+tree-sitter-bash = "=0.25.1"
+tree-sitter-c = "=0.24.2"
+tree-sitter-cpp = "=0.23.4"
+tree-sitter-go = "=0.25.0"
+tree-sitter-hcl = "1.1"
+tree-sitter-java = "=0.23.5"
+tree-sitter-javascript = "=0.25.0"
+tree-sitter-kotlin-ng = "=1.1.0"
+tree-sitter-php = "0.24"
+tree-sitter-python = "=0.25.0"
+tree-sitter-ruby = "=0.23.1"
+tree-sitter-rust = "=0.24.2"
+tree-sitter-sequel = "=0.3.11"
+tree-sitter-swift = "=0.7.3"
+tree-sitter-typescript = "=0.23.2"
+
+[dev-dependencies]
+tempfile = "3"

@@ -12,3 +12,6 @@ build/
 .refresh-stamps/
 .refresh.log
 .DS_Store
+
+# Rust core build output (when CARGO_TARGET_DIR does not move it)
+rust/target/
