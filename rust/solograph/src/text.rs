@@ -113,6 +113,69 @@ pub fn split_identifier(name: &str) -> String {
         .join(" ")
 }
 
+static TERM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""([^"]+)"(\*)?"#).expect("static regex"));
+
+/// A snippet without FTS5: the first word matching a term of `expr` (a
+/// match_expression() string), with ~8 words before it and ~16 after, matched words
+/// in «», cut ends marked …. FTS5's snippet() tokenises the whole body to choose its
+/// fragment — 900 ms on the two 3–4 MB transcripts a three-word query returned —
+/// while this stops at the first hit. Words are lowercased one at a time, so byte
+/// offsets into `body` stay valid whatever it contains. None when nothing matches.
+pub fn window_snippet(body: &str, expr: &str) -> Option<String> {
+    let terms: Vec<(String, bool)> = TERM
+        .captures_iter(expr)
+        .map(|c| (c[1].to_string(), c.get(2).is_some()))
+        .collect();
+    let hit = |w: &str| {
+        let w = fold(&w.to_lowercase());
+        terms.iter().any(|(t, prefix)| {
+            if *prefix {
+                w.starts_with(t.as_str())
+            } else {
+                &w == t
+            }
+        })
+    };
+    let first = WORD.find_iter(body).find(|m| hit(m.as_str()))?;
+    // Words in a byte window around the hit, then 8 before and 16 after it.
+    let floor = |mut i: usize| {
+        while !body.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    };
+    let from = floor(first.start().saturating_sub(800));
+    let to = floor((first.end() + 1600).min(body.len()));
+    let words: Vec<regex::Match> = WORD.find_iter(&body[from..to]).collect();
+    let at = words
+        .iter()
+        .position(|m| m.start() + from == first.start())?;
+    let (lo, hi) = (at.saturating_sub(8), (at + 16).min(words.len() - 1));
+    let (start, end) = (from + words[lo].start(), from + words[hi].end());
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    let mut cursor = start;
+    for m in &words[lo..=hi] {
+        let (ws, we) = (from + m.start(), from + m.end());
+        out.push_str(&body[cursor..ws]);
+        if hit(m.as_str()) {
+            out.push('«');
+            out.push_str(&body[ws..we]);
+            out.push('»');
+        } else {
+            out.push_str(&body[ws..we]);
+        }
+        cursor = we;
+    }
+    if end < body.len() {
+        out.push('…');
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,5 +223,34 @@ mod tests {
         assert_eq!(split_identifier("MontageProfile"), "montage profile");
         assert_eq!(split_identifier("HTTPServer"), "http server");
         assert_eq!(split_identifier("parseJSON2"), "parse json 2");
+    }
+
+    #[test]
+    fn a_window_snippet_marks_the_first_hit_and_cuts_both_ends() {
+        let body = format!(
+            "{} The billing webhook failed twice. {}",
+            "word ".repeat(30),
+            "tail ".repeat(30)
+        );
+        let expr = match_expression("webhooks billing");
+        let snip = window_snippet(&body, &expr).unwrap();
+        assert!(snip.starts_with('…') && snip.ends_with('…'), "{snip}");
+        assert!(snip.contains("The «billing» «webhook» failed"), "{snip}");
+        assert_eq!(window_snippet("nothing relevant here", &expr), None);
+    }
+
+    #[test]
+    fn a_window_snippet_handles_cyrillic() {
+        let body = "Сначала разобрали логи. Потом переписали вебхуки для сделок HubSpot.";
+        let snip = window_snippet(body, &match_expression("вебхук")).unwrap();
+        assert!(snip.contains("«вебхуки»"), "{snip}");
+    }
+
+    #[test]
+    fn a_window_snippet_survives_text_whose_lowercase_changes_length() {
+        // "İ" lowercases to two code points; a whole-body lowercase shifted offsets.
+        let body = format!("İstanbul notes. {} then the webhook fired.", "x ".repeat(5));
+        let snip = window_snippet(&body, &match_expression("webhook")).unwrap();
+        assert!(snip.contains("«webhook» fired"), "{snip}");
     }
 }

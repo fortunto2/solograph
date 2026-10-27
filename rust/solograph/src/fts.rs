@@ -72,6 +72,9 @@ fn round3_rounds_the_exact_value_like_python() {
     assert_eq!(round3(-4.2291), -4.229);
 }
 
+/// Bodies longer than this (bytes) get a window snippet instead of FTS5's.
+const WINDOW_SNIPPET_ABOVE: usize = 256 * 1024;
+
 pub struct FtsStore {
     pub path: PathBuf,
     pub db: Connection,
@@ -295,8 +298,13 @@ impl FtsStore {
         if expr.is_empty() {
             return Ok(Vec::new());
         }
+        // Two passes. Any FTS column in the ranking query (snippet(), even the title)
+        // makes SQLite read the content row — body included, several MB for a long
+        // transcript — of every match before it sorts: 0.8–2.6 s a query, against
+        // 1–20 ms for ranking from the index alone. Title and snippet come second,
+        // for the rows that made the cut.
         let mut sql = String::from(
-            "SELECT d.doc_id, d.kind, d.gone, d.meta, fts.title, snippet(fts, 1, '«', '»', '…', 24), \
+            "SELECT fts.rowid, d.doc_id, d.kind, d.gone, d.meta, \
              bm25(fts, 3.0, 1.0) AS rank FROM fts JOIN docs d ON d.id = fts.rowid WHERE fts MATCH ?1",
         );
         let like = kind.map(|k| format!("%{k}%"));
@@ -305,35 +313,84 @@ impl FtsStore {
         }
         sql.push_str(" ORDER BY rank LIMIT ?2");
         let mut stmt = self.db.prepare(&sql)?;
-        let map_row = |r: &rusqlite::Row| -> rusqlite::Result<Map<String, Value>> {
+        let map_row = |r: &rusqlite::Row| -> rusqlite::Result<(i64, Map<String, Value>)> {
             let mut hit = Map::new();
-            hit.insert("doc_id".into(), Value::String(r.get(0)?));
+            hit.insert("doc_id".into(), Value::String(r.get(1)?));
             hit.insert(
                 "kind".into(),
-                Value::String(r.get::<_, Option<String>>(1)?.unwrap_or_default()),
+                Value::String(r.get::<_, Option<String>>(2)?.unwrap_or_default()),
             );
-            hit.insert(
-                "title".into(),
-                Value::String(r.get::<_, Option<String>>(4)?.unwrap_or_default()),
-            );
-            hit.insert(
-                "snippet".into(),
-                Value::String(r.get::<_, Option<String>>(5)?.unwrap_or_default()),
-            );
-            let meta: Option<String> = r.get(3)?;
+            hit.insert("title".into(), Value::String(String::new()));
+            hit.insert("snippet".into(), Value::String(String::new()));
+            let meta: Option<String> = r.get(4)?;
             if let Ok(Value::Object(m)) = serde_json::from_str(meta.as_deref().unwrap_or("{}")) {
                 hit.extend(m);
             }
-            let rank: f64 = r.get(6)?;
+            let rank: f64 = r.get(5)?;
             hit.insert("score".into(), Value::from(round3(-rank)));
-            hit.insert("gone".into(), Value::Bool(r.get::<_, i64>(2)? != 0));
-            Ok(hit)
+            hit.insert("gone".into(), Value::Bool(r.get::<_, i64>(3)? != 0));
+            Ok((r.get(0)?, hit))
         };
-        let rows = match &like {
+        let rows: Vec<(i64, Map<String, Value>)> = match &like {
             Some(l) => stmt.query_map(params![expr, n_results as i64, l], map_row)?,
             None => stmt.query_map(params![expr, n_results as i64], map_row)?,
-        };
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        }
+        .collect::<rusqlite::Result<_>>()?;
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<String> = rows.iter().map(|(id, _)| id.to_string()).collect();
+        // Long bodies get a window snippet built here (see text::window_snippet);
+        // the rest keep FTS5's, which picks the densest fragment.
+        let mut texts: HashMap<i64, (String, String)> = HashMap::new();
+        let mut small: Vec<String> = Vec::new();
+        let mut stmt = self.db.prepare(&format!(
+            "SELECT rowid, title, body FROM fts WHERE rowid IN ({})",
+            ids.join(",")
+        ))?;
+        for row in stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            ))
+        })? {
+            let (id, title, body) = row?;
+            let snip = if body.len() > WINDOW_SNIPPET_ABOVE {
+                crate::text::window_snippet(&body, expr)
+            } else {
+                None
+            };
+            if snip.is_none() {
+                small.push(id.to_string());
+            }
+            texts.insert(id, (title, snip.unwrap_or_default()));
+        }
+        if !small.is_empty() {
+            let mut stmt = self.db.prepare(&format!(
+                "SELECT rowid, snippet(fts, 1, '«', '»', '…', 24) FROM fts \
+                 WHERE fts MATCH ?1 AND rowid IN ({})",
+                small.join(",")
+            ))?;
+            for row in stmt.query_map([expr], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+            })? {
+                let (id, snip) = row?;
+                if let Some(entry) = texts.get_mut(&id) {
+                    entry.1 = snip.unwrap_or_default();
+                }
+            }
+        }
+        Ok(rows
+            .into_iter()
+            .map(|(id, mut hit)| {
+                if let Some((title, snip)) = texts.remove(&id) {
+                    hit.insert("title".into(), Value::String(title));
+                    hit.insert("snippet".into(), Value::String(snip));
+                }
+                hit
+            })
+            .collect())
     }
 
     pub fn count(&self) -> Result<i64> {

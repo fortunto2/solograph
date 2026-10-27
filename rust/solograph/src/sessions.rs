@@ -132,6 +132,9 @@ pub fn clean_title(text: &str) -> Option<String> {
 /// Titles stored before clean_title existed, fixed in place: a system line or an
 /// "[Image #N]" prefix becomes the first real prompt. Archived summaries list
 /// their prompts as "1. …"; live documents start with theirs.
+/// `PRAGMA user_version` of a session index whose titles have been through retitle().
+const TITLES_CLEANED: i64 = 1;
+
 fn retitle(store: &FtsStore) -> Result<usize> {
     let rows: Vec<(i64, String, String)> = store
         .db
@@ -327,7 +330,18 @@ impl SessionSearch {
         let db = db_path.map_or_else(default_db_path, Path::to_path_buf);
         let root = sessions_root.map_or_else(claude_dir, Path::to_path_buf);
         let store = FtsStore::open(&db)?;
-        retitle(&store)?;
+        // Once per index, not per open: the scan reads every row of the FTS table,
+        // bodies included (tens of MB), which made each CLI call ~2 s. New documents
+        // get a clean title when they are written.
+        let version: i64 = store
+            .db
+            .query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version < TITLES_CLEANED {
+            retitle(&store)?;
+            store
+                .db
+                .execute_batch(&format!("PRAGMA user_version = {TITLES_CLEANED}"))?;
+        }
         Ok(Self {
             store,
             projects_dir: root.join("projects"),

@@ -337,6 +337,8 @@ fn an_archived_title_that_was_a_system_line_is_fixed_on_open() {
         end: None,
     };
     crate::fts::FtsStore::put(&s.store.db, "old", Some(&doc), None, None, true).unwrap();
+    // An index from before the fix: titles not yet cleaned.
+    s.store.db.execute_batch("PRAGMA user_version = 0").unwrap();
     drop(s);
     let mut s = search(t.path());
     let out = s.search("чеки", 5, None).unwrap();
