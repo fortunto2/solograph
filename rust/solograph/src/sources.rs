@@ -32,7 +32,7 @@ pub fn default_root() -> PathBuf {
 }
 
 pub struct SourceIndex {
-    store: FtsStore,
+    pub(crate) store: FtsStore,
 }
 
 fn get_str(h: &Map<String, Value>, k: &str) -> Value {
@@ -99,6 +99,18 @@ impl SourceIndex {
             }))
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Searchable items across every source — documents, videos and makers, not
+    /// chunks. What `GET /health` reports as `total`, the way Python counted it.
+    pub fn count(&self) -> Result<i64> {
+        Ok(self.store.db.query_row(
+            "SELECT (SELECT count(*) FROM docs WHERE coalesce(kind, '') != '' \
+               AND json_extract(meta, '$.type') != 'video_chunk') \
+             + (SELECT count(*) FROM videos WHERE coalesce(source, '') != '')",
+            [],
+            |r| r.get(0),
+        )?)
     }
 
     /// Per source: documents + videos + makers, with the video/chunk split.

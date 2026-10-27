@@ -1,28 +1,10 @@
-"""Pydantic schemas for Solograph entities.
+"""Pydantic schemas for what the scrapers write into the sources index.
 
-SGR-first: these schemas are the source of truth.
-All scanners produce data conforming to these models.
+SGR-first: the indexers build these, sources.py writes them, and the Rust binary
+reads the rows they become.
 """
 
 from pydantic import BaseModel, Field
-
-
-class SymbolNode(BaseModel):
-    """A code symbol (function, class, protocol)."""
-
-    name: str
-    kind: str = Field(..., description="class, function, method, protocol, interface")
-    file: str = Field(..., description="Relative file path")
-    project: str
-    line: int = 0
-
-
-class PackageNode(BaseModel):
-    """A dependency package."""
-
-    name: str
-    version: str | None = None
-    source: str = Field("", description="pip, npm, spm, gradle, system")
 
 
 class SourceDoc(BaseModel):

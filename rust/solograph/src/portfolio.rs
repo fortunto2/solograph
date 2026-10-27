@@ -401,6 +401,7 @@ impl Portfolio {
 }
 
 mod explain;
+pub mod queries;
 
 #[cfg(test)]
 mod tests;

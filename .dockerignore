@@ -6,3 +6,5 @@ __pycache__
 .ruff_cache
 .mypy_cache
 .pytest_cache
+rust/target
+target

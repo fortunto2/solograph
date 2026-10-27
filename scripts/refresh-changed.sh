@@ -3,7 +3,7 @@
 # reindex what moved, walking the registry rather than the disk; last, read new
 # transcripts into the session index.
 #
-# Why the registry: `solograph-cli scan --project NAME` validates NAME against
+# Why the registry: `solograph scan --project NAME` validates NAME against
 # ~/.solo/registry.yaml, and the registry carries each project's path — including
 # nested ones. The first version of this script looped over `~/startups/active/*/`
 # instead, and got both halves wrong: video-analyzer lives one level deeper
@@ -12,7 +12,7 @@
 # that are not in the registry failed with "Project not found" and were counted
 # as done. Walking the registry makes the mismatch impossible by construction.
 #
-# The registry itself is refreshed first (`solograph-cli registry`: merges, never
+# The registry itself is refreshed first (`solograph registry`: merges, never
 # replaces). It had been generated once, in February, and by October 40 projects
 # in active/ were not in it, so no amount of nightly scanning reached them.
 #
@@ -26,11 +26,10 @@
 set -u
 
 SOLOGRAPH="$HOME/startups/shared/solograph"
-# The Rust core (rust/, `make rust-install`): same `registry`, `scan --project
-# NAME`, the same "NAME: unchanged", and it syncs sessions itself (see the end).
-# Switched 27 Oct 2026 after 76/76 identical top-5 answers against Python, with
-# a portfolio scan 3.3x faster. The Python entry point remains as the fallback:
-# CLI="$SOLOGRAPH/.venv/bin/solograph-cli"
+# The Rust binary (rust/, `make rust-install`) — since 0.9 the only implementation
+# of scan, registry and session sync; Python keeps only the scrapers. Its output
+# keeps the wording this script and refresh-status.sh count ("NAME: unchanged",
+# "sessions — N read, …").
 CLI="$HOME/.solo/bin/solograph"
 REGISTRY="$HOME/.solo/registry.yaml"
 STAMP_DIR="$SOLOGRAPH/.refresh-stamps"
@@ -142,15 +141,7 @@ say "done — scanned $scanned, unchanged $quiet, failed $failed (scope: $SCOPE_
 # days, and the index only reads them when someone searches. A month without a
 # session_search would lose that month, so read new and grown transcripts here.
 sync_rc=0
-if [ "$(basename "$CLI")" = solograph ]; then   # the Rust core
-    sessions=$("$CLI" sync-sessions 2>>"$LOG") || sync_rc=$?
-else
-    sessions=$("$PY" -c "
-from codegraph_mcp.session_search import SessionSearch
-r = SessionSearch().sync()
-print(f\"sessions — {r.get('read', 0)} read, {r.get('indexed', 0)} indexed, {r.get('gone', 0)} archived, {len(r.get('failed', []))} failed\")
-" 2>>"$LOG") || sync_rc=$?
-fi
+sessions=$("$CLI" sync-sessions 2>>"$LOG") || sync_rc=$?
 if [ "$sync_rc" -eq 0 ]; then
     say "$sessions"
 else

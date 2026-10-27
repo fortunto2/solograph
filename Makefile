@@ -3,7 +3,7 @@
 
 .PHONY: help lint format check typecheck test hooks clean \
 	ph-discover ph-enrich ph-profiles ph-merge ph-csv ph-pipeline ph-status \
-	rust-build rust-test rust-check rust-install
+	rust-build rust-test rust-check rust-install docker-search
 
 RUST := cargo --quiet
 RUST_MANIFEST := --manifest-path rust/Cargo.toml
@@ -28,10 +28,10 @@ typecheck: ## Run ty type-checker (informational)
 
 # --- Testing ---
 
-test: ## Run tests (pytest)
+test: rust-build ## Python tests: the scrapers write, the Rust binary reads (built first)
 	uv run --with pytest python -m pytest tests/ -v
 
-# --- Rust core (rust/ → one `solograph` binary: MCP server + scan/sync commands) ---
+# --- Rust core (rust/ → one `solograph` binary: MCP server, every read, http, scan/sync) ---
 
 rust-build: ## Build the Rust core (release)
 	$(RUST) build --release $(RUST_MANIFEST)
@@ -43,7 +43,7 @@ rust-check: ## cargo fmt --check + clippy -D warnings
 	$(RUST) fmt $(RUST_MANIFEST) --check
 	$(RUST) clippy --release --all-targets $(RUST_MANIFEST) -- -D warnings
 
-rust-install: ## Install the binary to ~/.solo/bin/solograph (apart from the Python entry points)
+rust-install: ## Install the binary to ~/.solo/bin/solograph
 	$(RUST) install --path rust/solograph --root $(HOME)/.solo --force
 
 # --- Hooks ---
@@ -56,8 +56,11 @@ hooks-run: ## Run pre-commit on all files
 
 # --- Build ---
 
-build: ## Build package
+build: ## Build the Python package (the scrapers; solograph-cli)
 	uv build
+
+docker-search: ## Build the `solograph http` image (Dockerfile.search)
+	docker build -f Dockerfile.search -t solograph-search .
 
 clean: ## Remove build artifacts and caches
 	rm -rf dist/ build/ *.egg-info

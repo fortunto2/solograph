@@ -1,19 +1,26 @@
-FROM python:3.13-slim
+# solograph http — the sources index over HTTP for the SearXNG engine `sources_local`
+# (searxng-docker-tavily-adapter). Same endpoints, port and JSON as the Python
+# search_server.py it replaced in 0.9: GET /search?q=&source=&n=, /sources, /health.
+#
+# Mount the index at /root/.solo/sources (search.db), or set SOURCES_ROOT.
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+FROM rust:1-bookworm AS build
+WORKDIR /src
+COPY rust/ rust/
+RUN cargo build --release --manifest-path rust/Cargo.toml \
+    && cp "$(cargo metadata --manifest-path rust/Cargo.toml --format-version 1 --no-deps \
+        | sed -E 's/.*"target_directory":"([^"]+)".*/\1/')/release/solograph" /solograph
 
-WORKDIR /app
-COPY . .
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /solograph /usr/local/bin/solograph
 
-RUN uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu && \
-    uv pip install --system "redis<7.2" && \
-    uv pip install --system .
-
-ENV PYTHONUNBUFFERED=1
-
+ENV SOLOGRAPH_SEARCH_PORT=8002
 EXPOSE 8002
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')" || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -fs http://localhost:8002/health || exit 1
 
-CMD ["solograph-search"]
+CMD ["solograph", "http"]

@@ -1,10 +1,13 @@
-//! solograph — the core as one binary: the MCP server (default) and the
-//! commands the nightly refresh needs. Python keeps the scrapers and indexers
-//! (YouTube, ProductHunt, TrustMRR, Telegram); both read the same SQLite files.
+//! solograph — the core as one binary: the MCP server (default), every read the
+//! CLI offers, the HTTP API for sources, and the commands the nightly refresh
+//! needs. Python keeps only the scrapers and indexers (YouTube, ProductHunt,
+//! TrustMRR, Telegram), which write the sources index this binary reads.
 
+mod cli;
 mod deps;
 mod english;
 mod fts;
+mod http;
 mod kb;
 mod paths;
 mod portfolio;
@@ -18,35 +21,37 @@ mod text;
 mod web;
 mod yamlval;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use rmcp::ServiceExt;
 
 const USAGE: &str = "solograph — code portfolio, sessions, KB and sources search over SQLite FTS5
 
 Usage:
-  solograph [serve]                    MCP server on stdio (the default)
-  solograph scan [--project NAME]      merge new checkouts into the registry, then index
-                                       every project; with --project, index just that one
-  solograph registry                   merge new checkouts into the registry only
-  solograph sync-sessions              read new and grown transcripts into the session index
-  solograph index-kb [--kb-path DIR]   sync the knowledge-base index now
+  solograph [serve]                      MCP server on stdio (the default)
+  solograph http [--port N]              sources over HTTP: /search /sources /health (port 8002)
+
+  solograph symbols QUERY [-p P] [-k KIND] [-n N]   where something is defined, every project
+  solograph sessions QUERY [-p P] [-n N]            past Claude Code sessions, full text
+  solograph kb QUERY [--type T] [--graph] [-n N]    the knowledge base (KB_PATH or --kb-path)
+  solograph sources search QUERY [-s SRC] [-n N]    YouTube / ProductHunt / TrustMRR / Telegram
+  solograph sources list | tags [-s SRC] | related VIDEO [-s SRC]
+  solograph explain PROJECT | deps PROJECT | stats | shared [PACKAGE]
+  solograph dupes [NAME] [-p P] [--min N] [-n N] [--show N]   names defined in several places
+  Every read takes --json: the exact value the matching MCP tool returns.
+
+  solograph scan [-p NAME]               merge new checkouts into the registry, then index
+                                         every project; with -p, index just that one
+  solograph registry                     merge new checkouts into the registry only
+  solograph sync-sessions [--claude-dir DIR]   read new and grown transcripts into the index
+  solograph index-kb [--kb-path DIR]     sync the knowledge-base index now
+  --db-path FILE                         the portfolio store for symbols/explain/deps/stats/
+                                         shared/dupes/scan (default: SOLOGRAPH_PORTFOLIO_DB)
 
 Environment: CODEGRAPH_REGISTRY, CODEGRAPH_DB_PATH / SOLOGRAPH_PORTFOLIO_DB, CODEGRAPH_SCAN_PATH,
-KB_PATH, CLAUDE_SESSIONS_DIR, CODEGRAPH_SESSIONS_DB, SOURCES_ROOT — the same as the Python package.";
-
-fn flag(args: &[String], name: &str) -> Result<Option<String>> {
-    match args.iter().position(|a| a == name) {
-        Some(i) => args
-            .get(i + 1)
-            .cloned()
-            .map(Some)
-            .with_context(|| format!("{name} needs a value")),
-        None => Ok(None),
-    }
-}
+KB_PATH, CLAUDE_SESSIONS_DIR, CODEGRAPH_SESSIONS_DB, SOURCES_ROOT, SOLOGRAPH_SEARCH_PORT.";
 
 fn print_registry_report(r: &registry::RefreshReport, path: &Path) {
     println!("Registry saved: {}", path.display());
@@ -62,9 +67,9 @@ fn print_registry_report(r: &registry::RefreshReport, path: &Path) {
     }
 }
 
-fn scan(args: &[String]) -> Result<()> {
-    let reg_path = flag(args, "--registry")?.map_or_else(registry::default_path, PathBuf::from);
-    let project = flag(args, "--project")?;
+fn scan(a: &cli::Args) -> Result<()> {
+    let reg_path = a.path("registry").unwrap_or_else(registry::default_path);
+    let project = a.val("project").map(String::from);
     if project.is_none() {
         let report = registry::refresh(&reg_path, None)?;
         print_registry_report(&report, &reg_path);
@@ -72,7 +77,7 @@ fn scan(args: &[String]) -> Result<()> {
     let Some(reg) = registry::load(&reg_path)? else {
         bail!("Registry not found: {}", reg_path.display())
     };
-    let mut pf = portfolio::Portfolio::open(None)?;
+    let mut pf = portfolio::Portfolio::open(cli::db_path(a))?;
     // The registry is the whole truth even when scanning one project.
     for name in pf.sync_projects(&reg.projects, true)? {
         println!("  {name}: left the registry, removed");
@@ -110,8 +115,9 @@ fn scan(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn sync_sessions() -> Result<()> {
-    let mut s = sessions::SessionSearch::open(None, None)?;
+fn sync_sessions(a: &cli::Args) -> Result<()> {
+    let root = a.path("claude-dir");
+    let mut s = sessions::SessionSearch::open(None, root.as_deref())?;
     match s.sync()? {
         Some((r, _, _)) => {
             println!(
@@ -125,15 +131,16 @@ fn sync_sessions() -> Result<()> {
         }
         None => bail!(
             "transcript directory unreadable: {}",
-            sessions::claude_dir().join("projects").display()
+            a.path("claude-dir")
+                .unwrap_or_else(sessions::claude_dir)
+                .join("projects")
+                .display()
         ),
     }
 }
 
-fn index_kb(args: &[String]) -> Result<()> {
-    let root = flag(args, "--kb-path")?
-        .map(PathBuf::from)
-        .or_else(|| paths::env_path("KB_PATH"));
+fn index_kb(a: &cli::Args) -> Result<()> {
+    let root = a.path("kb-path").or_else(|| paths::env_path("KB_PATH"));
     let Some(root) = root else {
         bail!("Set KB_PATH env var or pass --kb-path")
     };
@@ -153,21 +160,49 @@ async fn serve() -> Result<()> {
     Ok(())
 }
 
+/// Rust ignores SIGPIPE, so `solograph symbols x | head` panicked on the closed
+/// pipe. A CLI read should end quietly there like any Unix tool. Not for `serve`:
+/// the MCP server reports a vanished client as an error, it does not just die.
+fn quiet_on_closed_pipe() {
+    // SAFETY: called once at startup, before any thread exists; restores the
+    // default disposition of one signal.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if !matches!(
+        args.first().map(String::as_str),
+        None | Some("serve" | "http")
+    ) {
+        quiet_on_closed_pipe();
+    }
+    let rest = args.get(1..).unwrap_or_default();
+    let parsed = || cli::Args::parse(rest);
     let result = match args.first().map(String::as_str) {
         None | Some("serve") => tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .map_err(Into::into)
             .and_then(|rt| rt.block_on(serve())),
-        Some("scan") => scan(&args[1..]),
+        Some("http") => parsed().and_then(|a| {
+            let port = match a.val("port") {
+                Some(p) => p
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("--port must be a number"))?,
+                None => http::port(),
+            };
+            http::serve(port)
+        }),
+        Some("scan") => parsed().and_then(|a| scan(&a)),
         Some("registry") => {
             let path = registry::default_path();
             registry::refresh(&path, None).map(|r| print_registry_report(&r, &path))
         }
-        Some("sync-sessions") => sync_sessions(),
-        Some("index-kb") => index_kb(&args[1..]),
+        Some("sync-sessions") => parsed().and_then(|a| sync_sessions(&a)),
+        Some("index-kb") => parsed().and_then(|a| index_kb(&a)),
         // Debugging aid, not in the usage text: stems of stdin words, one per line,
         // the way queries are stemmed — for checking against Python's snowballstemmer.
         Some("stems") => {
@@ -184,7 +219,7 @@ fn main() -> ExitCode {
             Ok(())
         }
         // Debugging aid, not in the usage text: the definitions one file yields.
-        Some("symbols") if args.len() == 3 => {
+        Some("extract-symbols") if args.len() == 3 => {
             let lang = scanner::lang_of(scanner::suffix(&args[2])).unwrap_or("");
             let lang: &'static str = if args[1] == "auto" {
                 lang
@@ -200,7 +235,8 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             Ok(())
         }
-        Some(other) => Err(anyhow::anyhow!("unknown command: {other}\n\n{USAGE}")),
+        Some(cmd) => cli::run(cmd, rest)
+            .unwrap_or_else(|| Err(anyhow::anyhow!("unknown command: {cmd}\n\n{USAGE}"))),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

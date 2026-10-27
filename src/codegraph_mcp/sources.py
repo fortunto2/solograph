@@ -1,21 +1,16 @@
-"""External sources — YouTube, ProductHunt, TrustMRR, Telegram — on SQLite FTS5.
+"""External sources — YouTube, ProductHunt, TrustMRR, Telegram — written to SQLite FTS5.
 
-Was one FalkorDB graph per source with multilingual-e5 embeddings on every
-document, chunk and maker. Measured 26 Oct 2026: `source-list` and
-`source-search` both hung past 120 s, the YouTube graph alone took 28 s to
-load, and the embedding stack was most of an 862 MB environment. Now one
-FtsStore at <sources_root>/search.db, the same BM25 index sessions and the KB
-use, plus two small tables for what the graph held beyond text: videos and
-their topic tags.
+The write side only. The scrapers and indexers stay in Python because yt-dlp,
+Scrapy and Playwright live here; everything that reads <sources_root>/search.db
+(search, tags, related videos, the HTTP API) is the Rust binary since 0.9
+(rust/solograph/src/sources.rs). The tables below are the contract between them.
 
 Documents are keyed "<source>/<id>" so two sources cannot collide. A YouTube
-transcript is indexed chunk by chunk, so a hit carries a timestamped URL; a
-search returns the best chunk of each video once.
+transcript is written chunk by chunk, so a hit carries a timestamped URL.
 """
 
 from __future__ import annotations
 
-import math
 import os
 import re
 from pathlib import Path
@@ -340,55 +335,7 @@ class SourceIndex:
             db.execute("DELETE FROM videos WHERE source = ?", (source_name,))
         return bool(keys or vids)
 
-    # ── reads ─────────────────────────────────────────────────────
-
-    def search(self, query: str, source: str | None = None, n_results: int = 5) -> list[dict]:
-        """BM25 over every source, or one. A video appears once, at its best chunk."""
-        # Chunks are deduplicated to one per video after ranking, so a long video
-        # can fill any fixed window: widen it until n videos or no more hits.
-        fetch = n_results * 4
-        while True:
-            hits = self._store.search(query, n_results=fetch, kind=source)
-            output = self._rank(hits)
-            if len(output) >= n_results or len(hits) < fetch:
-                return output[:n_results]
-            fetch *= 4
-
-    def _rank(self, hits: list[dict]) -> list[dict]:
-        seen_videos: set[str] = set()
-        output = []
-        for hit in hits:
-            kind = hit["kind"]
-            doc_id = hit["doc_id"].removeprefix(f"{kind}/")
-            score = hit["score"]
-            entry = {
-                "doc_id": doc_id,
-                "source_type": hit.get("source_type", ""),
-                "source_name": hit.get("source_name", kind),
-                "title": hit["title"][:100],
-                "url": hit.get("url", ""),
-                "content": hit["snippet"],
-                "created": hit.get("created", ""),
-                "tags": hit.get("tags", ""),
-            }
-            kind_of = hit.get("type")
-            if kind_of == "video_chunk":
-                if hit["video_id"] in seen_videos:
-                    continue
-                seen_videos.add(hit["video_id"])
-                entry["source_type"] = f"youtube-{hit.get('chunk_type') or 'transcript'}"
-                for k in ("video_id", "chapter", "start_time", "start_seconds"):
-                    entry[k] = hit.get(k)
-            elif kind_of == "maker":
-                entry["source_type"] = f"{kind}-maker"
-                entry["url"] = f"https://www.producthunt.com/@{hit['username']}"
-            elif hit.get("popularity"):
-                # Upvotes add at most 15%, as the vector ranking did.
-                score *= 1 + min(math.log10(hit["popularity"] + 1) / 25, 0.15)
-            entry["score"] = round(score, 3)
-            output.append(entry)
-        output.sort(key=lambda r: r["score"], reverse=True)
-        return output
+    # ── what the writers ask before writing ───────────────────────
 
     def get_all_urls(self, source_name: str) -> set[str]:
         with self._store.transaction() as db:
@@ -412,118 +359,5 @@ class SourceIndex:
                 (source_name, doc_type),
             ).fetchone()[0]
 
-    def video_count(self, source_name: str) -> dict:
-        with self._store.transaction() as db:
-            videos = db.execute("SELECT count(*) FROM videos WHERE source = ?", (source_name,)).fetchone()[0]
-        return {"videos": videos, "chunks": self._count_type(source_name, "video_chunk")}
-
     def maker_count(self, source_name: str) -> int:
         return self._count_type(source_name, "maker")
-
-    def get_existing_maker_usernames(self, source_name: str) -> set[str]:
-        with self._store.transaction() as db:
-            rows = db.execute(
-                "SELECT json_extract(meta, '$.username') FROM docs "
-                "WHERE kind = ? AND json_extract(meta, '$.type') = 'maker'",
-                (source_name,),
-            ).fetchall()
-        return {r[0] for r in rows if r[0]}
-
-    def _videos(self, sql: str, params: tuple) -> list[dict]:
-        with self._store.transaction() as db:
-            rows = db.execute(sql, params).fetchall()
-        return [
-            {"video_id": r[0] or "", "title": r[1] or "", "url": r[2] or "", "created": r[3] or "", "tags": r[4] or ""}
-            for r in rows
-        ]
-
-    def search_by_tag(self, source_name: str, tag: str, n_results: int = 10) -> list[dict]:
-        return self._videos(
-            "SELECT v.video_id, v.title, v.url, v.created, v.tags FROM videos v "
-            "JOIN video_tags t ON t.video_id = v.video_id WHERE v.source = ? AND t.tag = ? "
-            "ORDER BY t.weight DESC LIMIT ?",
-            (source_name, tag, n_results),
-        )
-
-    def channel_videos(self, source_name: str, handle: str) -> list[dict]:
-        return self._videos(
-            "SELECT video_id, title, url, created, tags FROM videos WHERE source = ? AND channel = ? "
-            "ORDER BY created DESC",
-            (source_name, handle),
-        )
-
-    def list_tags(self, source_name: str) -> list[dict]:
-        with self._store.transaction() as db:
-            rows = db.execute(
-                "SELECT t.tag, count(*), avg(t.weight) FROM video_tags t "
-                "JOIN videos v ON v.video_id = t.video_id WHERE v.source = ? "
-                "GROUP BY t.tag ORDER BY count(*) DESC",
-                (source_name,),
-            ).fetchall()
-        return [{"name": r[0], "count": r[1], "avg_confidence": round(r[2], 3) if r[2] else None} for r in rows]
-
-    def related_videos(self, source_name: str, video_id: str) -> list[dict]:
-        """Videos sharing topic tags with this one, by summed tag weight."""
-        with self._store.transaction() as db:
-            rows = db.execute(
-                "SELECT v.video_id, v.title, v.url, group_concat(b.tag), count(*), sum(a.weight + b.weight) / 2 AS rel "
-                "FROM video_tags a JOIN video_tags b ON b.tag = a.tag AND b.video_id != a.video_id "
-                "JOIN videos v ON v.video_id = b.video_id AND v.source = ? "
-                "WHERE a.video_id = ? GROUP BY v.video_id ORDER BY rel DESC",
-                (source_name, video_id),
-            ).fetchall()
-        return [
-            {
-                "video_id": r[0],
-                "title": r[1] or "",
-                "url": r[2] or "",
-                "shared_tags": (r[3] or "").split(","),
-                "overlap": r[4],
-                "relevance": round(r[5], 3) if r[5] else 0,
-            }
-            for r in rows
-        ]
-
-    def count(self, source_name: str | None = None) -> int:
-        """Searchable items: documents, videos and makers — not chunks."""
-        if source_name is None:
-            return sum(self.count(s) for s in self._sources())
-        with self._store.transaction() as db:
-            docs = db.execute(
-                "SELECT count(*) FROM docs WHERE kind = ? AND json_extract(meta, '$.type') != 'video_chunk'",
-                (source_name,),
-            ).fetchone()[0]
-            videos = db.execute("SELECT count(*) FROM videos WHERE source = ?", (source_name,)).fetchone()[0]
-        return docs + videos
-
-    def _sources(self) -> list[str]:
-        with self._store.transaction() as db:
-            rows = db.execute("SELECT DISTINCT kind FROM docs UNION SELECT DISTINCT source FROM videos").fetchall()
-        return sorted(r[0] for r in rows if r[0])
-
-    def list_sources(self) -> list[dict]:
-        """Per source: documents + videos + makers, with the video/chunk split. One scan."""
-        with self._store.transaction() as db:
-            by_type = db.execute(
-                "SELECT kind, json_extract(meta, '$.type'), count(*) FROM docs GROUP BY 1, 2"
-            ).fetchall()
-            videos = dict(db.execute("SELECT source, count(*) FROM videos GROUP BY source").fetchall())
-        counts: dict[str, dict[str, int]] = {}
-        for kind, doc_type, n in by_type:
-            counts.setdefault(kind, {})[doc_type] = n
-        for src in videos:
-            counts.setdefault(src, {})
-        result = []
-        for src in sorted(counts):
-            c = counts[src]
-            entry: dict = {
-                "source": src,
-                "count": c.get("doc", 0) + c.get("maker", 0) + videos.get(src, 0),
-                "path": str(self._store.path),
-            }
-            if videos.get(src):
-                entry["videos"], entry["video_chunks"] = videos[src], c.get("video_chunk", 0)
-            if c.get("maker"):
-                entry["makers"] = c["maker"]
-            result.append(entry)
-        return result
