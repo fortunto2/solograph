@@ -54,6 +54,12 @@ def test_a_name_cannot_close_the_literal_and_write(graph):
 
 def test_codegraph_query_refuses_writes(graph, monkeypatch):
     monkeypatch.setattr(server, "_graph", graph)
-    with pytest.raises(Exception, match="read-only"):
+    with pytest.raises(Exception, match="RO_QUERY is to be executed only on read-only"):
         asyncio.run(server.mcp.call_tool("codegraph_query", {"query": "MATCH (p:Project) DETACH DELETE p"}))
     assert graph.query("MATCH (p:Project) RETURN count(p)").result_set[0][0] == 1
+
+
+def test_a_cypher_mistake_reaches_the_agent_with_its_reason(graph, monkeypatch):
+    monkeypatch.setattr(server, "_graph", graph)
+    with pytest.raises(Exception, match="Cypher error"):
+        asyncio.run(server.mcp.call_tool("codegraph_query", {"query": "MATCH (p:Project RETURN p"}))

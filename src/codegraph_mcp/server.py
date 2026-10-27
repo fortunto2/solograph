@@ -28,6 +28,7 @@ from pathlib import Path
 
 import httpx
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 mcp = MCPServer("solograph")
 
@@ -216,8 +217,13 @@ def codegraph_query(query: str) -> list[dict]:
     """
     graph = _get_graph()
     # Read-only: one mistaken DETACH DELETE from an agent would empty the graph,
-    # and nothing a question needs is a write.
-    result = graph.ro_query(query)
+    # and nothing a question needs is a write. Errors go back as ToolError: since
+    # mcp 2.3 any other exception reaches the client as a bare "Error executing
+    # tool", and an agent cannot fix Cypher it is not told is wrong.
+    try:
+        result = graph.ro_query(query)
+    except Exception as e:
+        raise ToolError(f"Cypher error (queries are read-only): {e}") from e
     rows = []
     for row in result.result_set:
         if len(row) == 1:

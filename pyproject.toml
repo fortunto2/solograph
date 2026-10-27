@@ -35,7 +35,7 @@ dependencies = [
     "click>=8.1",
     "rich>=13.0.0",
     # MCP
-    "mcp>=2.0.0",
+    "mcp>=2.2.0", # 2.0.0 carries a published advisory (pip-audit, 26 Oct)
     # HTTP (web search)
     "httpx>=0.28.1",
     "httpcore>=1.0.7",
