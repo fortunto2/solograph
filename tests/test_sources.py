@@ -160,3 +160,13 @@ def test_source_search_through_mcp(monkeypatch, tmp_path):
         result = asyncio.run(server.mcp.call_tool(name, args))
         assert not result.is_error, result.content[0].text
         assert result.structured_content["result"]
+
+
+def test_one_long_video_does_not_crowd_out_the_others(tmp_path):
+    # Found in review: n=2 returned one video when the top 8 chunks all came from
+    # the same two-hour course, because a fixed n*4 window was deduplicated after.
+    idx = _idx(tmp_path)
+    idx.upsert_video("youtube", _video("aaaaaaaaaaa", "Agents course"), _chunks(*["ai agents ai agents"] * 30))
+    idx.upsert_video("youtube", _video("bbbbbbbbbbb", "Short clip"), _chunks("ai agents in one line"))
+    hits = idx.search("ai agents", source="youtube", n_results=2)
+    assert {h["video_id"] for h in hits} == {"aaaaaaaaaaa", "bbbbbbbbbbb"}

@@ -344,9 +344,20 @@ class SourceIndex:
 
     def search(self, query: str, source: str | None = None, n_results: int = 5) -> list[dict]:
         """BM25 over every source, or one. A video appears once, at its best chunk."""
+        # Chunks are deduplicated to one per video after ranking, so a long video
+        # can fill any fixed window: widen it until n videos or no more hits.
+        fetch = n_results * 4
+        while True:
+            hits = self._store.search(query, n_results=fetch, kind=source)
+            output = self._rank(hits)
+            if len(output) >= n_results or len(hits) < fetch:
+                return output[:n_results]
+            fetch *= 4
+
+    def _rank(self, hits: list[dict]) -> list[dict]:
         seen_videos: set[str] = set()
         output = []
-        for hit in self._store.search(query, n_results=n_results * 4, kind=source):
+        for hit in hits:
             kind = hit["kind"]
             doc_id = hit["doc_id"].removeprefix(f"{kind}/")
             score = hit["score"]
@@ -377,7 +388,7 @@ class SourceIndex:
             entry["score"] = round(score, 3)
             output.append(entry)
         output.sort(key=lambda r: r["score"], reverse=True)
-        return output[:n_results]
+        return output
 
     def get_all_urls(self, source_name: str) -> set[str]:
         with self._store.transaction() as db:
