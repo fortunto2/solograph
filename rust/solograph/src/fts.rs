@@ -282,7 +282,16 @@ impl FtsStore {
         n_results: usize,
         kind: Option<&str>,
     ) -> Result<Vec<Map<String, Value>>> {
-        let expr = match_expression(query);
+        self.search_expr(&match_expression(query), n_results, kind)
+    }
+
+    /// The same, for an FTS5 expression built by the caller (see SessionSearch).
+    pub fn search_expr(
+        &self,
+        expr: &str,
+        n_results: usize,
+        kind: Option<&str>,
+    ) -> Result<Vec<Map<String, Value>>> {
         if expr.is_empty() {
             return Ok(Vec::new());
         }

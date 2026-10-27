@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use super::{SessionSearch, coverage, read_transcript};
+use super::{SessionSearch, clean_title, coverage, read_transcript};
 use crate::fts::SyncReport;
 
 fn line(v: &Value) -> String {
@@ -298,4 +298,74 @@ fn the_reader_matches_python_on_meta() {
         json!({"session_id": "s1", "project": "proj", "project_path": "/w/proj", "branch": "",
                "started_at": "2026-10-01T10:00:00Z", "ended_at": "2026-10-01T10:00:00Z"})
     );
+}
+
+#[test]
+fn a_system_line_is_never_the_title_and_image_marks_are_dropped() {
+    assert_eq!(
+        clean_title("[Request interrupted by user for tool use]"),
+        None
+    );
+    assert_eq!(
+        clean_title("[Image #2] [Image #3] и вкладку агента").as_deref(),
+        Some("и вкладку агента")
+    );
+    let t = tempfile::tempdir().unwrap();
+    let path = proj(t.path()).join("s1.jsonl");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let lines = [
+        json!({"type": "user", "cwd": "/w/proj", "message": {"content": "[Request interrupted by user]"}}),
+        json!({"type": "user", "message": {"content": "[Image #1] почини экспорт видео"}}),
+    ];
+    std::fs::write(&path, lines.iter().map(line).collect::<String>()).unwrap();
+    assert_eq!(
+        read_transcript(&path, 0).unwrap().title,
+        "почини экспорт видео"
+    );
+}
+
+#[test]
+fn an_archived_title_that_was_a_system_line_is_fixed_on_open() {
+    let t = tempfile::tempdir().unwrap();
+    let s = search(t.path());
+    let body = "[Project: solopreneur | 2026-03-01]\n\nPrompts:\n1. [Request interrupted by user for tool use]\n2. разбери чеки за март\n";
+    let doc = crate::fts::Doc {
+        title: "[Request interrupted by user for tool use]".into(),
+        body: body.into(),
+        kind: "solopreneur".into(),
+        meta: serde_json::Map::new(),
+        end: None,
+    };
+    crate::fts::FtsStore::put(&s.store.db, "old", Some(&doc), None, None, true).unwrap();
+    drop(s);
+    let mut s = search(t.path());
+    let out = s.search("чеки", 5, None).unwrap();
+    assert_eq!(out["results"][0]["title"], "разбери чеки за март");
+}
+
+#[test]
+fn all_words_rank_above_some_words() {
+    let t = tempfile::tempdir().unwrap();
+    let mut s = search(t.path());
+    // OR alone ranks "some" first: short, two of the words, while "all" buries all
+    // three in a long session and the third word is common (every filler has it).
+    transcript(
+        &proj(t.path()).join("some.jsonl"),
+        "migrate migrate billing",
+        "ok",
+    );
+    let long = format!(
+        "{} migrate billing webhook",
+        "planning notes about the week ".repeat(15)
+    );
+    transcript(&proj(t.path()).join("all.jsonl"), &long, "ok");
+    for i in 0..4 {
+        transcript(
+            &proj(t.path()).join(format!("f{i}.jsonl")),
+            "webhook retries and logs",
+            "ok",
+        );
+    }
+    let out = s.search("migrate billing webhook", 2, None).unwrap();
+    assert_eq!(ids(&out), ["all", "some"]);
 }

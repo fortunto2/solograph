@@ -2,7 +2,7 @@
 
 MCP server for a portfolio of projects: symbol search across every repository you own, plus full-text search over your Claude Code session history, a markdown knowledge base, and indexed external sources (YouTube, ProductHunt, TrustMRR, Telegram).
 
-> PyPI: `pip install solograph` / `uvx solograph`
+One Rust binary does all of it — the MCP server, every read on the command line, an HTTP API for the sources, the nightly scan. Python is left only for the scrapers that fill the sources index (yt-dlp, Scrapy, Playwright live there).
 
 Everything is SQLite with FTS5: BM25 ranking, Snowball stemming for Russian and English, no graph database, no daemon, no embedding models, no API keys. Each index checks the disk before it answers, so there is no reindex step to forget.
 
@@ -13,15 +13,20 @@ solograph used to be a FalkorDB code graph with vector search on top. Both were 
 - **Vectors (removed in 0.7).** The session index had zero overlap with the transcripts on disk, KB search took 14 s cold and scored results by rank position, source search hung past two minutes. FTS answers in tens of milliseconds and finds 32 of 39 sessions in a known-answer test the vector index found none of.
 - **The structural graph (removed in 0.8).** 781k call edges plus imports, inheritance and session→file edges got zero structural questions from agents in four months: five calls in total, every one "list the projects" or stats. Grep answers those questions as well. On a 1,100-file Rust + Swift repository, `claude -p` with a dedicated code-graph MCP against plain Grep/Read gave the same accuracy in all 8 runs; the call-chain question cost $1.73 against $2.07 (16.5 tool calls against 25), the impact question $0.69 against $0.65.
 
-What stays is what grep cannot do across repositories: one index of every project's definitions, packages and history. The environment went from 862 MB to 89 MB.
+- **The second implementation (removed in 0.9).** For a day the same 12 tools existed in Rust and in Python. Two implementations of one search drift — the class of bug that kept `session_search` failing for seven weeks — so every read now comes from the binary the MCP server runs, and Python keeps only what writes the sources index.
+
+What stays is what grep cannot do across repositories: one index of every project's definitions, packages and history. The Python environment went from 862 MB to 34 MB; the binary is 33 MB.
 
 ## Install
 
 ```bash
-uv tool install solograph              # → solograph + solograph-cli in PATH
-claude mcp add -s user solograph -- uvx solograph
-solograph-cli init ~/my-projects       # registry + portfolio index
+git clone https://github.com/fortunto2/solograph && cd solograph
+make rust-install                                  # → ~/.solo/bin/solograph
+claude mcp add -s user solograph -- ~/.solo/bin/solograph
+CODEGRAPH_SCAN_PATH=~/my-projects ~/.solo/bin/solograph scan   # registry + portfolio index
 ```
+
+The scrapers are a separate, optional Python CLI: `uv tool install --editable .` gives `solograph-cli index-youtube` and the rest.
 
 ## 12 MCP tools
 
@@ -52,18 +57,21 @@ Web search is not here: it lives in the separate [searxng MCP server](https://gi
 ## CLI
 
 ```bash
-solograph-cli registry                      # merge new checkouts into the registry
-solograph-cli scan [-p my-app]              # index what changed (every scan is incremental)
-solograph-cli symbols "auth middleware"     # definitions across every project
-solograph-cli explain my-app                # what a project is made of
-solograph-cli shared [react]                # shared packages, or who uses one
-solograph-cli deps my-app                   # one project's dependencies
-solograph-cli session-search "webhook retry" -p my-app
-solograph-cli scan-sessions                 # read new transcripts into the session index
-solograph-cli index-kb                      # warm the KB index (searches also sync on their own)
-solograph-cli source-search "pricing tiers" -s youtube
-solograph-cli index-youtube -c GregIsenberg -n 10
+solograph symbols "auth middleware" [-p my-app]    # definitions across every project
+solograph sessions "webhook retry" [-p my-app]     # past sessions, archived ones too
+solograph kb "privacy architecture"                # the knowledge base (KB_PATH)
+solograph sources search "pricing tiers" -s youtube
+solograph sources list | tags | related VIDEO
+solograph explain my-app | deps my-app | stats | shared [react]
+solograph dupes escape                             # names defined in several places
+solograph scan [-p my-app]                         # registry merge + index what changed
+solograph sync-sessions | index-kb                 # warm an index (searches sync on their own)
+solograph http                                     # sources over HTTP, port 8002
 ```
+
+Every read takes `--json` and then prints exactly what the matching MCP tool returns, so a script and an agent see the same thing.
+
+Python, for the sources index only: `solograph-cli index-youtube -c GregIsenberg -n 10`, `index-producthunt`, `index-trustmrr`, `source-delete`, and `compact` for the KB inbox.
 
 `scripts/refresh-changed.sh` is the nightly job: registry merge, a scan of every project, session-index sync. It is meant for launchd or cron.
 
@@ -94,16 +102,34 @@ One FTS index at `$SOURCES_ROOT/search.db`, documents keyed `<source>/<id>`, plu
 - **ProductHunt / TrustMRR** — scrapers into the same index; upvotes nudge ranking by at most 15%.
 - **Telegram** — `scripts/index_telegram.py` in the consuming repo.
 
-`solograph-search` serves the sources index over HTTP (`GET /search?q=...&source=...&n=5`, `/sources`, `/health`, port `SOLOGRAPH_SEARCH_PORT`, default 8002) for a SearXNG engine.
+`solograph http` serves the sources index over HTTP (`GET /search?q=...&source=...&n=5`, `/sources`, `/health`, port `SOLOGRAPH_SEARCH_PORT`, default 8002) for the SearXNG engine `sources_local`; `Dockerfile.search` builds it into an image (`make docker-search`). Same endpoints and JSON as the Python `solograph-search` it replaced.
 
 ## Rust core
 
-`rust/` builds one `solograph` binary: the MCP server (the same 12 tools, arguments and result shapes) plus the commands the nightly job needs — `scan [--project NAME]`, `registry`, `sync-sessions`, `index-kb`. It reads and writes the same SQLite files with the same schemas, so Python and Rust can take turns on one store; the scrapers and indexers (YouTube, ProductHunt, TrustMRR, Telegram) stay in Python and write the sources index Rust reads.
+`rust/` builds the `solograph` binary. The scrapers in `src/` write the sources index through `sources.py`; the binary reads it — the tables are the contract, and `tests/test_sources.py` checks it the only way that means anything: Python writes, the real binary reads.
 
 ```bash
 make rust-test       # unit tests + an MCP contract test over stdio
-make rust-install    # → ~/.solo/bin/solograph, apart from the Python entry points
+make test            # builds the binary, then the Python write → Rust read tests
+make rust-install    # → ~/.solo/bin/solograph
 ```
+
+### Session ranking
+
+All the query's words before some of them: a session that has every word comes first, then the rest by BM25. Measured on 37 sessions with a known answer (queries are three words from the session's first prompt), on a frozen copy of the index:
+
+| Variant | recall@1 | recall@5 |
+|---|---|---|
+| OR, title ×3 (0.8) | 26 | 30 |
+| **all words first, then OR (0.9)** | **29** | **32** |
+| OR, title ×1 | 27 | 30 |
+| OR, title ×10 | 24 | 30 |
+| all words first, title ×10 | 28 | 32 |
+| OR + recency boost | 26 | 30 |
+
+Titles skip the lines Claude Code writes itself: 82 archived sessions were titled "[Request interrupted by user for tool use]", and prompts lose their "[Image #N]" markers.
+
+### Equivalence with the Python 0.8 it replaced
 
 Measured on 27 Oct 2026 against copies of the real stores, each engine on its own copy:
 

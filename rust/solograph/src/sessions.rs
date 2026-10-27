@@ -113,6 +113,62 @@ fn worth_parsing(line: &[u8]) -> bool {
 /// Prompts, answers and edited files, in order. Skill expansions (isMeta) are
 /// skipped. A last line without its newline is still being written: reading
 /// stops before it, and `end` says where to resume.
+static IMAGE_MARK: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"^\s*(\[Image #\d+\]\s*)+").expect("static regex")
+});
+
+/// A prompt as a title: "[Image #3]" markers dropped, and None for lines Claude
+/// Code writes itself ("[Request interrupted by user for tool use]" was the title
+/// of 82 archived sessions).
+pub fn clean_title(text: &str) -> Option<String> {
+    let t = IMAGE_MARK.replace(text, "");
+    let t = t.trim();
+    if t.is_empty() || t.starts_with("[Request interrupted") {
+        return None;
+    }
+    Some(t.to_string())
+}
+
+/// Titles stored before clean_title existed, fixed in place: a system line or an
+/// "[Image #N]" prefix becomes the first real prompt. Archived summaries list
+/// their prompts as "1. …"; live documents start with theirs.
+fn retitle(store: &FtsStore) -> Result<usize> {
+    let rows: Vec<(i64, String, String)> = store
+        .db
+        .prepare("SELECT rowid, title, body FROM fts WHERE title LIKE '[%'")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    static NUMBERED: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?m)^\d+\. (.+)$").expect("static regex"));
+    let mut fixed = 0;
+    for (rowid, title, body) in rows {
+        let numbered: Vec<&str> = NUMBERED
+            .captures_iter(&body)
+            .filter_map(|c| c.get(1))
+            .map(|m| m.as_str())
+            .collect();
+        let candidates: Vec<&str> = if body.contains("\nPrompts:\n") && !numbered.is_empty() {
+            numbered
+        } else {
+            std::iter::once(title.as_str())
+                .chain(body.split("\n\n"))
+                .collect()
+        };
+        let Some(new) = candidates.into_iter().find_map(clean_title) else {
+            continue;
+        };
+        let new: String = new.replace('\n', " ").chars().take(200).collect();
+        if new != title {
+            store.db.execute(
+                "UPDATE fts SET title = ? WHERE rowid = ?",
+                rusqlite::params![new, rowid],
+            )?;
+            fixed += 1;
+        }
+    }
+    Ok(fixed)
+}
+
 pub fn read_transcript(path: &Path, offset: i64) -> Result<Doc> {
     let mut file = BufReader::with_capacity(1 << 20, File::open(path)?);
     file.seek(SeekFrom::Start(offset as u64))?;
@@ -168,7 +224,7 @@ pub fn read_transcript(path: &Path, offset: i64) -> Result<Doc> {
                     if text.chars().count() > 5 && !text.starts_with('<') {
                         parts.push(text.to_string());
                         if typ == "user" && first_prompt.is_empty() {
-                            first_prompt = text.to_string();
+                            first_prompt = clean_title(text).unwrap_or_default();
                         }
                     }
                 }
@@ -270,8 +326,10 @@ impl SessionSearch {
     pub fn open(db_path: Option<&Path>, sessions_root: Option<&Path>) -> Result<Self> {
         let db = db_path.map_or_else(default_db_path, Path::to_path_buf);
         let root = sessions_root.map_or_else(claude_dir, Path::to_path_buf);
+        let store = FtsStore::open(&db)?;
+        retitle(&store)?;
         Ok(Self {
-            store: FtsStore::open(&db)?,
+            store,
             projects_dir: root.join("projects"),
             private_dirs: HashMap::new(),
         })
@@ -319,7 +377,7 @@ impl SessionSearch {
     ) -> Result<Value> {
         let synced = self.sync()?;
         let mut results = Vec::new();
-        for hit in self.store.search(query, n_results, project)? {
+        for hit in self.ranked(query, n_results, project)? {
             let doc_id = hit["doc_id"].as_str().unwrap_or("").to_string();
             let mut r = Map::new();
             r.insert("session_id".into(), json!(doc_id));
@@ -352,6 +410,35 @@ impl SessionSearch {
         }
         let cov = coverage(synced.as_ref(), self.store.count()?);
         Ok(json!({"results": results, "coverage": cov}))
+    }
+}
+
+impl SessionSearch {
+    /// All the query's words before some of them. Measured on 37 known-answer
+    /// sessions (27 Oct 2026): recall@1 26 → 29, recall@5 30 → 32. Title weight
+    /// 1 or 10 instead of 3 and a recency boost did not help, and were left out.
+    /// A query whose words never meet in one session falls back to OR, as before.
+    fn ranked(
+        &self,
+        query: &str,
+        n: usize,
+        project: Option<&str>,
+    ) -> Result<Vec<Map<String, Value>>> {
+        let any = crate::text::match_expression(query);
+        let all = any.split(" OR ").collect::<Vec<_>>().join(" AND ");
+        let mut hits = self.store.search_expr(&all, n, project)?;
+        if hits.len() < n && all != any {
+            let seen: HashSet<String> = hits.iter().map(|h| h["doc_id"].to_string()).collect();
+            for h in self.store.search_expr(&any, n, project)? {
+                if hits.len() >= n {
+                    break;
+                }
+                if !seen.contains(&h["doc_id"].to_string()) {
+                    hits.push(h);
+                }
+            }
+        }
+        Ok(hits)
     }
 }
 
