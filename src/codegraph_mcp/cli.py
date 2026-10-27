@@ -775,17 +775,11 @@ def hierarchy_cmd(ctx, class_name, project):
 @click.argument("query")
 @click.option("--source", "-s", default=None, help="Filter by source name (telegram, youtube)")
 @click.option("--limit", "-n", default=5, help="Number of results")
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
-def source_search_cmd(query, source, limit, backend):
+def source_search_cmd(query, source, limit):
     """Search indexed external sources (Telegram, YouTube, etc.)."""
-    from .vectors.source_index import SourceIndex
+    from .sources import SourceIndex
 
-    idx = SourceIndex(backend=backend)
+    idx = SourceIndex()
     results = idx.search(query, source=source, n_results=limit)
 
     if not results:
@@ -803,30 +797,22 @@ def source_search_cmd(query, source, limit, backend):
             if r.get("start_time"):
                 chapter_info += f" @ {r['start_time']}"
             chapter_info += "]"
-        click.echo(f"{i}. [{src}] {r['title'][:80]}{chapter_info}  (relevance: {r['relevance']:.0%})")
+        click.echo(f"{i}. [{src}] {r['title'][:80]}{chapter_info}  (score {r['score']})")
         if r.get("url"):
             click.echo(f"   {r['url']}")
         if r.get("tags"):
             click.echo(f"   Tags: {r['tags']}")
         if r.get("content"):
             click.echo(f"   {r['content'][:120]}")
-        if r.get("context"):
-            click.echo(f"   Context: {r['context'][:200]}...")
         click.echo()
 
 
 @cli.command("source-list")
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
-def source_list_cmd(backend):
+def source_list_cmd():
     """List indexed external sources with document counts."""
-    from .vectors.source_index import SourceIndex
+    from .sources import SourceIndex
 
-    idx = SourceIndex(backend=backend)
+    idx = SourceIndex()
     sources = idx.list_sources()
 
     if not sources:
@@ -848,17 +834,11 @@ def source_list_cmd(backend):
 
 @cli.command("source-tags")
 @click.option("--source", "-s", default="youtube", help="Source name (default: youtube)")
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
-def source_tags_cmd(source, backend):
+def source_tags_cmd(source):
     """List all auto-detected topics with video counts."""
-    from .vectors.source_index import SourceIndex
+    from .sources import SourceIndex
 
-    idx = SourceIndex(backend=backend)
+    idx = SourceIndex()
     tags = idx.list_tags(source)
 
     if not tags:
@@ -874,24 +854,18 @@ def source_tags_cmd(source, backend):
 @cli.command("source-related")
 @click.argument("video_id")
 @click.option("--source", "-s", default="youtube", help="Source name (default: youtube)")
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
-def source_related_cmd(video_id, source, backend):
+def source_related_cmd(video_id, source):
     """Find related videos by shared tags."""
     import re
 
-    from .vectors.source_index import SourceIndex
+    from .sources import SourceIndex
 
     # Extract video ID from URL if needed
     m = re.search(r"(?:v=|/v/|youtu\.be/)([a-zA-Z0-9_-]{11})", video_id)
     if m:
         video_id = m.group(1)
 
-    idx = SourceIndex(backend=backend)
+    idx = SourceIndex()
     results = idx.related_videos(source, video_id)
 
     if not results:
@@ -922,14 +896,8 @@ def source_related_cmd(video_id, source, backend):
     help="Import pre-processed data file",
 )
 @click.option("--dry-run", is_flag=True, help="Parse only, don't insert into DB")
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
-def index_youtube_cmd(channels, channels_file, limit, url, import_path, dry_run, backend):
-    """Index YouTube transcripts into FalkorDB source graph."""
+def index_youtube_cmd(channels, channels_file, limit, url, import_path, dry_run):
+    """Index YouTube transcripts into the sources index."""
     from .indexers.youtube import YouTubeIndexer
 
     channels_path = Path(channels_file) if channels_file else None
@@ -937,7 +905,6 @@ def index_youtube_cmd(channels, channels_file, limit, url, import_path, dry_run,
 
     indexer = YouTubeIndexer(
         channels_path=channels_path,
-        backend=backend,
         searxng_url=searxng_url,
     )
 
@@ -958,17 +925,11 @@ def index_youtube_cmd(channels, channels_file, limit, url, import_path, dry_run,
 @click.option("--limit", "-n", type=int, default=None, help="Max startups to scrape")
 @click.option("--dry-run", is_flag=True, help="Scrape only, don't insert into DB")
 @click.option("--force", is_flag=True, help="Re-scrape all, ignore already-indexed")
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
-def index_trustmrr_cmd(categories, limit, dry_run, force, backend):
-    """Scrape TrustMRR verified startup revenues into FalkorDB source graph."""
+def index_trustmrr_cmd(categories, limit, dry_run, force):
+    """Scrape TrustMRR verified startup revenues into the sources index."""
     from .indexers.trustmrr import TrustMRRIndexer
 
-    indexer = TrustMRRIndexer(backend=backend)
+    indexer = TrustMRRIndexer()
     indexer.run(
         categories=list(categories) if categories else None,
         limit=limit,
@@ -985,14 +946,8 @@ def index_trustmrr_cmd(categories, limit, dry_run, force, backend):
 @click.option("--include-all", "include_all", is_flag=True, help="Include non-featured posts too")
 @click.option("--dry-run", is_flag=True, help="Scrape only, don't insert into DB")
 @click.option("--force", is_flag=True, help="Re-scrape all, ignore already-indexed")
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
-def index_producthunt_cmd(days, limit, all_time, resume, include_all, dry_run, force, backend):
-    """Scrape ProductHunt leaderboard into FalkorDB source graph.
+def index_producthunt_cmd(days, limit, all_time, resume, include_all, dry_run, force):
+    """Scrape ProductHunt leaderboard into the sources index.
 
     \b
     Uses PH GraphQL API v2 (no browser needed).
@@ -1012,7 +967,7 @@ def index_producthunt_cmd(days, limit, all_time, resume, include_all, dry_run, f
         days = 4500  # Since PH launch (~2013)
         resume = True  # Always resume for full dumps
 
-    indexer = ProductHuntIndexer(backend=backend)
+    indexer = ProductHuntIndexer()
     indexer.run(
         days=days,
         limit=limit,
@@ -1026,14 +981,8 @@ def index_producthunt_cmd(days, limit, all_time, resume, include_all, dry_run, f
 @cli.command("import-producthunt")
 @click.argument("jsonl_path", type=click.Path(exists=True))
 @click.option("--dry-run", is_flag=True, help="Preview only, don't insert into DB")
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
-def import_producthunt_cmd(jsonl_path, dry_run, backend):
-    """Import ProductHunt products from a JSONL file into FalkorDB.
+def import_producthunt_cmd(jsonl_path, dry_run):
+    """Import ProductHunt products from a JSONL file into the sources index.
 
     \b
     Use this to re-index from a previously scraped dump file.
@@ -1059,7 +1008,7 @@ def import_producthunt_cmd(jsonl_path, dry_run, backend):
 
     from .indexers.producthunt import ProductHuntIndexer
 
-    indexer = ProductHuntIndexer(backend=backend)
+    indexer = ProductHuntIndexer()
     indexer.import_items(items, dry_run=dry_run)
 
 
@@ -1080,14 +1029,8 @@ def import_producthunt_cmd(jsonl_path, dry_run, backend):
     help="Resume file path (default: ~/.solo/sources/producthunt_makers.jsonl)",
 )
 @click.option("--dry-run", is_flag=True, help="Extract usernames only, don't scrape")
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
-def index_producthunt_makers_cmd(source, limit, delay, resume, dry_run, backend):
-    """Scrape ProductHunt maker profiles via Playwright and index into FalkorDB.
+def index_producthunt_makers_cmd(source, limit, delay, resume, dry_run):
+    """Scrape ProductHunt maker profiles via Playwright and index into the sources index.
 
     \b
     Two-phase pipeline:
@@ -1146,8 +1089,8 @@ def index_producthunt_makers_cmd(source, limit, delay, resume, dry_run, backend)
     if not profiles:
         return
 
-    # Phase 3: index into FalkorDB
-    indexer = ProductHuntIndexer(backend=backend)
+    # Phase 3: index into the sources index
+    indexer = ProductHuntIndexer()
     indexer.import_makers(profiles)
 
 
@@ -1180,15 +1123,9 @@ def index_producthunt_makers_cmd(source, limit, delay, resume, dry_run, backend)
 @click.option("--dry-run", is_flag=True, help="Scrape a few items and print, don't save")
 @click.option("--delay", type=float, default=2.0, help="Seconds between requests (default: 2)")
 @click.option("--concurrency", "-j", type=int, default=1, help="Parallel browser tabs (default: 1, try 3-5)")
-@click.option("--index", is_flag=True, help="Also import enriched items into FalkorDB")
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
+@click.option("--index", is_flag=True, help="Also import enriched items into the sources index")
 def scrape_ph_browser_cmd(
-    mode, source, year, from_date, to_date, limit, resume, output, dry_run, delay, concurrency, index, backend
+    mode, source, year, from_date, to_date, limit, resume, output, dry_run, delay, concurrency, index
 ):
     """Scrape ProductHunt product pages via HTTP (SSR HTML) to get non-redacted maker data.
 
@@ -1293,7 +1230,7 @@ def scrape_ph_browser_cmd(
         return
 
     # Merge and save
-    indexer = ProductHuntIndexer(backend=backend)
+    indexer = ProductHuntIndexer()
 
     if mode == "enrich" and original_items:
         merged = indexer.enrich_items(original_items, browser_items)
@@ -1304,9 +1241,9 @@ def scrape_ph_browser_cmd(
     _save_jsonl_cli(merged, output_path)
     console.print(f"Saved [green]{len(merged)}[/green] products to {output_path}")
 
-    # Optionally index into FalkorDB
+    # Optionally index into the sources index
     if index:
-        console.print("\nIndexing into FalkorDB...")
+        console.print("\nIndexing into the sources index...")
         indexer.import_items(merged)
 
 
@@ -1517,17 +1454,11 @@ def ph_makers_csv_cmd(
 
 @cli.command("source-delete")
 @click.argument("source_name")
-@click.option(
-    "--backend",
-    type=click.Choice(["mlx", "st"]),
-    default=None,
-    help="Embedding backend",
-)
-def source_delete_cmd(source_name, backend):
-    """Delete a source's FalkorDB vector database."""
-    from .vectors.source_index import SourceIndex
+def source_delete_cmd(source_name):
+    """Delete one source from the sources index."""
+    from .sources import SourceIndex
 
-    idx = SourceIndex(backend=backend)
+    idx = SourceIndex()
     if idx.delete_source(source_name):
         click.echo(f"Deleted source: {source_name}")
     else:

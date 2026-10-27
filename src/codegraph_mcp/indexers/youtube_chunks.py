@@ -1,148 +1,12 @@
-"""Shared utilities for vector indexes — embeddings, splitters, file scanning.
+"""Chunking YouTube transcripts along the video's own chapters.
 
-Embedding models:
-  - Primary: MLX multilingual-e5-small-mlx (384 dim, Apple Silicon native, RU+EN)
-  - Fallback: sentence-transformers all-MiniLM-L6-v2 (384 dim, any platform)
-
-Both produce 384-dimensional vectors compatible with FalkorDB cosine similarity.
+Moved out of vectors/common.py when the embedding stack went: chunks are now
+indexed for full-text search, and each still carries its chapter and start time
+so a hit can open the video at that moment.
 """
-
-from pathlib import Path
-
-from ..scanner.code import LANG_MAP, TEXT_EXTENSIONS, project_files
-
-VECTORS_ROOT = Path.home() / ".solo" / "vectors"
-
-# Extensions for markdown docs
-DOC_EXTENSIONS = {".md", ".mdx", ".rst", ".txt"}
 
 # Chunk capacity range (min, max) in characters
 CHUNK_CAPACITY = (200, 1500)
-
-# Below this a chunk carries no retrievable meaning — see the note in
-# ProjectGraphIndex._chunk_file for the measurement.
-MIN_CHUNK_CHARS = 40
-
-# Past this a file is data, not source, whatever its extension says. Measured
-# 22 Aug 2026: a 2.9 MB tina-lock.json took 96.8s to split into 5,655 chunks, each of
-# which then needs its own embedding, and one repo here commits a 48 MB index.json.
-# Splitting is superlinear, so the cost is unbounded while the value is near zero —
-# nobody searches a lockfile. Over the cap the file becomes one truncated chunk, which
-# keeps it findable by name without paying for its contents.
-MAX_CHUNKABLE_BYTES = 256_000
-
-# Embedding dimension (both MLX and ST models use 384)
-EMBEDDING_DIM = 384
-
-
-def cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
-    """Pure Python cosine similarity. No numpy needed."""
-    dot = sum(a * b for a, b in zip(vec1, vec2))
-    n1 = sum(a * a for a in vec1) ** 0.5
-    n2 = sum(b * b for b in vec2) ** 0.5
-    if n1 == 0 or n2 == 0:
-        return 0.0
-    return dot / (n1 * n2)
-
-
-# Default topic list for zero-shot tagging
-DEFAULT_TOPICS = [
-    "AI agents and automation",
-    "revenue model and pricing strategy",
-    "community building and audience growth",
-    "security and privacy",
-    "hardware setup and infrastructure",
-    "productivity and workflows",
-    "marketing and growth hacking",
-    "product development and MVP",
-    "fundraising and investment",
-    "solo founder and bootstrapping",
-    "open source and self-hosting",
-    "e-commerce and conversion optimization",
-    "content creation and YouTube",
-    "developer tools and coding",
-    "market research and validation",
-]
-
-
-def init_embedding_function(backend: str | None = None):
-    """Initialize embedding function. Returns callable: list[str] -> list[list[float]].
-
-    Auto-detects Apple Silicon for MLX, falls back to sentence-transformers.
-    Override with backend="mlx" or backend="st".
-    """
-    import platform
-
-    use_mlx = False
-    if backend == "mlx":
-        use_mlx = True
-    elif backend == "st":
-        use_mlx = False
-    elif backend is None:
-        use_mlx = platform.machine() == "arm64" and platform.system() == "Darwin"
-
-    if use_mlx:
-        try:
-            from mlx_embeddings.utils import generate, load
-
-            model, tokenizer = load("mlx-community/multilingual-e5-small-mlx")
-
-            def mlx_embed(texts: list[str]) -> list[list[float]]:
-                embeddings = []
-                for text in texts:
-                    result = generate(model, tokenizer, text)
-                    embeddings.append(result.text_embeds[0].tolist())
-                return embeddings
-
-            return mlx_embed
-        except Exception:
-            pass
-
-    # Sentence Transformers fallback
-    from sentence_transformers import SentenceTransformer
-
-    st_model = SentenceTransformer("intfloat/multilingual-e5-small")
-
-    def st_embed(texts: list[str]) -> list[list[float]]:
-        embeddings = st_model.encode(texts)
-        return [[float(x) for x in emb] for emb in embeddings]
-
-    return st_embed
-
-
-def get_code_splitter(lang: str):
-    """An AST-aware splitter for a language, or None if we have no grammar for it.
-
-    This used to carry its own four-entry grammar map and call `mod.language()` on it.
-    tree-sitter-typescript exposes `language_typescript`, not `language`, so the call
-    raised and was swallowed — and every other language the symbol scanner knew about
-    was simply missing from the map. Measured 22 Aug 2026: only python, swift and
-    kotlin got AST chunks. TypeScript, Go, Rust, PHP, JavaScript and HCL fell through
-    to `content[:1500]`, one chunk per file, everything past 1500 characters never
-    indexed at all — 1011 .ts files in one repo here, 654 .go in another.
-
-    So it now asks scanner.code, which already resolves each grammar's entry point for
-    symbol extraction. One map, and a language cannot be searchable for symbols while
-    silently unsearchable for text.
-    """
-    from semantic_text_splitter import CodeSplitter
-
-    from ..scanner.code import get_grammar
-
-    grammar = get_grammar(lang)
-    if grammar is None:
-        return None
-    try:
-        return CodeSplitter(grammar, CHUNK_CAPACITY)
-    except Exception:
-        return None
-
-
-def get_markdown_splitter():
-    """Create a MarkdownSplitter."""
-    from semantic_text_splitter import MarkdownSplitter
-
-    return MarkdownSplitter(CHUNK_CAPACITY)
 
 
 def get_text_splitter(capacity: tuple[int, int] | None = None):
@@ -343,16 +207,3 @@ def chunk_segments_by_chapters(
                 char_pos += len(sub) + 1  # approximate
 
     return result
-
-
-def scan_project_files(project_path: Path) -> list[tuple[Path, str]]:
-    """Scan project directory for indexable files. Returns (abs_path, language)."""
-    extended_lang_map = dict(LANG_MAP)
-    for ext in DOC_EXTENSIONS:
-        extended_lang_map[ext] = "markdown"
-    # Only the vector lane takes these: the code graph indexes symbols, and there is
-    # no grammar to get symbols from.
-    extended_lang_map.update(TEXT_EXTENSIONS)
-    # text_fallback: the vector lane can search anything with words in it. The
-    # code graph cannot, so it does not pass this.
-    return project_files(project_path, extended_lang_map, text_fallback=True)

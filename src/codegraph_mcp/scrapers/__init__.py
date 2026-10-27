@@ -1,7 +1,7 @@
 """Scrapy-based web scrapers for external data sources.
 
 Each site gets a spider inheriting from BaseSourceSpider.
-Spiders yield dicts that get mapped to SourceDoc and stored in FalkorDB vectors.
+Spiders yield dicts that get mapped to SourceDoc and stored in the sources full-text index.
 
 Adding a new site:
   1. Create scrapers/newsite.py with a spider class inheriting BaseSourceSpider

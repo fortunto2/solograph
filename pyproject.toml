@@ -10,11 +10,10 @@ authors = [
 ]
 keywords = ["mcp", "code-intelligence", "codegraph", "semantic-search", "claude-code", "solograph"]
 dependencies = [
-    # Graph Database + Vector Search
+    # Graph database (code graph)
     "falkordblite>=0.4",
     "redis<7.1", # 7.1+ breaks UnixDomainSocketConnection (no .port attr)
-    # Embeddings
-    "sentence-transformers>=5.2.2",
+    # Transcript chunking (YouTube sources)
     "semantic-text-splitter>=0.29.0",
     # Code Analysis
     "tree-sitter>=0.24",
@@ -53,7 +52,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mlx = ["mlx-embeddings>=0.0.3"]
 scraper = ["scrapy>=2.12", "playwright>=1.49"]
 dev = ["pre-commit>=4.5.1", "scrapy>=2.12", "playwright>=1.49", "certifi>=2024.0.0"]
 

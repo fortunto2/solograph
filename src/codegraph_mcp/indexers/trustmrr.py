@@ -1,6 +1,6 @@
-"""TrustMRR indexer — scrape startups and index into FalkorDB vectors.
+"""TrustMRR indexer — scrape startups and index into the sources full-text index.
 
-Runs TrustMRRSpider → maps items to SourceDoc → embeds and upserts.
+Runs TrustMRRSpider → maps items to SourceDoc → upserts.
 After indexing, startups are searchable via `source_search("AI SaaS revenue")`.
 
 Usage:
@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.progress import Progress
 
 from ..models import SourceDoc
-from ..vectors.source_index import SourceIndex
+from ..sources import SourceIndex
 
 console = Console()
 
@@ -24,10 +24,7 @@ SOURCE_NAME = "trustmrr"
 
 
 class TrustMRRIndexer:
-    """Scrape TrustMRR and index into FalkorDB source vectors."""
-
-    def __init__(self, backend: str | None = None):
-        self.backend = backend
+    """Scrape TrustMRR and index into the sources full-text index."""
 
     def run(
         self,
@@ -36,7 +33,7 @@ class TrustMRRIndexer:
         dry_run: bool = False,
         force: bool = False,
     ):
-        """Run full pipeline: scrape → map → embed → store."""
+        """Run full pipeline: scrape → map → store."""
         from ..scrapers.base import run_spider
         from ..scrapers.trustmrr import TrustMRRSpider
 
@@ -78,8 +75,8 @@ class TrustMRRIndexer:
         return self._index_items(items)
 
     def _index_items(self, items: list[dict]) -> list[dict]:
-        """Map spider items to SourceDoc and upsert into FalkorDB."""
-        idx = SourceIndex(backend=self.backend)
+        """Map spider items to SourceDoc and upsert into the sources index."""
+        idx = SourceIndex()
         new_count = 0
         skip_count = 0
 
@@ -104,7 +101,7 @@ class TrustMRRIndexer:
 
     @staticmethod
     def _get_existing_slugs() -> list[str]:
-        """Query FalkorDB for already-indexed TrustMRR slugs."""
+        """Query the sources index for already-indexed TrustMRR slugs."""
         try:
             idx = SourceIndex()
             urls = idx.get_all_urls(SOURCE_NAME)
@@ -120,7 +117,7 @@ class TrustMRRIndexer:
 
     @staticmethod
     def _to_source_doc(item: dict) -> SourceDoc | None:
-        """Map a spider item to SourceDoc for vector storage."""
+        """Map a spider item to SourceDoc for the sources index."""
         slug = item.get("slug", "")
         name = item.get("name", "")
         if not slug or not name:
@@ -128,7 +125,7 @@ class TrustMRRIndexer:
 
         doc_id = hashlib.md5(f"trustmrr:{slug}".encode()).hexdigest()
 
-        # Build rich text for embedding (semantic search)
+        # Rich text for full-text search
         parts = [name]
         if item.get("description"):
             parts.append(item["description"])

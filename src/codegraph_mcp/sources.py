@@ -1,0 +1,518 @@
+"""External sources — YouTube, ProductHunt, TrustMRR, Telegram — on SQLite FTS5.
+
+Was one FalkorDB graph per source with multilingual-e5 embeddings on every
+document, chunk and maker. Measured 26 Oct 2026: `source-list` and
+`source-search` both hung past 120 s, the YouTube graph alone took 28 s to
+load, and the embedding stack was most of an 862 MB environment. Now one
+FtsStore at <sources_root>/search.db, the same BM25 index sessions and the KB
+use, plus two small tables for what the graph held beyond text: videos and
+their topic tags.
+
+Documents are keyed "<source>/<id>" so two sources cannot collide. A YouTube
+transcript is indexed chunk by chunk, so a hit carries a timestamped URL; a
+search returns the best chunk of each video once.
+"""
+
+from __future__ import annotations
+
+import math
+import os
+import re
+from pathlib import Path
+
+from .fts import FtsStore, _fold
+from .models import MakerProfile, SourceDoc, VideoDoc
+
+_DEFAULT_ROOT = str(Path.home() / ".solo" / "sources")
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS videos(
+    video_id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    title TEXT, url TEXT, channel TEXT, channel_name TEXT,
+    created TEXT, tags TEXT, description TEXT,
+    duration_seconds INTEGER, chapters TEXT
+);
+CREATE INDEX IF NOT EXISTS videos_source ON videos(source, channel);
+CREATE TABLE IF NOT EXISTS video_tags(
+    video_id TEXT NOT NULL, tag TEXT NOT NULL, weight REAL,
+    PRIMARY KEY (video_id, tag)
+);
+"""
+
+# Topic -> keyword prefixes. Was zero-shot cosine similarity against these same
+# fifteen topic names. A keyword of three letters or fewer must match a whole
+# word ("ai", "seo"); a longer one matches any word it starts ("automat").
+# Phrases (with a space or hyphen) match as substrings.
+TOPICS: dict[str, tuple[str, ...]] = {
+    "AI agents and automation": (
+        "ai",
+        "agent",
+        "agentic",
+        "automat",
+        "llm",
+        "gpt",
+        "chatgpt",
+        "claude",
+        "openai",
+        "copilot",
+    ),
+    "revenue model and pricing strategy": (
+        "pricing",
+        "price",
+        "revenue",
+        "mrr",
+        "arr",
+        "monetiz",
+        "subscription",
+        "paywall",
+        "freemium",
+        "churn",
+    ),
+    "community building and audience growth": (
+        "community",
+        "audience",
+        "newsletter",
+        "discord",
+        "engagement",
+        "fanbase",
+    ),
+    "security and privacy": ("security", "secure", "privacy", "encrypt", "vulnerab", "gdpr", "hacker attack"),
+    "hardware setup and infrastructure": (
+        "hardware",
+        "server",
+        "infrastructure",
+        "homelab",
+        "gpu",
+        "mac mini",
+        "raspberry",
+        "kubernetes",
+        "vps",
+    ),
+    "productivity and workflows": ("productiv", "workflow", "habit", "routine", "focus", "notion", "obsidian"),
+    "marketing and growth hacking": (
+        "marketing",
+        "growth",
+        "seo",
+        "ads",
+        "advertis",
+        "viral",
+        "funnel",
+        "acquisition",
+        "outreach",
+        "cold email",
+    ),
+    "product development and MVP": ("mvp", "prototype", "product development", "feature", "ship", "build in public"),
+    "fundraising and investment": ("fundrais", "investor", "venture", "vc", "angel", "seed round", "valuation"),
+    "solo founder and bootstrapping": (
+        "solo",
+        "bootstrap",
+        "indie",
+        "indiehacker",
+        "solopreneur",
+        "one-person",
+        "side project",
+    ),
+    "open source and self-hosting": ("open source", "open-source", "opensource", "self-host", "selfhost", "self host"),
+    "e-commerce and conversion optimization": (
+        "ecommerce",
+        "e-commerce",
+        "shopify",
+        "conversion",
+        "checkout",
+        "dropship",
+        "amazon fba",
+    ),
+    "content creation and YouTube": ("youtube", "creator", "podcast", "thumbnail", "tiktok", "content creation"),
+    "developer tools and coding": (
+        "coding",
+        "developer",
+        "programming",
+        "api",
+        "cursor",
+        "ide",
+        "debug",
+        "python",
+        "javascript",
+        "typescript",
+    ),
+    "market research and validation": (
+        "market research",
+        "validat",
+        "niche",
+        "competitor",
+        "customer interview",
+        "demand",
+    ),
+}
+DEFAULT_TOPICS = list(TOPICS)
+
+
+def _topic_hits(text: str, keywords: tuple[str, ...]) -> int:
+    folded = _fold(text.lower())
+    words = set(re.findall(r"\w+", folded))
+    hits = 0
+    for kw in keywords:
+        if " " in kw or "-" in kw:
+            hits += kw in folded
+        elif len(kw) <= 3:
+            hits += kw in words
+        else:
+            hits += any(w.startswith(kw) for w in words)
+    return hits
+
+
+def _seconds(chunk: dict) -> float:
+    """start_seconds, or parsed from "H:MM:SS"/"M:SS" — the old indexer mostly filled only the string."""
+    if chunk.get("start_seconds"):
+        return float(chunk["start_seconds"])
+    parts = str(chunk.get("start_time") or "").split(":")
+    if not all(p.isdigit() for p in parts):
+        return 0.0
+    return float(sum(int(p) * 60**i for i, p in enumerate(reversed(parts))))
+
+
+def _timestamped(url: str, seconds) -> str:
+    if not url or not seconds:
+        return url
+    return f"{url}{'&' if '?' in url else '?'}t={int(seconds)}s"
+
+
+class SourceIndex:
+    """Full-text index over external content, one store for every source."""
+
+    def __init__(self, sources_root: str | None = None):
+        self._root = Path(sources_root or os.environ.get("SOURCES_ROOT", _DEFAULT_ROOT)).expanduser()
+        self._store = FtsStore(self._root / "search.db")
+        with self._store.transaction() as db:
+            db.executescript(_SCHEMA)
+
+    @staticmethod
+    def _key(source: str, doc_id: str) -> str:
+        return f"{source}/{doc_id}"
+
+    # ── writes ────────────────────────────────────────────────────
+
+    def exists(self, source_name: str, doc_id: str) -> bool:
+        with self._store.transaction() as db:
+            row = db.execute("SELECT 1 FROM docs WHERE doc_id = ?", (self._key(source_name, doc_id),)).fetchone()
+        return row is not None
+
+    def upsert_one(self, source_name: str, doc: SourceDoc, embedding=None) -> bool:
+        """Insert or update one document. Returns True if it was new.
+
+        `embedding` is accepted and ignored, so indexers written for the vector
+        store keep working.
+        """
+        was_new = not self.exists(source_name, doc.doc_id)
+        body = "\n".join(p for p in (doc.tags, doc.embed_text or doc.content) if p)
+        with self._store.transaction():
+            self._store.put(
+                self._key(source_name, doc.doc_id),
+                {
+                    "title": doc.title,
+                    "body": body,
+                    "kind": source_name,
+                    "meta": {
+                        "type": "doc",
+                        "source_type": doc.source_type,
+                        "source_name": doc.source_name,
+                        "url": doc.url,
+                        "tags": doc.tags,
+                        "created": doc.created,
+                        "popularity": doc.popularity,
+                        "content": doc.content[:300],
+                    },
+                },
+            )
+        return was_new
+
+    def upsert_maker(self, source_name: str, maker: MakerProfile, embedding=None) -> bool:
+        was_new = not self.exists(source_name, f"maker:{maker.username}")
+        with self._store.transaction():
+            self._store.put(
+                self._key(source_name, f"maker:{maker.username}"),
+                {
+                    "title": f"{maker.name or maker.username} (@{maker.username})",
+                    "body": "\n".join(p for p in (maker.headline, maker.bio) if p),
+                    "kind": source_name,
+                    "meta": {
+                        "type": "maker",
+                        "username": maker.username,
+                        "headline": maker.headline,
+                        "points": maker.points,
+                        "streak_days": maker.streak_days,
+                        "followers": maker.followers_count,
+                        "twitter": maker.twitter_username,
+                        "linkedin": maker.linkedin_url,
+                        "website": maker.website_url,
+                        "is_maker": maker.is_maker,
+                    },
+                },
+            )
+        return was_new
+
+    def auto_tag_video(self, title: str, description: str, threshold: float = 0.25) -> list[tuple[str, float]]:
+        """Topic tags from keywords: a title hit counts 2, a description hit 1.
+
+        weight = score / (score + 3); the default threshold takes any one hit.
+        Only the first 500 characters of the description count — the rest is
+        links, sponsors and "subscribe". The embedding tagger this replaces put
+        all fifteen topics on 740 of 742 videos (e5 cosine is above 0.3 for
+        almost anything), so every video was "related" to every other. On the
+        same videos this gives 2.0 tags per video, 74 with none.
+        """
+        tags = []
+        for topic, keywords in TOPICS.items():
+            score = 2 * _topic_hits(title, keywords) + _topic_hits(description[:500], keywords)
+            weight = score / (score + 3) if score else 0.0
+            if weight >= threshold:
+                tags.append((topic, round(weight, 3)))
+        return sorted(tags, key=lambda t: t[1], reverse=True)
+
+    def upsert_video(self, source_name: str, video: VideoDoc, chunks: list[dict], channel_name: str | None = None):
+        """Insert or replace a video and its transcript chunks. Returns the chunk count."""
+        tags = self.auto_tag_video(video.title, video.description)
+        chapters = ", ".join(f"{ch.start_time} {ch.title}" for ch in video.chapters) if video.chapters else ""
+        self.write_video(
+            source_name,
+            {
+                "video_id": video.video_id,
+                "title": video.title,
+                "url": video.url,
+                "channel": video.source_name,
+                "channel_name": channel_name or video.source_name,
+                "created": video.created,
+                "tags": video.tags,
+                "description": video.description[:5000],
+                "duration_seconds": video.duration_seconds,
+                "chapters": chapters,
+            },
+            tags,
+            chunks,
+        )
+        return len(chunks)
+
+    def write_video(self, source_name: str, video: dict, tags: list[tuple[str, float]], chunks: list[dict]) -> None:
+        """Store a video row, its tags and its chunks, replacing whatever was there."""
+        vid = video["video_id"]
+        prefix = self._key(source_name, f"{vid}:")
+        with self._store.transaction() as db:
+            old = {r[0] for r in db.execute("SELECT doc_id FROM docs WHERE doc_id LIKE ?", (prefix + "%",))}
+            self._store.forget(old)
+            cols = ("video_id", "title", "url", "channel", "channel_name", "created", "tags", "description")
+            cols += ("duration_seconds", "chapters")
+            db.execute(
+                f"INSERT OR REPLACE INTO videos(source, {', '.join(cols)}) VALUES (?{', ?' * len(cols)})",
+                (source_name, *(video.get(c) for c in cols)),
+            )
+            db.execute("DELETE FROM video_tags WHERE video_id = ?", (vid,))
+            db.executemany("INSERT INTO video_tags VALUES (?, ?, ?)", [(vid, t, w) for t, w in tags])
+            for c in chunks:
+                chapter = c.get("chapter", "")
+                self._store.put(
+                    f"{prefix}{c['chunk_index']}",
+                    {
+                        "title": f"{video['title']} — {chapter}" if chapter else video["title"],
+                        "body": c["text"],
+                        "kind": source_name,
+                        "meta": {
+                            "type": "video_chunk",
+                            "video_id": vid,
+                            "source_name": video.get("channel", ""),
+                            "url": _timestamped(video["url"], _seconds(c)),
+                            "created": video.get("created", ""),
+                            "tags": video.get("tags", ""),
+                            "chapter": chapter,
+                            "start_time": c.get("start_time", ""),
+                            "start_seconds": _seconds(c),
+                            "chunk_type": c.get("chunk_type", "transcript"),
+                        },
+                    },
+                )
+
+    def delete_source(self, source_name: str) -> bool:
+        with self._store.transaction() as db:
+            keys = {r[0] for r in db.execute("SELECT doc_id FROM docs WHERE kind = ?", (source_name,))}
+            vids = [r[0] for r in db.execute("SELECT video_id FROM videos WHERE source = ?", (source_name,))]
+            self._store.forget(keys)
+            db.executemany("DELETE FROM video_tags WHERE video_id = ?", [(v,) for v in vids])
+            db.execute("DELETE FROM videos WHERE source = ?", (source_name,))
+        return bool(keys or vids)
+
+    # ── reads ─────────────────────────────────────────────────────
+
+    def search(self, query: str, source: str | None = None, n_results: int = 5) -> list[dict]:
+        """BM25 over every source, or one. A video appears once, at its best chunk."""
+        seen_videos: set[str] = set()
+        output = []
+        for hit in self._store.search(query, n_results=n_results * 4, kind=source):
+            kind = hit["kind"]
+            doc_id = hit["doc_id"].removeprefix(f"{kind}/")
+            score = hit["score"]
+            entry = {
+                "doc_id": doc_id,
+                "source_type": hit.get("source_type", ""),
+                "source_name": hit.get("source_name", kind),
+                "title": hit["title"][:100],
+                "url": hit.get("url", ""),
+                "content": hit["snippet"],
+                "created": hit.get("created", ""),
+                "tags": hit.get("tags", ""),
+            }
+            kind_of = hit.get("type")
+            if kind_of == "video_chunk":
+                if hit["video_id"] in seen_videos:
+                    continue
+                seen_videos.add(hit["video_id"])
+                entry["source_type"] = f"youtube-{hit.get('chunk_type') or 'transcript'}"
+                for k in ("video_id", "chapter", "start_time", "start_seconds"):
+                    entry[k] = hit.get(k)
+            elif kind_of == "maker":
+                entry["source_type"] = f"{kind}-maker"
+                entry["url"] = f"https://www.producthunt.com/@{hit['username']}"
+            elif hit.get("popularity"):
+                # Upvotes add at most 15%, as the vector ranking did.
+                score *= 1 + min(math.log10(hit["popularity"] + 1) / 25, 0.15)
+            entry["score"] = round(score, 3)
+            output.append(entry)
+        output.sort(key=lambda r: r["score"], reverse=True)
+        return output[:n_results]
+
+    def get_all_urls(self, source_name: str) -> set[str]:
+        with self._store.transaction() as db:
+            rows = db.execute(
+                "SELECT json_extract(meta, '$.url') FROM docs WHERE kind = ? AND json_extract(meta, '$.type') = 'doc'",
+                (source_name,),
+            ).fetchall()
+        return {r[0] for r in rows if r[0]}
+
+    def video_exists(self, source_name: str, video_id: str) -> bool:
+        with self._store.transaction() as db:
+            row = db.execute(
+                "SELECT 1 FROM videos WHERE source = ? AND video_id = ?", (source_name, video_id)
+            ).fetchone()
+        return row is not None
+
+    def _count_type(self, source_name: str, doc_type: str) -> int:
+        with self._store.transaction() as db:
+            return db.execute(
+                "SELECT count(*) FROM docs WHERE kind = ? AND json_extract(meta, '$.type') = ?",
+                (source_name, doc_type),
+            ).fetchone()[0]
+
+    def video_count(self, source_name: str) -> dict:
+        with self._store.transaction() as db:
+            videos = db.execute("SELECT count(*) FROM videos WHERE source = ?", (source_name,)).fetchone()[0]
+        return {"videos": videos, "chunks": self._count_type(source_name, "video_chunk")}
+
+    def maker_count(self, source_name: str) -> int:
+        return self._count_type(source_name, "maker")
+
+    def get_existing_maker_usernames(self, source_name: str) -> set[str]:
+        with self._store.transaction() as db:
+            rows = db.execute(
+                "SELECT json_extract(meta, '$.username') FROM docs "
+                "WHERE kind = ? AND json_extract(meta, '$.type') = 'maker'",
+                (source_name,),
+            ).fetchall()
+        return {r[0] for r in rows if r[0]}
+
+    def _videos(self, sql: str, params: tuple) -> list[dict]:
+        with self._store.transaction() as db:
+            rows = db.execute(sql, params).fetchall()
+        return [
+            {"video_id": r[0] or "", "title": r[1] or "", "url": r[2] or "", "created": r[3] or "", "tags": r[4] or ""}
+            for r in rows
+        ]
+
+    def search_by_tag(self, source_name: str, tag: str, n_results: int = 10) -> list[dict]:
+        return self._videos(
+            "SELECT v.video_id, v.title, v.url, v.created, v.tags FROM videos v "
+            "JOIN video_tags t ON t.video_id = v.video_id WHERE v.source = ? AND t.tag = ? "
+            "ORDER BY t.weight DESC LIMIT ?",
+            (source_name, tag, n_results),
+        )
+
+    def channel_videos(self, source_name: str, handle: str) -> list[dict]:
+        return self._videos(
+            "SELECT video_id, title, url, created, tags FROM videos WHERE source = ? AND channel = ? "
+            "ORDER BY created DESC",
+            (source_name, handle),
+        )
+
+    def list_tags(self, source_name: str) -> list[dict]:
+        with self._store.transaction() as db:
+            rows = db.execute(
+                "SELECT t.tag, count(*), avg(t.weight) FROM video_tags t "
+                "JOIN videos v ON v.video_id = t.video_id WHERE v.source = ? "
+                "GROUP BY t.tag ORDER BY count(*) DESC",
+                (source_name,),
+            ).fetchall()
+        return [{"name": r[0], "count": r[1], "avg_confidence": round(r[2], 3) if r[2] else None} for r in rows]
+
+    def related_videos(self, source_name: str, video_id: str) -> list[dict]:
+        """Videos sharing topic tags with this one, by summed tag weight."""
+        with self._store.transaction() as db:
+            rows = db.execute(
+                "SELECT v.video_id, v.title, v.url, group_concat(b.tag), count(*), sum(a.weight + b.weight) / 2 AS rel "
+                "FROM video_tags a JOIN video_tags b ON b.tag = a.tag AND b.video_id != a.video_id "
+                "JOIN videos v ON v.video_id = b.video_id AND v.source = ? "
+                "WHERE a.video_id = ? GROUP BY v.video_id ORDER BY rel DESC",
+                (source_name, video_id),
+            ).fetchall()
+        return [
+            {
+                "video_id": r[0],
+                "title": r[1] or "",
+                "url": r[2] or "",
+                "shared_tags": (r[3] or "").split(","),
+                "overlap": r[4],
+                "relevance": round(r[5], 3) if r[5] else 0,
+            }
+            for r in rows
+        ]
+
+    def count(self, source_name: str | None = None) -> int:
+        """Searchable items: documents, videos and makers — not chunks."""
+        if source_name is None:
+            return sum(self.count(s) for s in self._sources())
+        with self._store.transaction() as db:
+            docs = db.execute(
+                "SELECT count(*) FROM docs WHERE kind = ? AND json_extract(meta, '$.type') != 'video_chunk'",
+                (source_name,),
+            ).fetchone()[0]
+            videos = db.execute("SELECT count(*) FROM videos WHERE source = ?", (source_name,)).fetchone()[0]
+        return docs + videos
+
+    def _sources(self) -> list[str]:
+        with self._store.transaction() as db:
+            rows = db.execute("SELECT DISTINCT kind FROM docs UNION SELECT DISTINCT source FROM videos").fetchall()
+        return sorted(r[0] for r in rows if r[0])
+
+    def list_sources(self) -> list[dict]:
+        """Per source: documents + videos + makers, with the video/chunk split. One scan."""
+        with self._store.transaction() as db:
+            by_type = db.execute(
+                "SELECT kind, json_extract(meta, '$.type'), count(*) FROM docs GROUP BY 1, 2"
+            ).fetchall()
+            videos = dict(db.execute("SELECT source, count(*) FROM videos GROUP BY source").fetchall())
+        counts: dict[str, dict[str, int]] = {}
+        for kind, doc_type, n in by_type:
+            counts.setdefault(kind, {})[doc_type] = n
+        for src in videos:
+            counts.setdefault(src, {})
+        result = []
+        for src in sorted(counts):
+            c = counts[src]
+            entry: dict = {
+                "source": src,
+                "count": c.get("doc", 0) + c.get("maker", 0) + videos.get(src, 0),
+                "path": str(self._store.path),
+            }
+            if videos.get(src):
+                entry["videos"], entry["video_chunks"] = videos[src], c.get("video_chunk", 0)
+            if c.get("maker"):
+                entry["makers"] = c["maker"]
+            result.append(entry)
+        return result

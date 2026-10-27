@@ -1,6 +1,6 @@
-"""ProductHunt indexer — scrape leaderboard and index into FalkorDB vectors.
+"""ProductHunt indexer — scrape leaderboard and index into the sources full-text index.
 
-Runs PH GraphQL API scraper → maps items to SourceDoc → embeds and upserts.
+Runs PH GraphQL API scraper → maps items to SourceDoc → upserts.
 After indexing, products are searchable via `source_search("AI productivity tool")`.
 
 Usage:
@@ -18,7 +18,7 @@ from rich.console import Console
 from rich.progress import Progress
 
 from ..models import MakerProfile, SourceDoc
-from ..vectors.source_index import SourceIndex
+from ..sources import SourceIndex
 
 console = Console()
 
@@ -27,10 +27,7 @@ DEFAULT_RESUME_PATH = str(Path.home() / ".solo" / "sources" / "producthunt_scrap
 
 
 class ProductHuntIndexer:
-    """Scrape ProductHunt leaderboard and index into FalkorDB source vectors."""
-
-    def __init__(self, backend: str | None = None):
-        self.backend = backend
+    """Scrape ProductHunt leaderboard and index into the sources full-text index."""
 
     def run(
         self,
@@ -41,7 +38,7 @@ class ProductHuntIndexer:
         resume: bool = False,
         featured_only: bool = True,
     ):
-        """Run full pipeline: scrape → map → embed → store."""
+        """Run full pipeline: scrape → map → store."""
         from ..scrapers.producthunt import run_ph_scraper
 
         console.print(f"[bold]Scraping ProductHunt leaderboard...[/bold] days={days}, limit={limit}")
@@ -91,8 +88,8 @@ class ProductHuntIndexer:
         return self._index_items(items)
 
     def _index_items(self, items: list[dict]) -> list[dict]:
-        """Map scraped items to SourceDoc and upsert into FalkorDB."""
-        idx = SourceIndex(backend=self.backend)
+        """Map scraped items to SourceDoc and upsert into the sources index."""
+        idx = SourceIndex()
         new_count = 0
         skip_count = 0
 
@@ -120,11 +117,7 @@ class ProductHuntIndexer:
         makers: list[MakerProfile],
         dry_run: bool = False,
     ) -> list[MakerProfile]:
-        """Index maker profiles into FalkorDB source graph.
-
-        Creates Maker nodes with embeddings and links them to existing
-        SourceDoc products via CREATED edges.
-        """
+        """Index maker profiles into the sources index, searchable by headline and bio."""
         if dry_run:
             for m in makers[:10]:
                 console.print(
@@ -135,7 +128,7 @@ class ProductHuntIndexer:
                 console.print(f"  ... and {len(makers) - 10} more")
             return makers
 
-        idx = SourceIndex(backend=self.backend)
+        idx = SourceIndex()
         new_count = 0
 
         with Progress(console=console) as progress:
@@ -230,7 +223,7 @@ class ProductHuntIndexer:
 
     @staticmethod
     def _get_existing_slugs() -> list[str]:
-        """Query FalkorDB for already-indexed ProductHunt slugs."""
+        """Query the sources index for already-indexed ProductHunt slugs."""
         try:
             idx = SourceIndex()
             urls = idx.get_all_urls(SOURCE_NAME)
@@ -246,7 +239,7 @@ class ProductHuntIndexer:
 
     @staticmethod
     def _to_source_doc(item: dict) -> SourceDoc | None:
-        """Map a scraped PH product to SourceDoc for vector storage."""
+        """Map a scraped PH product to SourceDoc for the sources index."""
         slug = item.get("slug", "")
         name = item.get("name", "")
         if not slug or not name:
@@ -254,7 +247,7 @@ class ProductHuntIndexer:
 
         doc_id = hashlib.md5(f"ph:{slug}".encode()).hexdigest()
 
-        # Build rich text for embedding (semantic search)
+        # Rich text for full-text search
         parts = [name]
         if item.get("tagline"):
             parts.append(item["tagline"])

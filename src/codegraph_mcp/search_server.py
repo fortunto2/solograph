@@ -1,10 +1,10 @@
-"""Lightweight HTTP API for multi-source vector search.
+"""Lightweight HTTP API for multi-source full-text search.
 
-Exposes FalkorDB SourceIndex search over HTTP for SearXNG engines.
+Exposes SourceIndex search over HTTP for SearXNG engines.
 Supports all indexed sources (producthunt, youtube, telegram, etc.).
 
 Endpoints:
-  GET /search?q=...&source=producthunt&n=5  — vector search
+  GET /search?q=...&source=producthunt&n=5  — full-text search
   GET /sources                               — list available sources
   GET /health                                — status + total count
 """
@@ -22,9 +22,9 @@ _idx = None
 def _get_index():
     global _idx
     if _idx is None:
-        from codegraph_mcp.vectors.source_index import SourceIndex
+        from codegraph_mcp.sources import SourceIndex
 
-        _idx = SourceIndex(backend="st")
+        _idx = SourceIndex()
         sources = _idx.list_sources()
         total = sum(s.get("count", 0) for s in sources)
         names = [s["source"] for s in sources]

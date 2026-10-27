@@ -124,21 +124,6 @@ def extract_makers_from_posts(jsonl_path: str) -> list[str]:
     return sorted(usernames)
 
 
-def extract_makers_from_graph(source_name: str = "producthunt") -> list[str]:
-    """Extract unique maker usernames from already-indexed SourceDoc nodes."""
-    try:
-        from ..vectors.source_index import SourceIndex
-
-        idx = SourceIndex()
-        graph = idx._get_graph(source_name)
-        graph.query("MATCH (d:SourceDoc) WHERE d.source_type = 'producthunt-product' RETURN d.url")
-        # Parse slugs — makers are stored in the embed text, not easy to extract
-        # Better to use JSONL directly
-        return []
-    except Exception:
-        return []
-
-
 async def _scrape_profile(page, username: str) -> MakerProfile | None:
     """Navigate to /@username and extract profile via Apollo cache."""
     url = f"https://www.producthunt.com/@{username}"

@@ -1,6 +1,6 @@
-"""Index YouTube video transcripts into per-source FalkorDB vectors.
+"""Index YouTube video transcripts into the sources full-text index.
 
-Videos are stored as Video -> HAS_CHUNK -> VideoChunk graph structure.
+Each video is a row plus one searchable document per transcript chunk.
 Transcripts are split by chapter boundaries (from description) or by TextSplitter.
 Descriptions are indexed as separate chunks for link/resource discovery.
 
@@ -9,7 +9,6 @@ Usage via CLI:
     solograph-cli index-youtube -c GregIsenberg             # One channel
     solograph-cli index-youtube -n 10                       # Last N videos per channel
     solograph-cli index-youtube --import-file FILE           # Import pre-processed data
-    solograph-cli index-youtube --backend st                 # Force sentence-transformers
 
 Discovery: yt-dlp (primary) → SearXNG (fallback, optional).
 Transcript: yt-dlp VTT (primary) → SearXNG /transcript (fallback, optional).
@@ -425,7 +424,6 @@ def import_file(filepath: str, idx, dry_run: bool = False) -> int:
             continue
 
         embed_text = f"{title}\n\n{section[:3000]}"
-        embedding = idx.embed([embed_text])[0]
 
         if dry_run:
             print(f"  [DRY] {title}")
@@ -443,7 +441,7 @@ def import_file(filepath: str, idx, dry_run: bool = False) -> int:
             tags="ycombinator,youtube",
             embed_text=embed_text,
         )
-        idx.upsert_one("youtube", doc, embedding=embedding)
+        idx.upsert_one("youtube", doc)
         indexed += 1
         print(f"  Indexed: {title}")
 
@@ -456,16 +454,14 @@ def import_file(filepath: str, idx, dry_run: bool = False) -> int:
 
 
 class YouTubeIndexer:
-    """Index YouTube video transcripts into FalkorDB source vectors."""
+    """Index YouTube video transcripts into the sources full-text index."""
 
     def __init__(
         self,
         channels_path: Path | None = None,
-        backend: str | None = None,
         searxng_url: str | None = None,
     ):
         self.channels_path = channels_path
-        self.backend = backend
         self.searxng_url = searxng_url or os.environ.get("TAVILY_API_URL", "http://localhost:8013")
 
     def run(
@@ -476,16 +472,15 @@ class YouTubeIndexer:
     ) -> dict:
         """Main indexing loop. Returns stats dict."""
         from ..models import VideoChapter, VideoDoc
-        from ..vectors.common import (
+        from ..sources import SourceIndex
+        from .youtube_chunks import (
             chunk_segments_by_chapters,
             chunk_transcript_by_chapters,
             get_text_splitter,
             parse_chapters,
         )
-        from ..vectors.source_index import SourceIndex
 
-        print("Loading embedding model...")
-        idx = SourceIndex(backend=self.backend)
+        idx = SourceIndex()
 
         # Check yt-dlp (required)
         if not check_ytdlp():
@@ -684,20 +679,19 @@ class YouTubeIndexer:
     def index_url(self, urls: list[str], dry_run: bool = False) -> dict:
         """Index specific videos by URL. No SearXNG needed — uses yt-dlp directly."""
         from ..models import VideoChapter, VideoDoc
-        from ..vectors.common import (
+        from ..sources import SourceIndex
+        from .youtube_chunks import (
             chunk_segments_by_chapters,
             chunk_transcript_by_chapters,
             get_text_splitter,
             parse_chapters,
         )
-        from ..vectors.source_index import SourceIndex
 
         if not check_ytdlp():
             print("yt-dlp not found. Install: brew install yt-dlp", file=sys.stderr)
             sys.exit(1)
 
-        print("Loading embedding model...")
-        idx = SourceIndex(backend=self.backend)
+        idx = SourceIndex()
         splitter = get_text_splitter()
 
         total_indexed = 0
@@ -820,10 +814,9 @@ class YouTubeIndexer:
 
     def import_file(self, filepath: str, dry_run: bool = False) -> int:
         """Import pre-processed video summaries from a markdown file."""
-        from ..vectors.source_index import SourceIndex
+        from ..sources import SourceIndex
 
-        print("Loading embedding model...")
-        idx = SourceIndex(backend=self.backend)
+        idx = SourceIndex()
 
         print(f"Importing from {filepath}...")
         count = import_file(filepath, idx, dry_run=dry_run)

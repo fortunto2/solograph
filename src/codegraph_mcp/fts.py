@@ -23,7 +23,8 @@ import json
 import re
 import sqlite3
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import snowballstemmer
@@ -88,7 +89,8 @@ class FtsStore:
     def __init__(self, db_path: str | Path):
         self.path = Path(db_path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        # Re-entrant: a caller holding a transaction may call forget() or put().
+        self._lock = threading.RLock()
         self._db = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)
@@ -229,6 +231,12 @@ class FtsStore:
             hit["gone"] = bool(gone)
             hits.append(hit)
         return hits
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """The connection, locked, committed on success — for callers with their own tables."""
+        with self._lock, self._db:
+            yield self._db
 
     def count(self) -> int:
         with self._lock:

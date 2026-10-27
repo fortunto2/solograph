@@ -97,7 +97,7 @@ def _get_sessions():
 def _get_source_index():
     global _source_idx
     if _source_idx is None:
-        from codegraph_mcp.vectors.source_index import SourceIndex
+        from codegraph_mcp.sources import SourceIndex
 
         _source_idx = SourceIndex()
     return _source_idx
@@ -419,11 +419,12 @@ def source_search(
     source: str | None = None,
     n_results: int = 5,
 ) -> list[dict]:
-    """Search indexed external sources (Telegram, YouTube, etc.).
+    """Full-text search over indexed external sources (YouTube, Telegram, ProductHunt, TrustMRR).
 
-    Each source is stored in its own FalkorDB graph.
-    YouTube videos are chunked by chapters — results include chapter name and timecode.
-    Without source filter, searches all sources and merges by relevance.
+    BM25 with Russian and English stemming; matching is lexical, so use the
+    words the content would use. YouTube hits are the best transcript chunk per
+    video, with chapter, timecode and a URL that opens at that moment. `score`
+    is BM25 (ProductHunt upvotes add up to 15%): higher is better.
 
     Args:
         query: Search query (e.g. "startup idea", "revenue growth")
@@ -438,8 +439,8 @@ def source_search(
 def source_tags(source: str = "youtube") -> list[dict]:
     """List all auto-detected topics with video counts.
 
-    Tags are assigned automatically via zero-shot embedding similarity
-    during video indexing. Shared across videos — enables topic clustering.
+    Tags are assigned at indexing from topic keywords in the title and the
+    start of the description. Shared across videos — enables topic clustering.
 
     Args:
         source: Source name (default: "youtube")
@@ -475,8 +476,8 @@ def source_related(video_url: str, source: str = "youtube") -> list[dict]:
 def source_list() -> list[dict]:
     """List indexed external sources with document counts.
 
-    Shows all source graphs under ~/.solo/sources/ with their sizes.
-    YouTube sources include video/chunk breakdown (videos, video_chunks fields).
+    One index at ~/.solo/sources/search.db. YouTube sources include the
+    video/chunk breakdown (videos, video_chunks fields).
     """
     idx = _get_source_index()
     return idx.list_sources()
