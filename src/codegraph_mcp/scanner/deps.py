@@ -143,7 +143,9 @@ def _parse_package_swift(path: Path) -> list[PackageNode]:
     packages = []
     # Match .package(url: "https://github.com/org/name", ...)
     for match in re.finditer(r'\.package\(url:\s*"https?://[^/]+/[^/]+/([^"]+)"', content):
-        name = match.group(1).rstrip(".git")
+        # removesuffix, not rstrip: rstrip(".git") strips any trailing '.', 'g',
+        # 'i', 't', and "swift-log" came out "swift-lo".
+        name = match.group(1).removesuffix(".git")
         packages.append(PackageNode(name=name, source="spm"))
     return packages
 
