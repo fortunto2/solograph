@@ -26,11 +26,12 @@
 set -u
 
 SOLOGRAPH="$HOME/startups/shared/solograph"
-CLI="$SOLOGRAPH/.venv/bin/solograph-cli"
-# The Rust core (rust/, `make rust-install`) takes the same `registry` and
-# `scan --project NAME`, prints the same "NAME: unchanged", and syncs sessions
-# itself (see the end). Switching is this one line:
-# CLI="$HOME/.solo/bin/solograph"
+# The Rust core (rust/, `make rust-install`): same `registry`, `scan --project
+# NAME`, the same "NAME: unchanged", and it syncs sessions itself (see the end).
+# Switched 27 Oct 2026 after 76/76 identical top-5 answers against Python, with
+# a portfolio scan 3.3x faster. The Python entry point remains as the fallback:
+# CLI="$SOLOGRAPH/.venv/bin/solograph-cli"
+CLI="$HOME/.solo/bin/solograph"
 REGISTRY="$HOME/.solo/registry.yaml"
 STAMP_DIR="$SOLOGRAPH/.refresh-stamps"
 LOG="$SOLOGRAPH/.refresh.log"
