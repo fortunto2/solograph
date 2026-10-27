@@ -132,4 +132,18 @@ while IFS='|' read -r name path; do
 done <<< "$PROJECTS"
 
 say "done — scanned $scanned, unchanged $quiet, failed $failed (scope: $SCOPE_SRC)"
+
+# The session index is the archive: Claude Code deletes transcripts after 30
+# days, and the index only reads them when someone searches. A month without a
+# session_search would lose that month, so read new and grown transcripts here.
+if sessions=$("$PY" -c "
+from codegraph_mcp.session_search import SessionSearch
+r = SessionSearch().sync()
+print(f\"sessions — {r.get('read', 0)} read, {r.get('indexed', 0)} indexed, {r.get('gone', 0)} archived, {len(r.get('failed', []))} failed\")
+" 2>>"$LOG"); then
+    say "$sessions"
+else
+    say "FAILED syncing the session index"
+    failed=$((failed + 1))
+fi
 [ "$failed" -eq 0 ]
