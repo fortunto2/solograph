@@ -2,14 +2,16 @@
 """
 Solograph MCP Server — code intelligence, knowledge base, sessions, sources.
 
-13 tools for Claude Code. Web search is NOT here: it lives on the standalone
-searxng MCP server, so a broken import in this module cannot take search down
-with it, and so search runs without FalkorDB or embeddings.
+12 tools for Claude Code, all on SQLite: no graph database, no daemon, no
+embeddings. Web search is NOT here: it lives on the standalone searxng MCP
+server, so a broken import in this module cannot take search down with it.
 
 One codebase, several stores. Everything below is per-instance, so the same
 server serves the personal graph and a client one from separate registrations:
 
-  CODEGRAPH_DB_PATH     — FalkorDB path (default: ~/.solo/codegraph.db)
+  CODEGRAPH_DB_PATH     — the portfolio store is portfolio.db in this file's
+                          directory (default: ~/.solo/); SOLOGRAPH_PORTFOLIO_DB
+                          names it outright
   CODEGRAPH_REGISTRY    — registry.yaml path (default: auto-detect)
   KB_PATH               — Knowledge base root (markdown files)
   CLAUDE_SESSIONS_DIR   — Claude config dir whose projects/ holds the session
@@ -28,7 +30,6 @@ from pathlib import Path
 
 import httpx
 from mcp.server import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
 
 mcp = MCPServer("solograph")
 
@@ -37,7 +38,6 @@ _real_stdout = sys.stdout
 
 # ── Config from env vars ──────────────────────────────────────────
 
-CODEGRAPH_DB_PATH = os.environ.get("CODEGRAPH_DB_PATH", str(Path.home() / ".solo" / "codegraph.db"))
 CODEGRAPH_REGISTRY = os.environ.get("CODEGRAPH_REGISTRY", "")
 KB_PATH = os.environ.get("KB_PATH", "")
 
@@ -70,8 +70,7 @@ def _detect_kb_path() -> str:
 _kb = None
 _sessions = None
 _source_idx = None
-_graph = None
-_graph_db = None
+_portfolio = None
 
 
 def _get_kb():
@@ -104,30 +103,13 @@ def _get_source_index():
     return _source_idx
 
 
-def _get_graph():
-    global _graph, _graph_db
-    if _graph is None:
-        from codegraph_mcp.db import get_db, get_graph
+def _get_portfolio():
+    global _portfolio
+    if _portfolio is None:
+        from codegraph_mcp.portfolio import Portfolio
 
-        _graph_db = get_db(Path(CODEGRAPH_DB_PATH).expanduser())
-        _graph = get_graph(_graph_db)
-        # Auto-refresh registry → project stacks always current
-        _auto_refresh_registry()
-    return _graph
-
-
-def _auto_refresh_registry():
-    """Ingest registry.yaml into graph so project stacks are always current."""
-    registry_path = _get_registry_path()
-    if not registry_path:
-        return
-    try:
-        from codegraph_mcp.scanner.registry import ingest_projects, scan_registry
-
-        projects = scan_registry(registry_path)
-        ingest_projects(_graph, projects)
-    except Exception as exc:
-        print(f"Auto-refresh registry error: {exc}", file=sys.stderr)
+        _portfolio = Portfolio()
+    return _portfolio
 
 
 def _get_registry_path() -> Path | None:
@@ -199,101 +181,50 @@ def session_search(
 
 
 @mcp.tool()
-def codegraph_query(query: str) -> list[dict]:
-    """Execute a read-only Cypher query against the code intelligence graph.
+def symbol_search(query: str, project: str | None = None, kind: str | None = None, n_results: int = 20) -> list[dict]:
+    """Find where something is defined, across every project in the portfolio.
 
-    The graph contains: Project, File, Symbol, Package, Session nodes.
-    Edges: HAS_FILE, DEFINES, DEPENDS_ON, MODIFIED, IN_PROJECT, TOUCHED, EDITED, CREATED,
-           IMPORTS (File->File or File->Package), CALLS (File->Symbol), INHERITS (Symbol->Symbol).
-
-    Example queries:
-      - MATCH (p:Project) RETURN p.name, p.path LIMIT 10
-      - MATCH (f:File {project: 'my-app'}) RETURN f.path, f.lang LIMIT 20
-      - MATCH (p:Project)-[:DEPENDS_ON]->(pkg:Package) WHERE pkg.name = 'react' RETURN p.name
-      - MATCH (s:Session)-[:EDITED]->(f:File) RETURN f.path, COUNT(s) ORDER BY COUNT(s) DESC LIMIT 10
+    Searches function, class and protocol names by their words: "montage profile"
+    finds resolve_montage_profile and MontageProfile. All words rank above some
+    words; an exact name comes first. Returns project, file:line and kind.
+    Inside one repo, Grep answers more (callers, usages).
 
     Args:
-        query: Cypher query string
+        query: Words or an identifier (e.g. "auth middleware", "MontageProfile")
+        project: Limit to one project (exact registry name)
+        kind: "function", "class" or "protocol"
+        n_results: Number of results (default 20)
     """
-    graph = _get_graph()
-    # Read-only: one mistaken DETACH DELETE from an agent would empty the graph,
-    # and nothing a question needs is a write. Errors go back as ToolError: since
-    # mcp 2.3 any other exception reaches the client as a bare "Error executing
-    # tool", and an agent cannot fix Cypher it is not told is wrong.
-    try:
-        result = graph.ro_query(query)
-    except Exception as e:
-        raise ToolError(f"Cypher error (queries are read-only): {e}") from e
-    rows = []
-    for row in result.result_set:
-        if len(row) == 1:
-            rows.append({"value": row[0]})
-        else:
-            rows.append({f"col_{i}": v for i, v in enumerate(row)})
-    return rows
+    return _get_portfolio().search_symbols(query, n_results=n_results, project=project, kind=kind)
 
 
 @mcp.tool()
 def codegraph_stats() -> dict:
-    """Get code intelligence graph statistics.
-
-    Returns counts of projects, files, symbols, packages, sessions,
-    and edge type breakdown.
-    """
-    graph = _get_graph()
-    from codegraph_mcp.db import graph_stats as _graph_stats
-
-    return _graph_stats(graph)
+    """Counts across the portfolio: projects, scanned projects, files, symbols by kind, packages."""
+    return _get_portfolio().stats()
 
 
 @mcp.tool()
 def codegraph_explain(project: str) -> dict:
-    """Architecture overview of a project from the code graph.
-
-    Returns structured data: stack, languages, directory layers, key patterns
-    (mixins, base classes, CRUD schemas), top dependencies, and hub files.
-
-    Args:
-        project: Project name (e.g. "my-app", "backend-api")
-    """
-    graph = _get_graph()
-    from codegraph_mcp.output.explain import explain_project
-
-    result = explain_project(graph, project)
-    if isinstance(result, str):
-        return {"error": result}
-    return result
-
-
-@mcp.tool()
-def codegraph_repomap(project: str, limit: int = 20) -> dict:
-    """Generate a YAML-formatted repository map showing the most important files and their symbols.
-
-    Helps understand the global structure of a project without reading all files.
+    """What one project is made of: stack, languages, directory layers, patterns,
+    dependencies and the files with the most definitions.
 
     Args:
         project: Project name (e.g. "my-app")
-        limit: Maximum number of top files to include (default 20)
     """
-    graph = _get_graph()
-    from codegraph_mcp.output.repomap import generate_repomap
-
-    result = generate_repomap(graph, project, max_files=limit)
-    return {"repomap": result}
+    result = _get_portfolio().explain(project)
+    return {"error": result} if isinstance(result, str) else result
 
 
 @mcp.tool()
-def codegraph_shared() -> list[dict]:
-    """Packages shared across multiple projects in the code graph.
+def codegraph_shared(package: str | None = None) -> list[dict]:
+    """Packages used by more than one project, most shared first — or, given a
+    name, every project that uses a package matching it.
 
-    Returns list of packages with the projects that depend on them,
-    sorted by number of projects (most shared first).
-    Useful for finding common dependencies and potential shared infrastructure.
+    Args:
+        package: Optional package name or part of one (e.g. "react", "supabase")
     """
-    graph = _get_graph()
-    from codegraph_mcp.query.search import shared_packages
-
-    return shared_packages(graph)
+    return _get_portfolio().shared_packages(package)
 
 
 @mcp.tool()

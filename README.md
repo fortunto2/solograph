@@ -1,33 +1,36 @@
 # solograph
 
-Code intelligence MCP server for Claude Code: a tree-sitter code graph across all your projects, plus full-text search over your Claude Code session history, a markdown knowledge base, and indexed external sources (YouTube, ProductHunt, TrustMRR, Telegram).
+MCP server for a portfolio of projects: symbol search across every repository you own, plus full-text search over your Claude Code session history, a markdown knowledge base, and indexed external sources (YouTube, ProductHunt, TrustMRR, Telegram).
 
 > PyPI: `pip install solograph` / `uvx solograph`
 
-Two stores, both embedded, no Docker, no API keys, no embedding models:
+Everything is SQLite with FTS5: BM25 ranking, Snowball stemming for Russian and English, no graph database, no daemon, no embedding models, no API keys. Each index checks the disk before it answers, so there is no reindex step to forget.
 
-- **Code graph** — FalkorDBLite. Projects, files, symbols, packages, imports, calls, inheritance, queried with Cypher (read-only).
-- **Search** — SQLite FTS5 with BM25 ranking and Snowball stemming for Russian and English. Each index syncs against the disk before it answers, so there is no reindex step to forget.
+## What was cut, and why
 
-Search was vector-based until v0.7. It was replaced after measuring it: the session index had zero overlap with the transcripts on disk, KB search took 14 s cold and scored results by rank position, and source search hung past two minutes. The FTS version answers in tens of milliseconds and finds 32 of 39 sessions in a known-answer test that the vector index found none of. The environment went from 862 MB to under 150 MB.
+solograph used to be a FalkorDB code graph with vector search on top. Both were measured on a real machine before they went:
+
+- **Vectors (removed in 0.7).** The session index had zero overlap with the transcripts on disk, KB search took 14 s cold and scored results by rank position, source search hung past two minutes. FTS answers in tens of milliseconds and finds 32 of 39 sessions in a known-answer test the vector index found none of.
+- **The structural graph (removed in 0.8).** 781k call edges plus imports, inheritance and session→file edges got zero structural questions from agents in four months: five calls in total, every one "list the projects" or stats. Grep answers those questions as well. On a 1,100-file Rust + Swift repository, `claude -p` with a dedicated code-graph MCP against plain Grep/Read gave the same accuracy in all 8 runs; the call-chain question cost $1.73 against $2.07 (16.5 tool calls against 25), the impact question $0.69 against $0.65.
+
+What stays is what grep cannot do across repositories: one index of every project's definitions, packages and history. The environment went from 862 MB to 89 MB.
 
 ## Install
 
 ```bash
 uv tool install solograph              # → solograph + solograph-cli in PATH
 claude mcp add -s user solograph -- uvx solograph
-solograph-cli init ~/my-projects --deep # registry + code graph with imports/calls
+solograph-cli init ~/my-projects       # registry + portfolio index
 ```
 
-## 13 MCP tools
+## 12 MCP tools
 
 | Tool | What it answers |
 |------|-----------------|
-| `codegraph_query` | Read-only Cypher over the code graph |
-| `codegraph_stats` | Counts of projects, files, symbols, packages, sessions, edges |
-| `codegraph_explain` | Architecture overview of one project: stack, layers, hub files, dependencies |
-| `codegraph_repomap` | Aider-style map of a project's most important files and symbols |
-| `codegraph_shared` | Packages used by more than one project |
+| `symbol_search` | Where something is defined, across every project: "montage profile" finds `resolve_montage_profile` and `MontageProfile` |
+| `codegraph_explain` | What one project is made of: stack, languages, directory layers, patterns, dependencies, files with the most definitions |
+| `codegraph_shared` | Packages used by more than one project — or every project using a given package |
+| `codegraph_stats` | Counts: projects, files, symbols by kind, packages |
 | `project_info` | Registry entry for a project, or the whole registry |
 | `session_search` | What was asked and answered in past Claude Code sessions, including ones Claude Code already deleted |
 | `kb_search` | Markdown knowledge base, by frontmatter title, type, tags and body |
@@ -37,10 +40,11 @@ solograph-cli init ~/my-projects --deep # registry + code graph with imports/cal
 
 Web search is not here: it lives in the separate [searxng MCP server](https://github.com/fortunto2/searxng-docker-tavily-adapter), so a broken import in one cannot take the other down.
 
-### How the search indexes behave
+### How the indexes behave
 
-- **Lexical, stemmed.** "графами" finds "граф", "indexing" finds "index". There is no cross-language matching: a Russian conversation is found by Russian words.
-- **Never stale.** Every search stats the source files and re-reads only what changed. Transcripts are append-only, so a grown one is read from its last byte offset — live transcripts reach hundreds of MB, and a resync costs ~10 ms.
+- **Symbols by their words.** Names are split on camelCase and snake_case (as codebase-memory-mcp's tokenizer does), so a phrase finds every spelling. All words rank above some words; an exact name comes first. Definitions only — functions, classes, protocols — from tree-sitter grammars for Python, Swift, TypeScript, JavaScript, Kotlin, Rust, Go, Java, Ruby, C, C++, PHP, HCL, Bash and SQL.
+- **Lexical, stemmed.** "графами" finds "граф", "indexing" finds "index". No cross-language matching: a Russian conversation is found by Russian words.
+- **Never stale.** A scan re-reads a file only when its mtime or size changed; a session search re-reads only transcripts that grew, from their last byte offset — live transcripts reach hundreds of MB, and a resync costs ~10 ms.
 - **Sessions are archived.** Claude Code deletes transcripts after 30 days (`cleanupPeriodDays`). The index keeps their text and marks them `transcript: deleted`; live ones come with a `claude --resume` command. Batch runs started from temp directories (`claude -p` in `/tmp`, agent scratchpads) are left out.
 - **Private folders stay private.** A session whose working directory is inside a folder holding `.solograph-private` (or Spotlight's `.metadata_never_index`) is never indexed, and is purged if it was.
 - **Scores are BM25** — higher is better, comparable within one answer only.
@@ -48,26 +52,27 @@ Web search is not here: it lives in the separate [searxng MCP server](https://gi
 ## CLI
 
 ```bash
-solograph-cli scan --deep --incremental     # rescan what git says changed
 solograph-cli registry                      # merge new checkouts into the registry
-solograph-cli explain my-app                # architecture overview
-solograph-cli xray ~/my-projects            # portfolio X-ray
-solograph-cli diagram my-app                # Mermaid diagram
-solograph-cli query "MATCH (p:Project) RETURN p.name LIMIT 5"
+solograph-cli scan [-p my-app]              # index what changed (every scan is incremental)
+solograph-cli symbols "auth middleware"     # definitions across every project
+solograph-cli explain my-app                # what a project is made of
+solograph-cli shared [react]                # shared packages, or who uses one
+solograph-cli deps my-app                   # one project's dependencies
 solograph-cli session-search "webhook retry" -p my-app
-solograph-cli scan-sessions                 # sessions into the graph (Session→File edges) and the index
+solograph-cli scan-sessions                 # read new transcripts into the session index
 solograph-cli index-kb                      # warm the KB index (searches also sync on their own)
 solograph-cli source-search "pricing tiers" -s youtube
 solograph-cli index-youtube -c GregIsenberg -n 10
 ```
 
-`scripts/refresh-changed.sh` is the nightly job: registry merge, incremental deep scan of every project, session-index sync. It is meant for launchd or cron.
+`scripts/refresh-changed.sh` is the nightly job: registry merge, a scan of every project, session-index sync. It is meant for launchd or cron.
 
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CODEGRAPH_DB_PATH` | `~/.solo/codegraph.db` | Code graph |
+| `CODEGRAPH_DB_PATH` | `~/.solo/codegraph.db` | Only its directory is used now: the portfolio store is `portfolio.db` next to it |
+| `SOLOGRAPH_PORTFOLIO_DB` | (none) | Names the portfolio store outright |
 | `CODEGRAPH_REGISTRY` | `~/.solo/registry.yaml` | Project registry |
 | `CODEGRAPH_SCAN_PATH` | `~/startups/active` | Comma-separated directories `registry` looks for checkouts in |
 | `KB_PATH` | (none) | Knowledge base root; index at `$KB_PATH/.solo/kb/search.db` |
@@ -77,35 +82,9 @@ solograph-cli index-youtube -c GregIsenberg -n 10
 
 Every store is per-registration, so one install serves several profiles (say a personal one and a client one) from separate MCP entries with different env.
 
-## Graph schema
+## Portfolio store
 
-| Node | Key properties |
-|------|----------------|
-| `Project` | name, stack, path |
-| `File` | path, lang, lines, project |
-| `Symbol` | name, kind, file, line |
-| `Package` | name, version, source (npm/pip/spm/gradle/cargo) |
-| `Session` | session_id, project_name, started_at |
-
-| Edge | From → To |
-|------|-----------|
-| `HAS_FILE` | Project → File |
-| `DEFINES` | File → Symbol |
-| `IMPORTS` | File → File / Package |
-| `CALLS` | File → Symbol |
-| `INHERITS` | Symbol → Symbol |
-| `DEPENDS_ON` | Project → Package |
-| `MODIFIED` | Session → File (git history) |
-| `TOUCHED` / `EDITED` / `CREATED` | Session → File |
-| `IN_PROJECT` | Session → Project |
-
-```cypher
--- What breaks if I change this file?
-MATCH (f:File {path: 'lib/utils.ts'})<-[:IMPORTS*1..3]-(dep:File) RETURN dep.path
-
--- Most edited files across sessions
-MATCH (s:Session)-[:EDITED]->(f:File) RETURN f.path, COUNT(s) AS n ORDER BY n DESC LIMIT 10
-```
+`portfolio.db`: `projects` (from the registry), `packages` (npm, pip, SPM, Gradle, Cargo manifests), `files` (path, language, lines, mtime, size), `symbols` (name, kind, line) and an FTS5 index over the symbols' words.
 
 ## Sources
 

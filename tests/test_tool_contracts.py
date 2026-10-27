@@ -50,3 +50,50 @@ def test_kb_search_passes_its_output_schema(monkeypatch, tmp_path):
     result = _call("kb_search", {"query": "graph"})
 
     assert result.structured_content["result"][0]["file"] == "note.md"
+
+
+def _scanned_portfolio(tmp_path, monkeypatch):
+    from codegraph_mcp.portfolio import Portfolio
+
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "m.py").write_text("class MontageProfile:\n    pass\n\n\ndef resolve_montage_profile():\n    pass\n")
+    (root / "pyproject.toml").write_text('[project]\nname = "app"\ndependencies = ["requests"]\n')
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "pyproject.toml").write_text('[project]\nname = "other"\ndependencies = ["requests"]\n')
+    pf = Portfolio(tmp_path / "portfolio.db")
+    pf.sync_projects([{"name": "app", "path": str(root)}, {"name": "other", "path": str(other)}])
+    pf.scan_project("app", root)
+    pf.scan_project("other", other)
+    monkeypatch.setattr(server, "_portfolio", pf)
+    return pf
+
+
+def test_symbol_search_passes_its_output_schema(monkeypatch, tmp_path):
+    _scanned_portfolio(tmp_path, monkeypatch)
+    hits = _call("symbol_search", {"query": "montage profile"}).structured_content["result"]
+    assert {h["name"] for h in hits} == {"MontageProfile", "resolve_montage_profile"}
+    assert hits[0]["file"] == "m.py" and hits[0]["project"] == "app"
+
+
+def test_portfolio_tools_pass_their_output_schemas(monkeypatch, tmp_path):
+    _scanned_portfolio(tmp_path, monkeypatch)
+    stats = json.loads(_call("codegraph_stats", {}).content[0].text)
+    assert stats["projects"] == 2 and stats["symbols"] == 2
+    explain = json.loads(_call("codegraph_explain", {"project": "app"}).content[0].text)
+    assert explain["counts"]["symbols"] == 2
+    shared = _call("codegraph_shared", {}).structured_content["result"]
+    assert shared == [{"package": "requests", "source": "pip", "projects": ["app", "other"]}]
+    one = _call("codegraph_shared", {"package": "req"}).structured_content["result"]
+    assert one[0]["projects"] == ["app", "other"]
+
+
+def test_project_info_passes_its_output_schema(monkeypatch, tmp_path):
+    reg = tmp_path / "registry.yaml"
+    reg.write_text("projects:\n- name: app\n  path: /tmp/app\n  stacks: [python]\n")
+    monkeypatch.setattr(server, "CODEGRAPH_REGISTRY", str(reg))
+    listed = _call("project_info", {}).structured_content["result"]
+    assert listed[0]["name"] == "app"
+    one = json.loads(_call("project_info", {"name": "app"}).content[0].text)
+    assert one["stacks"] == ["python"]

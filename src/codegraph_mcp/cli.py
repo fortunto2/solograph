@@ -5,7 +5,6 @@ from pathlib import Path
 
 import click
 
-from . import db as cg_db
 from .output.console import (
     console,
     print_explain,
@@ -13,7 +12,6 @@ from .output.console import (
     print_scan_summary,
     print_shared_packages,
     print_stats,
-    print_xray_table,
 )
 
 # Registry path: env var > ~/.solo/registry.yaml
@@ -22,32 +20,34 @@ DEFAULT_REGISTRY = Path(_REGISTRY_ENV).expanduser() if _REGISTRY_ENV else Path.h
 
 
 @click.group()
-@click.option("--db-path", type=click.Path(), default=None, help="Path to FalkorDB file")
+@click.option("--db-path", type=click.Path(), default=None, help="Portfolio store (default: portfolio.db, see README)")
 @click.pass_context
 def cli(ctx, db_path):
-    """Solograph — multi-project code intelligence graph."""
+    """Solograph — portfolio index, session and knowledge search."""
     ctx.ensure_object(dict)
     ctx.obj["db_path"] = Path(db_path) if db_path else None
 
 
+def _portfolio(ctx):
+    from .portfolio import Portfolio
+
+    return Portfolio(ctx.obj.get("db_path"))
+
+
 @cli.command()
 @click.argument("projects_dir", required=False, type=click.Path())
-@click.option("--deep", is_flag=True, help="Also run deep analysis (imports, calls, inheritance)")
+@click.option("--deep", is_flag=True, hidden=True, help="Ignored; kept so old scripts keep working")
 @click.pass_context
 def init(ctx, projects_dir, deep):
-    """Initialize solograph — create ~/.solo/, scan projects, build graph.
+    """Initialize solograph — create ~/.solo/, find projects, index them.
 
     \b
     Examples:
       solograph-cli init ~/startups/active    # scan this directory
       solograph-cli init                      # interactive prompt
-      solograph-cli init ~/projects --deep    # with deep analysis
     """
     from .registry import REGISTRY_PATH, SCAN_PATHS, load_registry, refresh_registry
 
-    codegraph_dir = Path.home() / ".solo"
-
-    # 1. Ask for projects dir if not provided
     if not projects_dir:
         default = ",".join(str(p) for p in SCAN_PATHS)
         projects_dir = click.prompt("Where are your projects?", default=default)
@@ -57,199 +57,67 @@ def init(ctx, projects_dir, deep):
         console.print(f"[red]Directory not found:[/red] {projects_path}")
         raise SystemExit(1)
 
-    # 2. Create ~/.solo/
-    codegraph_dir.mkdir(parents=True, exist_ok=True)
-    console.print(f"[green]✓[/green] {codegraph_dir}")
+    (Path.home() / ".solo").mkdir(parents=True, exist_ok=True)
 
-    # 3. Scan projects → registry.yaml, merged into what is already there:
-    # a second `init` on another directory used to replace the whole file.
+    # Merged into what is already there: a second `init` on another directory
+    # used to replace the whole file.
     report = refresh_registry([projects_path])
     registry = load_registry()
-    n = report.total
-    console.print(f"[green]✓[/green] {n} projects found → {REGISTRY_PATH}")
-
+    console.print(f"[green]✓[/green] {report.total} projects found → {REGISTRY_PATH}")
     for p in registry.projects if registry else []:
         stacks = ", ".join(p.stacks) if p.stacks else "?"
         console.print(f"  {p.name} [dim]({stacks})[/dim]")
 
-    # 4. Build code graph
-    console.print("\nBuilding code graph...")
-    ctx.invoke(scan, project=None, registry=str(REGISTRY_PATH), deep=deep)
-
+    console.print("\nIndexing projects...")
+    ctx.invoke(scan, project=None, registry=str(REGISTRY_PATH))
     console.print("\n[bold green]Done![/bold green] Run [bold]solograph-cli stats[/bold] to verify.")
-    if not deep:
-        console.print(f"[dim]Tip: solograph-cli init {projects_path} --deep  for imports/calls/inheritance[/dim]")
 
 
 @cli.command()
 @click.option("--project", "-p", default=None, help="Scan only this project")
-@click.option(
-    "--registry",
-    "-r",
-    type=click.Path(exists=True),
-    default=None,
-    help="Registry YAML path",
-)
-@click.option(
-    "--deep",
-    is_flag=True,
-    help="Extract imports, calls, inheritance (tree-sitter deep analysis)",
-)
-@click.option(
-    "--incremental",
-    "-i",
-    is_flag=True,
-    help="Only rescan files git says changed since the last scan of this project",
-)
+@click.option("--registry", "-r", type=click.Path(exists=True), default=None, help="Registry YAML path")
+@click.option("--deep", is_flag=True, hidden=True, help="Ignored; kept so old scripts keep working")
+@click.option("--incremental", "-i", is_flag=True, hidden=True, help="Ignored; every scan is incremental now")
 @click.pass_context
-def scan(ctx, project, registry, deep, incremental):
-    """Scan projects and build the code graph."""
-    from .scanner.code import extract_symbols, ingest_files, ingest_symbols, scan_files
-    from .scanner.deps import ingest_packages, scan_deps
-    from .scanner.git import ingest_modifications, scan_git_log
-    from .scanner.incremental import (
-        delta_since_last_scan,
-        forget_files,
-        record_scan,
-        should_full_rescan,
-    )
-    from .scanner.registry import ingest_projects, scan_registry
+def scan(ctx, project, registry, deep=False, incremental=False):
+    """Index projects: files, symbol definitions, packages.
+
+    Every scan is incremental: a file is re-read only when its mtime or size
+    changed, and one that is gone takes its symbols with it.
+    """
+    from .registry import load_registry
 
     registry_path = Path(registry) if registry else DEFAULT_REGISTRY
-    if not registry_path.exists():
+    reg = load_registry(registry_path) if registry_path.exists() else None
+    if reg is None:
         console.print(f"[red]Registry not found:[/red] {registry_path}")
         raise SystemExit(1)
 
-    fdb = cg_db.get_db(ctx.obj["db_path"])
-    graph = cg_db.get_graph(fdb)
-    cg_db.init_schema(graph)
+    pf = _portfolio(ctx)
+    entries = [p.model_dump() for p in reg.projects]
+    # The registry is the whole truth even when scanning one project, so a
+    # project that left it leaves the store on the next scan of any project.
+    dropped = pf.sync_projects(entries)
+    for name in dropped:
+        console.print(f"  [yellow]{name}: left the registry, removed[/yellow]")
 
-    projects = scan_registry(registry_path)
-    if project:
-        projects = [p for p in projects if p.name == project]
-        if not projects:
-            console.print(f"[red]Project not found:[/red] {project}")
-            raise SystemExit(1)
+    targets = [p for p in reg.projects if not project or p.name == project]
+    if project and not targets:
+        console.print(f"[red]Project not found:[/red] {project}")
+        raise SystemExit(1)
 
-    mode = "deep" if deep else "standard"
-    console.print(f"Scanning [bold]{len(projects)}[/bold] project(s) [dim][{mode}][/dim]\n")
-
-    # Deep analysis imports (lazy)
-    if deep:
-        from .scanner.code import (
-            extract_deep,
-            ingest_calls,
-            ingest_imports,
-            ingest_inherits,
-            tsconfig_aliases,
-        )
-
-    for proj in projects:
-        proj_path = Path(proj.path)
-        if not proj_path.exists():
+    console.print(f"Scanning [bold]{len(targets)}[/bold] project(s)\n")
+    for proj in targets:
+        if not Path(proj.path).exists():
             console.print(f"  [yellow]Skipping {proj.name}[/yellow] (path not found)")
             continue
-
-        # Full or partial? Partial is asked for, possible only when this
-        # project has been scanned before, and forced back to full every
-        # FULL_RESCAN_EVERY passes so cross-file drift cannot accumulate.
-        delta = None
-        partial = False
-        if incremental:
-            delta = delta_since_last_scan(graph, proj.name, proj_path)
-            partial = delta.from_commit is not None and not should_full_rescan(graph, proj.name)
-            if partial and delta.is_noop:
-                console.print(f"  [dim]{proj.name}: unchanged[/dim]")
-                continue
-
-        if partial:
-            # Only the files that moved leave the graph.
-            forget_files(graph, proj.name, delta.changed + delta.deleted)
-        else:
-            cg_db.clear_project(graph, proj.name)
-
-        # Projects
-        ingest_projects(graph, [proj])
-
-        # Files
-        files = scan_files(proj_path, proj.name)
-        if partial:
-            touched = set(delta.changed)
-            files = [f for f in files if f.path in touched]
-        ingest_files(graph, files)
-
-        # Symbols (tree-sitter)
-        all_symbols = []
-        for f in files:
-            syms = extract_symbols(proj_path / f.path, proj.name, f.lang, rel_path=f.path)
-            all_symbols.extend(syms)
-        if all_symbols:
-            ingest_symbols(graph, all_symbols)
-
-        # Dependencies and git history describe the project, not a file, so
-        # a partial pass leaves them alone — they were not invalidated by the
-        # three files that changed, and re-reading them is most of the cost
-        # this pass exists to avoid.
-        packages = []
-        if not partial:
-            packages = scan_deps(proj_path)
-            if packages:
-                ingest_packages(graph, packages, proj.name)
-
-            mods = scan_git_log(proj_path, proj.name)
-            if mods:
-                ingest_modifications(graph, mods)
-
-        print_scan_progress(proj.name, proj.stack, len(files), len(all_symbols), len(packages))
-
-        # Deep analysis (optional)
-        if deep:
-            all_imports = []
-            all_calls = []
-            all_inherits = []
-            # Once per project: a path alias is a per-project fact, and reading it is
-            # what stops `@/lib/db` being filed as an npm scope that owns no package.
-            aliases = tsconfig_aliases(proj_path)
-            for f in files:
-                if not f.lang:
-                    continue
-                imp, cal, inh = extract_deep(proj_path / f.path, proj.name, f.lang, rel_path=f.path, aliases=aliases)
-                all_imports.extend(imp)
-                all_calls.extend(cal)
-                all_inherits.extend(inh)
-
-            # The Rust module map is built from the files this pass saw, so
-            # a `use crate::a::b` can find the file it names. On a partial
-            # pass that is only the changed files, which is why an
-            # incremental run resolves fewer internal imports than a full
-            # one — and why every twentieth pass is full.
-            from .scanner.rust_modules import build_index as build_rust_index
-
-            rust_index = build_rust_index(files)
-            int_imp, ext_imp = ingest_imports(graph, all_imports, rust_index)
-            calls_created = ingest_calls(graph, all_calls)
-            inherits_created = ingest_inherits(graph, all_inherits)
-
-            console.print(
-                f"    [dim]Deep: {len(all_imports)} imports "
-                f"({int_imp} int + {ext_imp} ext), "
-                f"{len(all_calls)} calls ({calls_created} edges), "
-                f"{len(all_inherits)} inherits ({inherits_created} edges)[/dim]"
-            )
-
-        # Stamp what we scanned, so the next pass knows where to start.
-        if delta is None:
-            from .scanner.incremental import delta_since_last_scan as _d
-
-            head = _d(graph, proj.name, proj_path).head
-        else:
-            head = delta.head
-        if head:
-            record_scan(graph, proj.name, head, incremental=partial)
-
-    # Summary
-    stats = cg_db.graph_stats(graph)
-    print_scan_summary(stats)
+        report = pf.scan_project(proj.name, proj.path)
+        if not report["read"] and not report["removed"]:
+            # refresh-changed.sh counts these lines; keep the wording.
+            console.print(f"  [dim]{proj.name}: unchanged[/dim]")
+            continue
+        print_scan_progress(proj.name, ",".join(proj.stacks), report)
+    print_scan_summary(pf.stats())
 
 
 @cli.command("registry")
@@ -274,235 +142,91 @@ def registry_cmd():
 
 
 @cli.command()
-@click.argument("cypher_query")
 @click.pass_context
-def query(ctx, cypher_query):
-    """Execute a raw Cypher query."""
-    fdb = cg_db.get_db(ctx.obj["db_path"])
-    graph = cg_db.get_graph(fdb)
+def stats(ctx):
+    """Counts across the portfolio."""
+    print_stats(_portfolio(ctx).stats())
 
-    result = graph.query(cypher_query)
-    if not result.result_set:
-        click.echo("(no results)")
+
+@cli.command("shared")
+@click.argument("package", required=False)
+@click.pass_context
+def shared_cmd(ctx, package):
+    """Packages used by more than one project, or every project using PACKAGE."""
+    results = _portfolio(ctx).shared_packages(package)
+    if not results:
+        console.print("[yellow]No shared packages found[/yellow]")
         return
-
-    # Print header from column names if available
-    if result.header:
-        headers = [h[1] for h in result.header]
-        click.echo(" | ".join(str(h) for h in headers))
-        click.echo("-" * 60)
-
-    for row in result.result_set:
-        click.echo(" | ".join(str(v) for v in row))
+    print_shared_packages(results)
 
 
 @cli.command()
 @click.argument("project_name")
 @click.pass_context
-def files(ctx, project_name):
-    """List files in a project."""
-    from .query.search import files_by_project
-
-    fdb = cg_db.get_db(ctx.obj["db_path"])
-    graph = cg_db.get_graph(fdb)
-
-    results = files_by_project(graph, project_name)
-    if not results:
-        click.echo(f"No files found for {project_name}")
+def explain(ctx, project_name):
+    """What a project is made of."""
+    result = _portfolio(ctx).explain(project_name)
+    if isinstance(result, str):
+        console.print(f"[red]{result}[/red]")
         return
-
-    click.echo(f"\nFiles in {project_name} ({len(results)}):\n")
-    for f in results:
-        click.echo(f"  {f['path']} ({f['lang']}, {f['lines']} lines)")
+    print_explain(result)
 
 
 @cli.command()
 @click.argument("project_name")
 @click.pass_context
 def deps(ctx, project_name):
-    """Show project dependencies."""
-    from .query.search import deps_by_project
-
-    fdb = cg_db.get_db(ctx.obj["db_path"])
-    graph = cg_db.get_graph(fdb)
-
-    results = deps_by_project(graph, project_name)
+    """A project's dependencies."""
+    results = _portfolio(ctx).dependencies(project_name)
     if not results:
         click.echo(f"No dependencies found for {project_name}")
         return
-
     click.echo(f"\nDependencies of {project_name} ({len(results)}):\n")
     for d in results:
         ver = f" v{d['version']}" if d["version"] else ""
         click.echo(f"  [{d['source']}] {d['name']}{ver}")
 
 
-@cli.command()
+@cli.command("symbols")
+@click.argument("query")
+@click.option("--project", "-p", default=None, help="Limit to one project")
+@click.option("--kind", "-k", default=None, help="function, class or protocol")
+@click.option("--limit", "-n", default=20, help="Number of results")
 @click.pass_context
-def stats(ctx):
-    """Show graph statistics."""
-    fdb = cg_db.get_db(ctx.obj["db_path"])
-    graph = cg_db.get_graph(fdb)
-
-    s = cg_db.graph_stats(graph)
-    print_stats(s)
-
-
-@cli.command("shared")
-@click.pass_context
-def shared_cmd(ctx):
-    """Show packages shared across projects."""
-    from .query.search import shared_packages
-
-    fdb = cg_db.get_db(ctx.obj["db_path"])
-    graph = cg_db.get_graph(fdb)
-
-    results = shared_packages(graph)
-    if not results:
-        console.print("[yellow]No shared packages found[/yellow]")
+def symbols_cmd(ctx, query, project, kind, limit):
+    """Where something is defined, across every project ("montage profile")."""
+    hits = _portfolio(ctx).search_symbols(query, n_results=limit, project=project, kind=kind)
+    if not hits:
+        click.echo("No definitions found.")
         return
-
-    print_shared_packages(results)
+    for h in hits:
+        click.echo(f"  {h['name']:40} {h['kind']:9} {h['project']}  {h['file']}:{h['line']}")
 
 
 @cli.command("scan-sessions")
-@click.option("--project", "-p", default=None, help="Filter by project name")
 @click.option(
     "--claude-dir",
     type=click.Path(),
     default=None,
-    help="Claude config dir holding projects/ (default ~/.claude). "
-    "A second workspace keeps its history elsewhere — point this at it.",
+    help="Claude config dir holding projects/ (default ~/.claude).",
 )
-@click.pass_context
-def scan_sessions(ctx, project, claude_dir):
-    """Scan Claude Code chat history into the graph and the search index."""
-    from .scanner.sessions import (
-        ingest_session_files,
-        ingest_sessions,
-        link_sessions_to_projects,
-        scan_all_sessions,
-    )
+def scan_sessions(claude_dir):
+    """Read new and grown transcripts into the session index (searches do this too)."""
     from .session_search import SessionSearch
 
-    fdb = cg_db.get_db(ctx.obj["db_path"])
-    graph = cg_db.get_graph(fdb)
-    cg_db.init_schema(graph)
-
-    click.echo("Scanning Claude Code sessions...\n")
-
-    all_sessions = []
-    all_edges = []
-    project_counts: dict[str, int] = {}
-
-    for session, edges in scan_all_sessions(
-        claude_dir=Path(claude_dir).expanduser() if claude_dir else None,
-        project_filter=project,
-    ):
-        all_sessions.append(session)
-        all_edges.extend(edges)
-        project_counts[session.project_name] = project_counts.get(session.project_name, 0) + 1
-
-    if not all_sessions:
-        click.echo("No sessions found.")
-        return
-
-    # Ingest into graph
-    click.echo(f"Sessions: {len(all_sessions)}")
-    ingest_sessions(graph, all_sessions)
-
-    click.echo(f"File edges: {len(all_edges)}")
-    linked = ingest_session_files(graph, all_edges)
-    click.echo(f"  Linked to existing File nodes: {linked}")
-
-    project_links = link_sessions_to_projects(graph)
-    click.echo(f"  Linked to Project nodes: {project_links}")
-
-    # Search index: new and grown transcripts only
     root = Path(claude_dir).expanduser() if claude_dir else None
     report = SessionSearch(sessions_root=root).sync()
-    click.echo(f"\nSearch index: {report.get('indexed', 0)} sessions, {report.get('read', 0)} read now")
-
-    # Summary
-    click.echo(f"\nProjects ({len(project_counts)}):")
-    for pname, cnt in sorted(project_counts.items(), key=lambda x: -x[1]):
-        click.echo(f"  {pname}: {cnt} sessions")
-
-
-@cli.command("sessions")
-@click.argument("project_name")
-@click.pass_context
-def sessions_cmd(ctx, project_name):
-    """List sessions for a project."""
-    from .query.search import sessions_by_project
-
-    fdb = cg_db.get_db(ctx.obj["db_path"])
-    graph = cg_db.get_graph(fdb)
-
-    results = sessions_by_project(graph, project_name)
-    if not results:
-        click.echo(f"No sessions found for {project_name}")
-        return
-
-    click.echo(f"\nSessions for {project_name} ({len(results)}):\n")
-    for r in results:
-        date = r["started_at"][:10] if r["started_at"] else "?"
-        slug = r["slug"] or ""
-        dur = ""
-        if r["duration_ms"]:
-            dur = f" ({r['duration_ms'] // 1000}s)"
-        click.echo(f"  {date} {r['session_id'][:8]}.. [{r['user_prompts']}p/{r['tool_uses']}t]{dur} {slug}")
-
-
-@cli.command("session-files")
-@click.argument("session_id")
-@click.pass_context
-def session_files_cmd(ctx, session_id):
-    """Show files touched in a session."""
-    from .query.search import files_in_session
-
-    fdb = cg_db.get_db(ctx.obj["db_path"])
-    graph = cg_db.get_graph(fdb)
-
-    results = files_in_session(graph, session_id)
-    if not results:
-        click.echo(f"No files found for session {session_id[:8]}..")
-        return
-
-    click.echo(f"\nFiles in session {session_id[:8]}.. ({len(results)}):\n")
-    for r in results:
-        click.echo(f"  [{r['action']}] {r['path']} (x{r['count']})")
-
-
-@cli.command("file-sessions")
-@click.argument("file_path")
-@click.pass_context
-def file_sessions_cmd(ctx, file_path):
-    """Find sessions that touched a file."""
-    from .query.search import sessions_for_file
-
-    fdb = cg_db.get_db(ctx.obj["db_path"])
-    graph = cg_db.get_graph(fdb)
-
-    results = sessions_for_file(graph, file_path)
-    if not results:
-        click.echo(f"No sessions found for {file_path}")
-        return
-
-    click.echo(f"\nSessions for {file_path} ({len(results)}):\n")
-    for r in results:
-        date = r["started_at"][:10] if r["started_at"] else "?"
-        click.echo(
-            f"  {date} {r['session_id'][:8]}.. [{r['action']} x{r['count']}] {r['project_name']} {r.get('slug', '')}"
-        )
+    click.echo(
+        f"Session index: {report.get('indexed', 0)} sessions, {report.get('read', 0)} read now, "
+        f"{report.get('gone', 0)} archived, {len(report.get('failed', []))} failed"
+    )
 
 
 @cli.command("session-search")
 @click.argument("query")
 @click.option("--project", "-p", default=None, help="Filter by project")
 @click.option("--limit", "-n", default=5, help="Number of results")
-@click.pass_context
-def session_search_cmd(ctx, query, project, limit):
+def session_search_cmd(query, project, limit):
     """Full-text search across Claude Code sessions, deleted transcripts included."""
     from .session_search import SessionSearch
 
@@ -515,260 +239,6 @@ def session_search_cmd(ctx, query, project, limit):
         click.echo(f"   {r.get('resume') or r.get('transcript', '')}")
         click.echo(f"   {r['snippet'][:160]}")
         click.echo()
-
-
-# ── Wow Features ─────────────────────────────────────────────────
-
-
-@cli.command()
-@click.argument("directory", type=click.Path(exists=True))
-@click.option("--deep", is_flag=True, help="Extract imports, calls, inheritance")
-@click.pass_context
-def xray(ctx, directory, deep):
-    """Portfolio X-Ray — zero-config scan of a directory of projects."""
-
-    from .models import ProjectNode
-    from .registry import detect_stacks
-    from .scanner.code import (
-        extract_symbols,
-        ingest_files,
-        ingest_symbols,
-        scan_files,
-    )
-    from .scanner.deps import ingest_packages, scan_deps
-    from .scanner.registry import ingest_projects
-
-    fdb = cg_db.get_db(ctx.obj["db_path"])
-    graph = cg_db.get_graph(fdb)
-    cg_db.init_schema(graph)
-
-    directory_path = Path(directory).resolve()
-    subdirs = sorted(
-        [d for d in directory_path.iterdir() if d.is_dir() and not d.name.startswith(".")],
-        key=lambda d: d.name,
-    )
-
-    if not subdirs:
-        console.print(f"[yellow]No subdirectories found in {directory_path}[/yellow]")
-        return
-
-    if deep:
-        from .scanner.code import (
-            extract_deep,
-            ingest_calls,
-            ingest_imports,
-            ingest_inherits,
-        )
-
-    mode = "deep" if deep else "standard"
-    console.print(f"X-Ray scanning [bold]{directory_path}[/bold] [dim][{mode}][/dim]\n")
-
-    xray_results = []
-    total_files = 0
-    total_symbols = 0
-    total_packages = 0
-
-    for subdir in subdirs:
-        stacks = detect_stacks(subdir)
-        stack_str = ",".join(stacks) if stacks else ""
-        proj = ProjectNode(name=subdir.name, path=str(subdir), stack=stack_str)
-
-        # Clear old data and ingest project
-        cg_db.clear_project(graph, proj.name)
-        ingest_projects(graph, [proj])
-
-        # Files
-        files = scan_files(subdir, proj.name)
-        if files:
-            ingest_files(graph, files)
-
-        # Symbols
-        all_symbols = []
-        for f in files:
-            syms = extract_symbols(subdir / f.path, proj.name, f.lang, rel_path=f.path)
-            all_symbols.extend(syms)
-        if all_symbols:
-            ingest_symbols(graph, all_symbols)
-
-        # Dependencies
-        packages = scan_deps(subdir)
-        if packages:
-            ingest_packages(graph, packages, proj.name)
-
-        # Deep analysis
-        if deep:
-            all_imports = []
-            all_calls = []
-            all_inherits = []
-            for f in files:
-                if not f.lang:
-                    continue
-                imp, cal, inh = extract_deep(subdir / f.path, proj.name, f.lang, rel_path=f.path)
-                all_imports.extend(imp)
-                all_calls.extend(cal)
-                all_inherits.extend(inh)
-            ingest_imports(graph, all_imports)
-            ingest_calls(graph, all_calls)
-            ingest_inherits(graph, all_inherits)
-
-        proj_files = len(files)
-        proj_symbols = len(all_symbols)
-        proj_packages = len(packages)
-        total_files += proj_files
-        total_symbols += proj_symbols
-        total_packages += proj_packages
-
-        xray_results.append(
-            {
-                "name": proj.name,
-                "stack": stack_str or None,
-                "files": proj_files,
-                "symbols": proj_symbols,
-                "packages": proj_packages,
-            }
-        )
-
-    # Shared packages
-    from .query.search import shared_packages
-
-    shared = shared_packages(graph)
-
-    print_xray_table(xray_results, total_files, total_symbols, total_packages, shared)
-
-    if not deep:
-        console.print(f"\n[dim]Run 'solograph-cli xray {directory} --deep' for imports/calls/inheritance[/dim]")
-
-
-@cli.command()
-@click.argument("project_name")
-@click.option(
-    "--type",
-    "diagram_type",
-    type=click.Choice(["inheritance", "imports", "calls", "deps"]),
-    default="inheritance",
-    help="Diagram type",
-)
-@click.option("--symbol", "-s", default=None, help="Filter calls diagram by symbol name")
-@click.option("--max-nodes", default=50, help="Maximum edges in diagram")
-@click.pass_context
-def diagram(ctx, project_name, diagram_type, symbol, max_nodes):
-    """Generate mermaid diagram from code graph."""
-    from .output.mermaid import (
-        calls_diagram,
-        deps_diagram,
-        imports_diagram,
-        inheritance_diagram,
-    )
-
-    fdb = cg_db.get_db(ctx.obj["db_path"])
-    graph = cg_db.get_graph(fdb)
-
-    generators = {
-        "inheritance": lambda: inheritance_diagram(graph, project_name, max_nodes),
-        "imports": lambda: imports_diagram(graph, project_name, max_nodes),
-        "calls": lambda: calls_diagram(graph, project_name, symbol, max_nodes),
-        "deps": lambda: deps_diagram(graph, project_name),
-    }
-
-    result = generators[diagram_type]()
-    if not result:
-        hint = " Run: solograph-cli scan --deep" if diagram_type != "deps" else ""
-        click.echo(f"No {diagram_type} data found for {project_name}.{hint}")
-        return
-
-    click.echo(f"```mermaid\n{result}\n```")
-
-
-@cli.command()
-@click.argument("project_name")
-@click.pass_context
-def explain(ctx, project_name):
-    """Architecture overview of a project."""
-    from .output.explain import explain_project
-
-    fdb = cg_db.get_db(ctx.obj["db_path"])
-    graph = cg_db.get_graph(fdb)
-
-    result = explain_project(graph, project_name)
-    if isinstance(result, str):
-        console.print(f"[red]{result}[/red]")
-        return
-    print_explain(result)
-
-
-# ── Deep Analysis Commands ────────────────────────────────────────
-
-
-@cli.command("imports")
-@click.argument("project_name")
-@click.pass_context
-def imports_cmd(ctx, project_name):
-    """Show import graph for a project."""
-    from .query.search import import_graph
-
-    fdb = cg_db.get_db(ctx.obj["db_path"])
-    graph = cg_db.get_graph(fdb)
-
-    results = import_graph(graph, project_name)
-    if not results:
-        click.echo(f"No import edges found for {project_name}. Run: solograph-cli scan --deep")
-        return
-
-    click.echo(f"\nImport graph for {project_name} ({len(results)} edges):\n")
-    for r in results:
-        arrow = "→" if r["target_type"] == "File" else "⇒"
-        click.echo(f"  {r['source']} {arrow} {r['target']}")
-
-
-@cli.command("callers")
-@click.argument("symbol_name")
-@click.option("--project", "-p", default=None, help="Filter by project")
-@click.pass_context
-def callers_cmd(ctx, symbol_name, project):
-    """Show files that call a symbol."""
-    from .query.search import callers_of
-
-    fdb = cg_db.get_db(ctx.obj["db_path"])
-    graph = cg_db.get_graph(fdb)
-
-    results = callers_of(graph, symbol_name, project=project)
-    if not results:
-        click.echo(f"No callers found for '{symbol_name}'. Run: solograph-cli scan --deep")
-        return
-
-    click.echo(f"\nCallers of '{symbol_name}' ({len(results)}):\n")
-    for r in results:
-        click.echo(f"  [{r['project']}] {r['caller']}  (defined in {r['defined_in']})")
-
-
-@cli.command("hierarchy")
-@click.argument("class_name")
-@click.option("--project", "-p", default=None, help="Filter by project")
-@click.pass_context
-def hierarchy_cmd(ctx, class_name, project):
-    """Show class hierarchy (parents and children)."""
-    from .query.search import class_hierarchy
-
-    fdb = cg_db.get_db(ctx.obj["db_path"])
-    graph = cg_db.get_graph(fdb)
-
-    result = class_hierarchy(graph, class_name, project=project)
-    parents = result["parents"]
-    children = result["children"]
-
-    if not parents and not children:
-        click.echo(f"No hierarchy found for '{class_name}'. Run: solograph-cli scan --deep")
-        return
-
-    click.echo(f"\nHierarchy for '{class_name}':\n")
-    if parents:
-        click.echo("  Parents:")
-        for p in parents:
-            click.echo(f"    ↑ {p['name']}  ({p['file']}, {p['project']})")
-    if children:
-        click.echo("  Children:")
-        for c in children:
-            click.echo(f"    ↓ {c['name']}  ({c['file']}, {c['project']})")
 
 
 @cli.command("web-search")
@@ -959,21 +429,6 @@ def index_kb_cmd(kb_path):
         raise SystemExit(1)
     stats = KnowledgeBase(path).stats()
     console.print(f"[bold green]KB index:[/bold green] {stats['documents']} documents, {stats['read_now']} read now")
-
-
-@cli.command()
-@click.argument("project_name")
-@click.option("--limit", "-n", default=20, help="Max files to include in map (default 20)")
-@click.pass_context
-def repomap(ctx, project_name, limit):
-    """Generate a YAML-formatted repository map (like Aider)."""
-    from .output.repomap import generate_repomap
-
-    fdb = cg_db.get_db(ctx.obj["db_path"])
-    graph = cg_db.get_graph(fdb)
-
-    result = generate_repomap(graph, project_name, max_files=limit)
-    click.echo(result)
 
 
 from . import cli_sources  # noqa: E402, F401 — registers the source commands on `cli`

@@ -1,7 +1,7 @@
 [project]
 name = "solograph"
-version = "0.7.0"
-description = "Code intelligence MCP server — multi-project code graph, semantic search, session history, knowledge base, web search"
+version = "0.8.0"
+description = "MCP server for a portfolio of projects — symbol search across every repo, Claude Code session history, knowledge base and source search, all on SQLite FTS5"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -10,9 +10,6 @@ authors = [
 ]
 keywords = ["mcp", "code-intelligence", "codegraph", "full-text-search", "claude-code", "solograph"]
 dependencies = [
-    # Graph database (code graph)
-    "falkordblite>=0.4",
-    "redis<7.1", # 7.1+ breaks UnixDomainSocketConnection (no .port attr)
     # Transcript chunking (YouTube sources)
     "semantic-text-splitter>=0.29.0",
     # Code Analysis
@@ -42,12 +39,8 @@ dependencies = [
     "tree-sitter-php>=0.24.1",
     "tree-sitter-hcl>=1.2.0",
     "tree-sitter-javascript>=0.25.0",
-    "tree-sitter-html>=0.23.2",
-    "tree-sitter-css>=0.25.0",
-    "tree-sitter-yaml>=0.7.2",
     "tree-sitter-bash>=0.25.1",
     "tree-sitter-sql>=0.3.11",
-    "tree-sitter-toml>=0.7.0",
     "snowballstemmer>=3.1.1",
 ]
 

@@ -1,6 +1,7 @@
 #!/bin/bash
-# Keep the code graph current: add new checkouts to the registry, then reindex
-# what moved, walking the registry rather than the disk.
+# Keep the portfolio index current: add new checkouts to the registry, then
+# reindex what moved, walking the registry rather than the disk; last, read new
+# transcripts into the session index.
 #
 # Why the registry: `solograph-cli scan --project NAME` validates NAME against
 # ~/.solo/registry.yaml, and the registry carries each project's path — including
@@ -34,10 +35,10 @@ LOG="$SOLOGRAPH/.refresh.log"
 # from that night every run died reading the registry and logged "done —
 # scanned 0, failed 0". 70 nights, zero projects scanned, nothing red.
 PY="$SOLOGRAPH/.venv/bin/python"
-# rust-code is a symlink to shared/rust-code: 2075 Rust files, and a deep scan
-# of it took over 27 minutes on 22 Aug, more than the rest of the portfolio.
-# Scan it on its own when it is needed: SOLOGRAPH_SCOPE=rust-code SOLOGRAPH_SKIP=
-SKIP="${SOLOGRAPH_SKIP-rust-code}"
+# Projects to leave out, space-separated. rust-code used to be skipped by
+# default — a deep graph scan of it took 27 minutes on 22 Aug — but a scan of
+# definitions only covers all 77 projects, rust-code included, in 38 seconds.
+SKIP="${SOLOGRAPH_SKIP-}"
 
 # The log always; the terminal too when someone is watching (`make scan`).
 say() {
@@ -111,11 +112,10 @@ while IFS='|' read -r name path; do
     stamp="$STAMP_DIR/$name"
     started=$(date +%Y-%m-%dT%H:%M:%S)
 
-    # No `git log --since` gate any more: --incremental asks git itself,
-    # from the commit the graph was actually stamped at, and it also sees
-    # uncommitted and untracked work — which a log window cannot. A project
-    # with nothing to do costs about a second and says "unchanged".
-    if out=$(nice -n 10 "$CLI" scan --project "$name" --deep --incremental 2>&1); then
+    # Every scan is incremental: a file is re-read only when its mtime or size
+    # changed, which also catches uncommitted, reverted and untracked work that
+    # a git log window cannot. A project with nothing to do says "unchanged".
+    if out=$(nice -n 10 "$CLI" scan --project "$name" 2>&1); then
         echo "$out" >> "$LOG"
         echo "$started" > "$stamp"        # stamp only a pass that finished
         if echo "$out" | grep -q "$name: unchanged"; then

@@ -1,9 +1,8 @@
-"""Scan dependency files → Package nodes and DEPENDS_ON edges."""
+"""Read a project's dependency manifests into packages."""
 
 import json
 from pathlib import Path
 
-from ..db import cypher_str
 from ..models import PackageNode
 
 
@@ -165,23 +164,6 @@ def _parse_gradle(path: Path) -> list[PackageNode]:
         version = match.group(3)
         packages.append(PackageNode(name=name, version=version, source="gradle"))
     return packages
-
-
-def ingest_packages(graph, packages: list[PackageNode], project_name: str) -> int:
-    """Create Package nodes and DEPENDS_ON edges."""
-    count = 0
-    for pkg in packages:
-        version = pkg.version or ""
-        graph.query(
-            f"MERGE (pkg:Package {{name: {cypher_str(pkg.name)}}}) SET pkg.version = {cypher_str(version)}, pkg.source = {cypher_str(pkg.source)}"
-        )
-        graph.query(
-            f"MATCH (p:Project {{name: {cypher_str(project_name)}}}), "
-            f"(pkg:Package {{name: {cypher_str(pkg.name)}}}) "
-            f"MERGE (p)-[:DEPENDS_ON]->(pkg)"
-        )
-        count += 1
-    return count
 
 
 def _parse_cargo_toml(path: Path) -> list[PackageNode]:

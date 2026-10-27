@@ -14,7 +14,28 @@ import os
 from pathlib import Path
 
 from .fts import FtsStore
-from .scanner.sessions import _derive_project_name
+
+
+def _derive_project_name(project_dir_name: str) -> str:
+    """Derive human-readable project name from Claude project dir name.
+
+    '-Users-john-projects-MyApp-ios' → 'MyApp/ios'
+    '-Users-john-projects-backend' → 'backend'
+    '-Users-john-projects' → 'projects'
+    '-Users-john' → 'john'
+    """
+    # Replace leading dashes with slashes to reconstruct path
+    parts = project_dir_name.lstrip("-").split("-")
+    # Find 'projects' index to strip prefix
+    try:
+        idx = parts.index("projects")
+        remainder = parts[idx + 1 :]
+        if remainder:
+            return "/".join(remainder)
+        return "projects"
+    except ValueError:
+        # No 'projects' in path — return last segment
+        return parts[-1] if parts else project_dir_name
 
 
 def claude_dir() -> Path:

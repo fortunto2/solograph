@@ -8,47 +8,6 @@ from rich.tree import Tree
 console = Console()
 
 
-def print_xray_table(
-    results: list[dict],
-    total_files: int,
-    total_symbols: int,
-    total_packages: int,
-    shared: list[dict] | None = None,
-) -> None:
-    """Render xray results as a Rich table."""
-    table = Table(title="Portfolio X-Ray", show_lines=False)
-    table.add_column("Project", style="cyan", no_wrap=True)
-    table.add_column("Stack", style="green")
-    table.add_column("Files", justify="right", style="white")
-    table.add_column("Symbols", justify="right", style="white")
-    table.add_column("Packages", justify="right", style="white")
-
-    for r in results:
-        table.add_row(
-            r["name"],
-            r["stack"] or "[dim](no stack)[/dim]",
-            str(r["files"]),
-            str(r["symbols"]),
-            str(r["packages"]),
-        )
-
-    console.print(table)
-
-    # Totals panel
-    lines = [f"[bold]{len(results)}[/bold] projects"]
-    lines.append(
-        f"[bold]{total_files:,}[/bold] files  |  "
-        f"[bold]{total_symbols:,}[/bold] symbols  |  "
-        f"[bold]{total_packages:,}[/bold] packages"
-    )
-    if shared:
-        top = shared[:10]
-        parts = [f"{s['package']}({len(s['projects'])})" for s in top]
-        lines.append(f"[dim]Shared:[/dim] {', '.join(parts)}")
-
-    console.print(Panel("\n".join(lines), title="Totals", border_style="blue"))
-
-
 def print_explain(data: dict) -> None:
     """Render explain output with Rich panels, tables, and trees."""
     # Header
@@ -92,73 +51,54 @@ def print_explain(data: dict) -> None:
         dep_parts = [f"{name} [dim]({src})[/dim]" for name, src in data["dependencies"]]
         console.print(Panel(", ".join(dep_parts), title="Top dependencies", border_style="dim"))
 
-    # Hub files
-    if data.get("hub_files"):
-        tree = Tree("[bold]Hub files[/bold]")
-        for path, conns in data["hub_files"]:
-            tree.add(f"[cyan]{path}[/cyan] — {conns} connections")
+    # Files with the most definitions
+    if data.get("largest_files"):
+        tree = Tree("[bold]Most definitions[/bold]")
+        for path, n in data["largest_files"]:
+            tree.add(f"[cyan]{path}[/cyan] — {n} symbols")
         console.print(tree)
 
 
+def _counts_table(stats: dict, title: str | None = None) -> Table:
+    table = Table(title=title, show_lines=False)
+    table.add_column("What", style="cyan")
+    table.add_column("Count", justify="right", style="bold")
+    for label, value in stats.items():
+        if isinstance(value, dict):
+            for k, v in value.items():
+                table.add_row(f"  {label}: {k}", f"{v:,}")
+        else:
+            table.add_row(label, f"{value:,}")
+    return table
+
+
 def print_stats(stats: dict) -> None:
-    """Render graph statistics as Rich tables."""
-    # Node counts
-    node_table = Table(title="Solograph Statistics", show_lines=False)
-    node_table.add_column("Node type", style="cyan")
-    node_table.add_column("Count", justify="right", style="bold")
-
-    for label, count in stats.items():
-        if label != "edges":
-            node_table.add_row(label, f"{count:,}")
-
-    console.print(node_table)
-
-    # Edge counts
-    if "edges" in stats:
-        edge_table = Table(title="Edges", show_lines=False)
-        edge_table.add_column("Type", style="green")
-        edge_table.add_column("Count", justify="right", style="bold")
-        for etype, count in stats["edges"].items():
-            edge_table.add_row(etype, f"{count:,}")
-        console.print(edge_table)
+    """Portfolio counts."""
+    console.print(_counts_table(stats, "Solograph portfolio"))
 
 
-def print_scan_progress(name: str, stack: str | None, files: int, symbols: int, packages: int) -> None:
-    """Print single project scan result."""
+def print_scan_progress(name: str, stack: str | None, report: dict) -> None:
+    """One project's scan: what was read, kept and removed."""
     stack_display = stack or "[dim](no stack)[/dim]"
     console.print(
-        f"  [cyan]{name}[/cyan] [green]{stack_display}[/green]  {files} files  {symbols} symbols  {packages} packages"
+        f"  [cyan]{name}[/cyan] [green]{stack_display}[/green]  {report['read']} files read  "
+        f"{report['unchanged']} unchanged  {report['removed']} removed  {report['symbols']} symbols"
     )
 
 
 def print_scan_summary(stats: dict) -> None:
-    """Render scan summary with Rich."""
-    console.print("\n[bold]Graph summary:[/bold]")
-    node_table = Table(show_header=False, show_lines=False, padding=(0, 1))
-    node_table.add_column("Label", style="cyan")
-    node_table.add_column("Count", justify="right")
-
-    for label, count in stats.items():
-        if label != "edges":
-            node_table.add_row(label, f"{count:,}")
-    console.print(node_table)
-
-    if "edges" in stats:
-        edge_table = Table(show_header=False, show_lines=False, padding=(0, 1), title="Edges")
-        edge_table.add_column("Type", style="green")
-        edge_table.add_column("Count", justify="right")
-        for etype, count in stats["edges"].items():
-            edge_table.add_row(etype, f"{count:,}")
-        console.print(edge_table)
+    console.print()
+    console.print(_counts_table(stats, "Portfolio"))
 
 
 def print_shared_packages(shared: list[dict]) -> None:
     """Render shared packages as a Rich table."""
     table = Table(title="Shared Packages", show_lines=False)
     table.add_column("Package", style="cyan", no_wrap=True)
+    table.add_column("Source", style="dim")
     table.add_column("Projects", style="green")
 
     for r in shared:
-        table.add_row(r["package"], ", ".join(r["projects"]))
+        table.add_row(r["package"], r.get("source", ""), ", ".join(r["projects"]))
 
     console.print(table)
