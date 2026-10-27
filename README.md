@@ -1,292 +1,125 @@
 # solograph
 
-Code intelligence MCP server for Claude Code. Multi-project code graph, semantic search, session history, knowledge base, web search.
+Code intelligence MCP server for Claude Code: a tree-sitter code graph across all your projects, plus full-text search over your Claude Code session history, a markdown knowledge base, and indexed external sources (YouTube, ProductHunt, TrustMRR, Telegram).
 
 > PyPI: `pip install solograph` / `uvx solograph`
 
-All vector search powered by **FalkorDB** (embedded, no Docker). No ChromaDB dependency.
+Two stores, both embedded, no Docker, no API keys, no embedding models:
 
-## Embeddings
+- **Code graph** — FalkorDBLite. Projects, files, symbols, packages, imports, calls, inheritance, queried with Cypher (read-only).
+- **Search** — SQLite FTS5 with BM25 ranking and Snowball stemming for Russian and English. Each index syncs against the disk before it answers, so there is no reindex step to forget.
 
-Two backends, both produce **384-dimensional** vectors:
-
-| Backend | Model | Platform | Languages |
-|---------|-------|----------|-----------|
-| **MLX** (primary) | `multilingual-e5-small-mlx` | Apple Silicon | RU + EN |
-| **sentence-transformers** (fallback) | `all-MiniLM-L6-v2` | Any | EN |
-
-Auto-detects Apple Silicon → uses MLX. Falls back to sentence-transformers on other platforms.
-
-Install MLX support (optional):
-```bash
-uv add solograph[mlx]
-```
+Search was vector-based until v0.7. It was replaced after measuring it: the session index had zero overlap with the transcripts on disk, KB search took 14 s cold and scored results by rank position, and source search hung past two minutes. The FTS version answers in tens of milliseconds and finds 32 of 39 sessions in a known-answer test that the vector index found none of. The environment went from 862 MB to under 150 MB.
 
 ## Install
 
 ```bash
-uv add solograph
-# or
-pip install solograph
-```
-
-## Usage
-
-### MCP Server (for Claude Code)
-
-```bash
-claude mcp add -s project solograph -- uvx solograph
-```
-
-Or add manually to `.mcp.json`:
-```json
-{
-  "mcpServers": {
-    "solograph": {
-      "command": "uvx",
-      "args": ["solograph"]
-    }
-  }
-}
-```
-
-### CLI
-
-```bash
-solograph-cli init ~/my-projects       # First-time setup (scan + build graph)
-solograph-cli init ~/my-projects --deep # + imports, calls, inheritance
-solograph-cli scan                     # Re-scan projects into graph
-solograph-cli scan --deep              # + imports, calls, inheritance (tree-sitter)
-solograph-cli stats                    # Graph statistics
-solograph-cli explain my-app           # Architecture overview
-solograph-cli xray ~/my-projects       # Portfolio X-Ray (all projects at once)
-solograph-cli diagram my-app           # Mermaid diagram
-solograph-cli query "MATCH (n) RETURN n LIMIT 5"
-solograph-cli web-search "query"       # Web search via SearXNG/Tavily
-solograph-cli index-youtube -c GregIsenberg -n 10  # Index YouTube channel
-solograph-cli index-youtube -u "https://youtube.com/watch?v=ID"  # Index specific video by URL
-solograph-cli index-youtube             # Index all channels from channels.yaml
-```
-
-Install globally:
-```bash
 uv tool install solograph              # → solograph + solograph-cli in PATH
+claude mcp add -s user solograph -- uvx solograph
+solograph-cli init ~/my-projects --deep # registry + code graph with imports/calls
 ```
 
-### Quick Start
+## 13 MCP tools
+
+| Tool | What it answers |
+|------|-----------------|
+| `codegraph_query` | Read-only Cypher over the code graph |
+| `codegraph_stats` | Counts of projects, files, symbols, packages, sessions, edges |
+| `codegraph_explain` | Architecture overview of one project: stack, layers, hub files, dependencies |
+| `codegraph_repomap` | Aider-style map of a project's most important files and symbols |
+| `codegraph_shared` | Packages used by more than one project |
+| `project_info` | Registry entry for a project, or the whole registry |
+| `session_search` | What was asked and answered in past Claude Code sessions, including ones Claude Code already deleted |
+| `kb_search` | Markdown knowledge base, by frontmatter title, type, tags and body |
+| `source_search` | Indexed YouTube transcripts (timestamped links), ProductHunt, TrustMRR, Telegram |
+| `source_list` / `source_tags` / `source_related` | What is indexed, topic tags, videos sharing tags |
+| `web_fetch` | Fetch a URL as text |
+
+Web search is not here: it lives in the separate [searxng MCP server](https://github.com/fortunto2/searxng-docker-tavily-adapter), so a broken import in one cannot take the other down.
+
+### How the search indexes behave
+
+- **Lexical, stemmed.** "графами" finds "граф", "indexing" finds "index". There is no cross-language matching: a Russian conversation is found by Russian words.
+- **Never stale.** Every search stats the source files and re-reads only what changed. Transcripts are append-only, so a grown one is read from its last byte offset — live transcripts reach hundreds of MB, and a resync costs ~10 ms.
+- **Sessions are archived.** Claude Code deletes transcripts after 30 days (`cleanupPeriodDays`). The index keeps their text and marks them `transcript: deleted`; live ones come with a `claude --resume` command. Batch runs started from temp directories (`claude -p` in `/tmp`, agent scratchpads) are left out.
+- **Private folders stay private.** A session whose working directory is inside a folder holding `.solograph-private` (or Spotlight's `.metadata_never_index`) is never indexed, and is purged if it was.
+- **Scores are BM25** — higher is better, comparable within one answer only.
+
+## CLI
 
 ```bash
-# 1. Install
-uv tool install solograph
-
-# 2. Init — creates ~/.solo/, scans projects, builds graph
-solograph-cli init ~/my-projects
-
-# 3. Add MCP to Claude Code
-claude mcp add -s project solograph -- uvx solograph
-
-# 4. Done — MCP tools available in Claude Code
+solograph-cli scan --deep --incremental     # rescan what git says changed
+solograph-cli registry                      # merge new checkouts into the registry
+solograph-cli explain my-app                # architecture overview
+solograph-cli xray ~/my-projects            # portfolio X-ray
+solograph-cli diagram my-app                # Mermaid diagram
+solograph-cli query "MATCH (p:Project) RETURN p.name LIMIT 5"
+solograph-cli session-search "webhook retry" -p my-app
+solograph-cli scan-sessions                 # sessions into the graph (Session→File edges) and the index
+solograph-cli index-kb                      # warm the KB index (searches also sync on their own)
+solograph-cli source-search "pricing tiers" -s youtube
+solograph-cli index-youtube -c GregIsenberg -n 10
 ```
+
+`scripts/refresh-changed.sh` is the nightly job: registry merge, incremental deep scan of every project, session-index sync. It is meant for launchd or cron.
 
 ## Configuration
 
-Environment variables:
-
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CODEGRAPH_DB_PATH` | `~/.solo/codegraph.db` | FalkorDB code graph path |
-| `CODEGRAPH_REGISTRY` | `~/.solo/registry.yaml` | Project registry path |
-| `CODEGRAPH_SCAN_PATH` | `~/projects` | Where to scan for projects |
-| `KB_PATH` | (none) | Knowledge base root (markdown files with YAML frontmatter) |
-| `TAVILY_API_URL` | `http://localhost:8013` | Tavily-compatible search URL |
-| `TAVILY_API_KEY` | (none) | API key for Tavily |
+| `CODEGRAPH_DB_PATH` | `~/.solo/codegraph.db` | Code graph |
+| `CODEGRAPH_REGISTRY` | `~/.solo/registry.yaml` | Project registry |
+| `CODEGRAPH_SCAN_PATH` | `~/startups/active` | Comma-separated directories `registry` looks for checkouts in |
+| `KB_PATH` | (none) | Knowledge base root; index at `$KB_PATH/.solo/kb/search.db` |
+| `CLAUDE_SESSIONS_DIR` | `~/.claude` | Claude config dir whose `projects/` holds transcripts |
+| `CODEGRAPH_SESSIONS_DB` | `~/.solo/sessions` | Session index directory (`search.db`) |
+| `SOURCES_ROOT` | `~/.solo/sources` | Sources index (`search.db`) and YouTube VTT cache |
 
-## 15 MCP Tools
+Every store is per-registration, so one install serves several profiles (say a personal one and a client one) from separate MCP entries with different env.
 
-- `codegraph_query` — Cypher queries against code graph
-- `codegraph_stats` — graph statistics (projects, files, symbols, packages)
-- `codegraph_explain` — architecture overview of a project
-- `codegraph_shared` — packages shared across projects
-- `project_code_search` — semantic code search (auto-indexes on first call)
-- `project_code_reindex` — reindex project code into FalkorDB vectors
-- `session_search` — Claude Code session history search
-- `project_info` — project registry info
-- `kb_search` — knowledge base semantic search
-- `web_search` — web search (Tavily/SearXNG)
-- `source_search` — search indexed external sources (YouTube, Telegram)
-- `source_list` — list indexed sources with document counts
-- `source_tags` — auto-detected topics with video counts
-- `source_related` — find related videos by shared tags
+## Graph schema
 
-## Web Search
+| Node | Key properties |
+|------|----------------|
+| `Project` | name, stack, path |
+| `File` | path, lang, lines, project |
+| `Symbol` | name, kind, file, line |
+| `Package` | name, version, source (npm/pip/spm/gradle/cargo) |
+| `Session` | session_id, project_name, started_at |
 
-The `web_search` tool connects to any **Tavily-compatible API**. Works great with self-hosted [SearXNG + Tavily Adapter](https://github.com/fortunto2/searxng-docker-tavily-adapter) — private, no API keys, smart engine routing.
-
-```bash
-# Self-hosted (Docker, 1 minute setup)
-git clone https://github.com/fortunto2/searxng-docker-tavily-adapter.git
-cd searxng-docker-tavily-adapter
-cp config.example.yaml config.yaml
-docker compose up -d
-# → http://localhost:8013/search (Tavily API)
-# → http://localhost:8999 (SearXNG UI)
-```
-
-Or use [Tavily API](https://tavily.com) directly — set `TAVILY_API_URL=https://api.tavily.com` and `TAVILY_API_KEY`.
-
-Smart engine routing auto-selects search engines by query type:
-- **tech**: github, stackoverflow (keywords: python, react, code)
-- **academic**: arxiv, google scholar (keywords: research, paper)
-- **product**: brave, reddit, app stores (keywords: app, competitor, pricing)
-- **news**: google news (keywords: news, latest, trend)
-- **general**: google, duckduckgo, brave (default)
-
-## Graph Schema
-
-### Nodes
-
-| Node | Key Properties | Source |
-|------|---------------|--------|
-| `Project` | name, stack, path | `registry.yaml` |
-| `File` | path, lang, lines, project | tree-sitter scan |
-| `Symbol` | name, kind (class/function/method), file, line | tree-sitter AST |
-| `Package` | name, version, source (npm/pip/spm/gradle) | manifest files |
-| `Session` | session_id, project_name, started_at, slug | `.claude/` history |
-
-### Edges
-
-| Edge | From → To | Description |
-|------|-----------|-------------|
-| `HAS_FILE` | Project → File | Project contains file |
-| `DEFINES` | File → Symbol | File defines symbol |
-| `IMPORTS` | File → File/Package | Import relationship |
-| `CALLS` | File → Symbol | File calls symbol |
-| `INHERITS` | Symbol → Symbol | Class inheritance |
-| `DEPENDS_ON` | Project → Package | Package dependency |
-| `MODIFIED` | Session → File | Git history (lines added/removed) |
-| `TOUCHED` / `EDITED` / `CREATED` | Session → File | Session file operations |
-| `IN_PROJECT` | Session → Project | Session belongs to project |
-
-### Example Cypher Queries
+| Edge | From → To |
+|------|-----------|
+| `HAS_FILE` | Project → File |
+| `DEFINES` | File → Symbol |
+| `IMPORTS` | File → File / Package |
+| `CALLS` | File → Symbol |
+| `INHERITS` | Symbol → Symbol |
+| `DEPENDS_ON` | Project → Package |
+| `MODIFIED` | Session → File (git history) |
+| `TOUCHED` / `EDITED` / `CREATED` | Session → File |
+| `IN_PROJECT` | Session → Project |
 
 ```cypher
--- Hub files (most imported)
-MATCH (f:File)<-[:IMPORTS]-(other:File)
-RETURN f.path, COUNT(other) AS importers
-ORDER BY importers DESC LIMIT 10
+-- What breaks if I change this file?
+MATCH (f:File {path: 'lib/utils.ts'})<-[:IMPORTS*1..3]-(dep:File) RETURN dep.path
 
--- Shared packages across projects
-MATCH (p1:Project)-[:DEPENDS_ON]->(pkg:Package)<-[:DEPENDS_ON]-(p2:Project)
-WHERE p1.name <> p2.name
-RETURN pkg.name, COLLECT(DISTINCT p1.name) AS projects
-
--- Impact analysis: what breaks if I change this file?
-MATCH (f:File {path: 'lib/utils.ts'})<-[:IMPORTS*1..3]-(dep:File)
-RETURN dep.path
-
--- Most edited files (from session history)
-MATCH (s:Session)-[:EDITED]->(f:File)
-RETURN f.path, COUNT(s) AS sessions
-ORDER BY sessions DESC LIMIT 10
-
--- Files touched by sessions in a project
-MATCH (s:Session {project_name: 'my-app'})-[r]->(f:File)
-RETURN f.path, type(r) AS action, COUNT(s) AS times
-ORDER BY times DESC
+-- Most edited files across sessions
+MATCH (s:Session)-[:EDITED]->(f:File) RETURN f.path, COUNT(s) AS n ORDER BY n DESC LIMIT 10
 ```
 
-### YouTube Source Graph
+## Sources
 
-Separate FalkorDB graph at `~/.solo/sources/youtube/graph.db`:
+One FTS index at `$SOURCES_ROOT/search.db`, documents keyed `<source>/<id>`, plus `videos` and `video_tags` tables.
 
-| Node | Key Properties |
-|------|---------------|
-| `Channel` | name, handle, subscriber_count |
-| `Video` | video_id, title, duration, view_count, created |
-| `VideoChunk` | text, chapter, start_time, start_seconds, chunk_index, chunk_type, embedding (384-dim) |
-| `Tag` | name |
+- **YouTube** — `index-youtube` discovers videos via SearXNG, fetches metadata and VTT with yt-dlp, chunks by chapter. Each chunk is a document, so a hit links to its second (`&t=140s`); a search returns each video once, at its best chunk. Topic tags come from keyword matching against the `TOPICS` table in `sources.py` (title hits count double).
+- **ProductHunt / TrustMRR** — scrapers into the same index; upvotes nudge ranking by at most 15%.
+- **Telegram** — `scripts/index_telegram.py` in the consuming repo.
 
-| Edge | Description |
-|------|-------------|
-| `HAS_VIDEO` | Channel → Video |
-| `HAS_CHUNK` | Video → VideoChunk |
-| `TAGGED` | Video → Tag (weighted by confidence) |
-
-**Indexer:** `solograph-cli index-youtube` — discovers videos via SearXNG, fetches metadata + VTT via yt-dlp, chunks by chapters, embeds, upserts into graph.
-
-**Channels:** `~/.solo/sources/youtube/channels.yaml` — YAML list of YouTube handles to index. Symlink from your project's `channels.yaml`.
-
-**Chunking:** VTT subtitles parsed into timestamped segments, grouped by chapter boundaries via `chunk_segments_by_chapters()`. Each chunk has accurate `start_seconds` from real VTT timestamps.
-
-**VTT cache:** `~/.solo/sources/youtube/vtt/{videoId}.vtt` — persistent, reused on re-index.
-
-### ProductHunt Source Graph
-
-Separate FalkorDB graph at `~/.solo/sources/producthunt/graph.db`:
-
-| Node | Key Properties |
-|------|---------------|
-| `SourceDoc` | doc_id, title, url, content, tags, created, popularity, embedding (384-dim) |
-| `Maker` | username, name, headline, bio, points, streak_days, followers, twitter, linkedin |
-
-**Indexer:** `solograph-cli index-producthunt` — scrapes ProductHunt GraphQL API v2, maps products to SourceDoc with upvotes as popularity.
-
-```bash
-solograph-cli index-producthunt -d 30            # Last 30 days
-solograph-cli index-producthunt --all --resume    # Full 3-year dump with checkpoint
-solograph-cli import-producthunt data.jsonl       # Import from JSONL file
-```
-
-**Ranking:** Search results are boosted by popularity (upvotes). At equal semantic relevance, products with more upvotes rank higher.
-
-## Search Server
-
-HTTP API for vector search across all indexed sources. Designed to run as a Docker service alongside SearXNG.
-
-```bash
-# Standalone
-solograph-search  # starts on port 8002
-
-# Docker (in searxng-docker-tavily-adapter)
-docker compose up -d solograph-search
-```
-
-**Endpoints:**
-- `GET /search?q=AI+tool&source=producthunt&n=5` — semantic search (source optional)
-- `GET /sources` — list indexed sources with counts
-- `GET /health` — status
-
-**Popularity boost:** Products with more upvotes rank higher at equal relevance. Score = `cosine_similarity * 0.85 + log10(upvotes) * boost`. Fetch 3x candidates, re-rank, return top N.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SOLOGRAPH_SEARCH_PORT` | `8002` | HTTP server port |
-| `SOURCES_ROOT` | `~/.solo/sources` | FalkorDB graphs directory |
-
-## Storage
-
-- **Code graph:** `~/.solo/codegraph.db` (FalkorDB)
-- **Session vectors:** `~/.solo/sessions/graph.db` (FalkorDB)
-- **KB vectors:** `{KB_PATH}/.solo/kb/graph.db` (FalkorDB)
-- **Project vectors:** `{project_path}/.solo/vectors/graph.db` (per-project FalkorDB)
-- **YouTube source:** `~/.solo/sources/youtube/graph.db` (FalkorDB) + `youtube/vtt/` (cached VTT files) + `youtube/channels.yaml`
-- **ProductHunt source:** `~/.solo/sources/producthunt/graph.db` (FalkorDB) — 26k+ products with upvote-based ranking
+`solograph-search` serves the sources index over HTTP (`GET /search?q=...&source=...&n=5`, `/sources`, `/health`, port `SOLOGRAPH_SEARCH_PORT`, default 8002) for a SearXNG engine.
 
 ## Part of Solo Factory
 
-Solograph is the MCP backend for [**Solo Factory**](https://github.com/fortunto2/solo-factory) — 9 skills and 3 agents for shipping startups faster. [PyPI](https://pypi.org/project/solograph/)
-
-Install skills + MCP together:
-```bash
-# Option 1: Skills for any agent (Claude Code, Cursor, Copilot, Gemini CLI, etc.)
-npx skills add fortunto2/solo-factory --all
-
-# Option 2: Claude Code plugin (skills + agents + MCP auto-start)
-claude plugin marketplace add fortunto2/solo-factory
-claude plugin install solo --scope user
-```
-
-Or use solograph standalone — just add to `.mcp.json` as shown above.
+Solograph is the MCP backend for [Solo Factory](https://github.com/fortunto2/solo-factory). It also works standalone.
 
 ## License
 

@@ -1,6 +1,6 @@
 [project]
 name = "solograph"
-version = "0.6.0"
+version = "0.7.0"
 description = "Code intelligence MCP server — multi-project code graph, semantic search, session history, knowledge base, web search"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -8,7 +8,7 @@ license = "MIT"
 authors = [
     { name = "Rustam Salavatov" },
 ]
-keywords = ["mcp", "code-intelligence", "codegraph", "semantic-search", "claude-code", "solograph"]
+keywords = ["mcp", "code-intelligence", "codegraph", "full-text-search", "claude-code", "solograph"]
 dependencies = [
     # Graph database (code graph)
     "falkordblite>=0.4",
