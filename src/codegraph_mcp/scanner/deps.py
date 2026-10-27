@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+from ..db import cypher_str
 from ..models import PackageNode
 
 
@@ -170,14 +171,13 @@ def ingest_packages(graph, packages: list[PackageNode], project_name: str) -> in
     """Create Package nodes and DEPENDS_ON edges."""
     count = 0
     for pkg in packages:
-        name_escaped = pkg.name.replace("'", "\\'")
         version = pkg.version or ""
         graph.query(
-            f"MERGE (pkg:Package {{name: '{name_escaped}'}}) SET pkg.version = '{version}', pkg.source = '{pkg.source}'"
+            f"MERGE (pkg:Package {{name: {cypher_str(pkg.name)}}}) SET pkg.version = {cypher_str(version)}, pkg.source = {cypher_str(pkg.source)}"
         )
         graph.query(
-            f"MATCH (p:Project {{name: '{project_name}'}}), "
-            f"(pkg:Package {{name: '{name_escaped}'}}) "
+            f"MATCH (p:Project {{name: {cypher_str(project_name)}}}), "
+            f"(pkg:Package {{name: {cypher_str(pkg.name)}}}) "
             f"MERGE (p)-[:DEPENDS_ON]->(pkg)"
         )
         count += 1

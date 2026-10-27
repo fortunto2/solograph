@@ -4,6 +4,7 @@ from pathlib import Path
 
 import yaml
 
+from ..db import cypher_str
 from ..models import ProjectNode
 
 
@@ -33,9 +34,9 @@ def ingest_projects(graph, projects: list[ProjectNode]) -> int:
     for p in projects:
         desc = p.description.replace("'", "\\'").replace('"', '\\"')[:200]
         graph.query(
-            f"MERGE (p:Project {{name: '{p.name}'}}) "
-            f"SET p.stack = '{p.stack}', p.path = '{p.path}', "
-            f"p.status = '{p.status}', p.has_claude_md = {str(p.has_claude_md).lower()}, "
+            f"MERGE (p:Project {{name: {cypher_str(p.name)}}}) "
+            f"SET p.stack = {cypher_str(p.stack)}, p.path = {cypher_str(p.path)}, "
+            f"p.status = {cypher_str(p.status)}, p.has_claude_md = {str(p.has_claude_md).lower()}, "
             f'p.description = "{desc}"'
         )
         count += 1

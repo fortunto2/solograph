@@ -199,7 +199,7 @@ def session_search(
 
 @mcp.tool()
 def codegraph_query(query: str) -> list[dict]:
-    """Execute a raw Cypher query against the code intelligence graph.
+    """Execute a read-only Cypher query against the code intelligence graph.
 
     The graph contains: Project, File, Symbol, Package, Session nodes.
     Edges: HAS_FILE, DEFINES, DEPENDS_ON, MODIFIED, IN_PROJECT, TOUCHED, EDITED, CREATED,
@@ -215,7 +215,9 @@ def codegraph_query(query: str) -> list[dict]:
         query: Cypher query string
     """
     graph = _get_graph()
-    result = graph.query(query)
+    # Read-only: one mistaken DETACH DELETE from an agent would empty the graph,
+    # and nothing a question needs is a write.
+    result = graph.ro_query(query)
     rows = []
     for row in result.result_set:
         if len(row) == 1:

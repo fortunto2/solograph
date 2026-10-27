@@ -2,6 +2,8 @@
 
 import re
 
+from ..db import cypher_str
+
 
 def _safe_id(text: str) -> str:
     """Convert a path or name to a valid mermaid node ID."""
@@ -15,9 +17,9 @@ def _safe_label(text: str) -> str:
 
 def inheritance_diagram(graph, project: str, max_nodes: int = 50) -> str:
     """Generate mermaid flowchart of class inheritance."""
-    result = graph.query(
+    result = graph.ro_query(
         f"MATCH (child:Symbol)-[:INHERITS]->(parent:Symbol) "
-        f"WHERE child.project = '{project}' "
+        f"WHERE child.project = {cypher_str(project)} "
         f"RETURN child.name, parent.name "
         f"ORDER BY parent.name, child.name"
     )
@@ -50,8 +52,8 @@ def inheritance_diagram(graph, project: str, max_nodes: int = 50) -> str:
 
 def imports_diagram(graph, project: str, max_nodes: int = 50) -> str:
     """Generate mermaid flowchart of internal file imports."""
-    result = graph.query(
-        f"MATCH (src:File {{project: '{project}'}})-[:IMPORTS]->(tgt:File {{project: '{project}'}}) "
+    result = graph.ro_query(
+        f"MATCH (src:File {{project: {cypher_str(project)}}})-[:IMPORTS]->(tgt:File {{project: {cypher_str(project)}}}) "
         f"RETURN src.path, tgt.path "
         f"ORDER BY src.path, tgt.path"
     )
@@ -90,22 +92,21 @@ def calls_diagram(
 ) -> str:
     """Generate mermaid flowchart of call relationships (File -> Symbol)."""
     if symbol:
-        sym_escaped = symbol.replace("'", "\\'")
         query = (
-            f"MATCH (f:File)-[:CALLS]->(s:Symbol {{name: '{sym_escaped}', project: '{project}'}}) "
+            f"MATCH (f:File)-[:CALLS]->(s:Symbol {{name: {cypher_str(symbol)}, project: {cypher_str(project)}}}) "
             f"WHERE f.path <> s.file "
             f"RETURN f.path, s.name, s.file "
             f"ORDER BY f.path"
         )
     else:
         query = (
-            f"MATCH (f:File {{project: '{project}'}})-[:CALLS]->(s:Symbol {{project: '{project}'}}) "
+            f"MATCH (f:File {{project: {cypher_str(project)}}})-[:CALLS]->(s:Symbol {{project: {cypher_str(project)}}}) "
             f"WHERE f.path <> s.file "
             f"RETURN f.path, s.name, s.file "
             f"ORDER BY f.path, s.name"
         )
 
-    result = graph.query(query)
+    result = graph.ro_query(query)
     if not result.result_set:
         return ""
 
@@ -135,8 +136,8 @@ def calls_diagram(
 
 def deps_diagram(graph, project: str) -> str:
     """Generate mermaid flowchart of package dependencies."""
-    result = graph.query(
-        f"MATCH (p:Project {{name: '{project}'}})-[:DEPENDS_ON]->(pkg:Package) "
+    result = graph.ro_query(
+        f"MATCH (p:Project {{name: {cypher_str(project)}}})-[:DEPENDS_ON]->(pkg:Package) "
         f"RETURN pkg.name, pkg.source "
         f"ORDER BY pkg.source, pkg.name"
     )

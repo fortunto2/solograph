@@ -7,6 +7,16 @@ from redislite.falkordb_client import FalkorDB
 DEFAULT_DB_PATH = Path.home() / ".solo" / "codegraph.db"
 
 
+def cypher_str(value) -> str:
+    """A Cypher string literal for `value`, quotes and backslashes escaped.
+
+    Names come from the filesystem and from MCP tool arguments; pasted raw
+    between quotes, "Rustam's app" failed with a Cypher syntax error and a
+    crafted name could close the literal early. Backslash first, or "a\\" escapes the quote.
+    """
+    return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
 def get_db(db_path: Path | None = None) -> FalkorDB:
     """Get or create FalkorDBLite instance."""
     path = db_path or DEFAULT_DB_PATH
@@ -61,9 +71,9 @@ def init_schema(graph) -> None:
 def clear_project(graph, project_name: str) -> None:
     """Remove all nodes and edges for a project before re-scan."""
     queries = [
-        f"MATCH (s:Symbol {{project: '{project_name}'}}) DETACH DELETE s",
-        f"MATCH (f:File {{project: '{project_name}'}}) DETACH DELETE f",
-        f"MATCH (p:Project {{name: '{project_name}'}}) DETACH DELETE p",
+        f"MATCH (s:Symbol {{project: {cypher_str(project_name)}}}) DETACH DELETE s",
+        f"MATCH (f:File {{project: {cypher_str(project_name)}}}) DETACH DELETE f",
+        f"MATCH (p:Project {{name: {cypher_str(project_name)}}}) DETACH DELETE p",
     ]
     for q in queries:
         try:

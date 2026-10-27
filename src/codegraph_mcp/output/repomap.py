@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from ..db import cypher_str
+
 
 def _get_line_from_file(project_path: str, filepath: str, line_num: int) -> str:
     """Read a specific line from a file to use as the signature."""
@@ -41,21 +43,21 @@ def generate_repomap(graph, project_name: str, max_files: int = 20) -> str:
     and lists their defined symbols WITH signatures.
     """
     # 1. Check if project exists and get its path
-    proj_result = graph.query(f"MATCH (p:Project {{name: '{project_name}'}}) RETURN p.path")
+    proj_result = graph.ro_query(f"MATCH (p:Project {{name: {cypher_str(project_name)}}}) RETURN p.path")
     if not proj_result.result_set:
-        return f"Error: Project '{project_name}' not found in graph."
+        return f"Error: Project {cypher_str(project_name)} not found in graph."
 
     project_path = proj_result.result_set[0][0]
 
     # 2. Get top "hub" files by total connections (IMPORTS + CALLS etc)
-    hub_result = graph.query(
-        f"MATCH (f:File {{project: '{project_name}'}})-[r]-() "
+    hub_result = graph.ro_query(
+        f"MATCH (f:File {{project: {cypher_str(project_name)}}})-[r]-() "
         f"RETURN f.path, COUNT(r) AS connections "
         f"ORDER BY connections DESC LIMIT {max_files}"
     )
 
     if not hub_result.result_set:
-        return f"No files found for project '{project_name}'."
+        return f"No files found for project {cypher_str(project_name)}."
 
     top_files = [row[0] for row in hub_result.result_set]
 
@@ -63,8 +65,8 @@ def generate_repomap(graph, project_name: str, max_files: int = 20) -> str:
     repomap_dict = {}
 
     for filepath in top_files:
-        sym_result = graph.query(
-            f"MATCH (f:File {{path: '{filepath}', project: '{project_name}'}})-[:DEFINES]->(s:Symbol) "
+        sym_result = graph.ro_query(
+            f"MATCH (f:File {{path: {cypher_str(filepath)}, project: {cypher_str(project_name)}}})-[:DEFINES]->(s:Symbol) "
             f"RETURN s.name, s.kind, s.line "
             f"ORDER BY s.line"
         )

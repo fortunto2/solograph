@@ -2,6 +2,8 @@
 
 from collections import defaultdict
 
+from ..db import cypher_str
+
 
 def explain_project(graph, project_name: str) -> dict | str:
     """Generate structured architecture overview from graph data.
@@ -11,19 +13,21 @@ def explain_project(graph, project_name: str) -> dict | str:
     """
 
     # ── Header: project info ──
-    proj_result = graph.query(f"MATCH (p:Project {{name: '{project_name}'}}) RETURN p.stack, p.description")
+    proj_result = graph.ro_query(
+        f"MATCH (p:Project {{name: {cypher_str(project_name)}}}) RETURN p.stack, p.description"
+    )
     if not proj_result.result_set:
-        return f"Project '{project_name}' not found in graph."
+        return f"Project {cypher_str(project_name)} not found in graph."
 
     stack = proj_result.result_set[0][0] or "(no stack)"
     description = proj_result.result_set[0][1] or ""
 
     # Counts
-    file_count = _count(graph, f"MATCH (f:File {{project: '{project_name}'}}) RETURN COUNT(f)")
-    sym_count = _count(graph, f"MATCH (s:Symbol {{project: '{project_name}'}}) RETURN COUNT(s)")
+    file_count = _count(graph, f"MATCH (f:File {{project: {cypher_str(project_name)}}}) RETURN COUNT(f)")
+    sym_count = _count(graph, f"MATCH (s:Symbol {{project: {cypher_str(project_name)}}}) RETURN COUNT(s)")
     pkg_count = _count(
         graph,
-        f"MATCH (p:Project {{name: '{project_name}'}})-[:DEPENDS_ON]->(pkg:Package) RETURN COUNT(pkg)",
+        f"MATCH (p:Project {{name: {cypher_str(project_name)}}})-[:DEPENDS_ON]->(pkg:Package) RETURN COUNT(pkg)",
     )
 
     data: dict = {
@@ -34,8 +38,8 @@ def explain_project(graph, project_name: str) -> dict | str:
     }
 
     # ── Language breakdown ──
-    lang_result = graph.query(
-        f"MATCH (f:File {{project: '{project_name}'}}) "
+    lang_result = graph.ro_query(
+        f"MATCH (f:File {{project: {cypher_str(project_name)}}}) "
         f"WHERE f.lang IS NOT NULL AND f.lang <> '' "
         f"RETURN f.lang, COUNT(f) AS cnt, SUM(f.lines) AS total_lines "
         f"ORDER BY cnt DESC"
@@ -44,7 +48,7 @@ def explain_project(graph, project_name: str) -> dict | str:
         data["languages"] = [(row[0], row[1], row[2] or 0) for row in lang_result.result_set]
 
     # ── Directory layers ──
-    dir_result = graph.query(f"MATCH (f:File {{project: '{project_name}'}}) RETURN f.path ORDER BY f.path")
+    dir_result = graph.ro_query(f"MATCH (f:File {{project: {cypher_str(project_name)}}}) RETURN f.path ORDER BY f.path")
     if dir_result.result_set:
         dir_stats: dict[str, dict] = defaultdict(lambda: {"files": 0, "symbols": 0})
         for row in dir_result.result_set:
@@ -59,7 +63,7 @@ def explain_project(graph, project_name: str) -> dict | str:
             dir_stats[dir_key]["files"] += 1
 
         # Count symbols per directory
-        sym_dir_result = graph.query(f"MATCH (s:Symbol {{project: '{project_name}'}}) RETURN s.file")
+        sym_dir_result = graph.ro_query(f"MATCH (s:Symbol {{project: {cypher_str(project_name)}}}) RETURN s.file")
         for row in sym_dir_result.result_set:
             path = row[0]
             parts = path.split("/")
@@ -78,8 +82,8 @@ def explain_project(graph, project_name: str) -> dict | str:
     patterns: list[str] = []
 
     # Mixins
-    mixin_result = graph.query(
-        f"MATCH (s:Symbol {{project: '{project_name}'}}) "
+    mixin_result = graph.ro_query(
+        f"MATCH (s:Symbol {{project: {cypher_str(project_name)}}}) "
         f"WHERE s.name CONTAINS 'Mixin' AND s.kind = 'class' "
         f"RETURN s.name ORDER BY s.name"
     )
@@ -88,8 +92,8 @@ def explain_project(graph, project_name: str) -> dict | str:
         patterns.append(f"Mixins: {', '.join(mixin_names[:8])}")
 
     # Abstract/Base classes with children
-    base_result = graph.query(
-        f"MATCH (child:Symbol {{project: '{project_name}'}})-[:INHERITS]->(parent:Symbol {{project: '{project_name}'}}) "
+    base_result = graph.ro_query(
+        f"MATCH (child:Symbol {{project: {cypher_str(project_name)}}})-[:INHERITS]->(parent:Symbol {{project: {cypher_str(project_name)}}}) "
         f"RETURN parent.name, COUNT(child) AS children "
         f"ORDER BY children DESC LIMIT 5"
     )
@@ -100,8 +104,8 @@ def explain_project(graph, project_name: str) -> dict | str:
                 patterns.append(f"Base class: {parent} -> {children_count} children")
 
     # CRUD schemas
-    crud_result = graph.query(
-        f"MATCH (s:Symbol {{project: '{project_name}'}}) "
+    crud_result = graph.ro_query(
+        f"MATCH (s:Symbol {{project: {cypher_str(project_name)}}}) "
         f"WHERE s.kind = 'class' AND "
         f"(s.name ENDS WITH 'Create' OR s.name ENDS WITH 'Read' OR "
         f" s.name ENDS WITH 'Update' OR s.name ENDS WITH 'Schema') "
@@ -112,8 +116,8 @@ def explain_project(graph, project_name: str) -> dict | str:
         patterns.append(f"CRUD schemas: {count} Create/Read/Update/Schema classes")
 
     # Protocol/Interface count
-    proto_result = graph.query(
-        f"MATCH (s:Symbol {{project: '{project_name}'}}) WHERE s.kind IN ['protocol', 'interface'] RETURN COUNT(s)"
+    proto_result = graph.ro_query(
+        f"MATCH (s:Symbol {{project: {cypher_str(project_name)}}}) WHERE s.kind IN ['protocol', 'interface'] RETURN COUNT(s)"
     )
     if proto_result.result_set and proto_result.result_set[0][0] > 0:
         count = proto_result.result_set[0][0]
@@ -123,8 +127,8 @@ def explain_project(graph, project_name: str) -> dict | str:
         data["patterns"] = patterns
 
     # ── Top dependencies ──
-    deps_result = graph.query(
-        f"MATCH (p:Project {{name: '{project_name}'}})-[:DEPENDS_ON]->(pkg:Package) "
+    deps_result = graph.ro_query(
+        f"MATCH (p:Project {{name: {cypher_str(project_name)}}})-[:DEPENDS_ON]->(pkg:Package) "
         f"RETURN pkg.name, pkg.source "
         f"ORDER BY pkg.source, pkg.name LIMIT 15"
     )
@@ -132,8 +136,8 @@ def explain_project(graph, project_name: str) -> dict | str:
         data["dependencies"] = [(r[0], r[1]) for r in deps_result.result_set]
 
     # ── Hub files (most connections) ──
-    hub_result = graph.query(
-        f"MATCH (f:File {{project: '{project_name}'}})-[r]-() "
+    hub_result = graph.ro_query(
+        f"MATCH (f:File {{project: {cypher_str(project_name)}}})-[r]-() "
         f"RETURN f.path, COUNT(r) AS connections "
         f"ORDER BY connections DESC LIMIT 8"
     )
@@ -147,5 +151,5 @@ def explain_project(graph, project_name: str) -> dict | str:
 
 def _count(graph, query: str) -> int:
     """Run a COUNT query and return the integer result."""
-    result = graph.query(query)
+    result = graph.ro_query(query)
     return result.result_set[0][0] if result.result_set else 0

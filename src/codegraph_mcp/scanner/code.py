@@ -5,6 +5,7 @@ Uses tree-sitter for AST parsing to extract function/class definitions and impor
 
 from pathlib import Path
 
+from ..db import cypher_str
 from ..models import CallEdge, FileNode, ImportEdge, InheritsEdge, SymbolNode
 
 # Language extensions → tree-sitter grammar module
@@ -1234,8 +1235,6 @@ def ingest_imports(graph, imports: list[ImportEdge], rust_index: dict | None = N
         imports = remaining
 
     for imp in imports:
-        src_escaped = imp.source_file.replace("'", "\\'")
-        module_escaped = imp.module.replace("'", "\\'")
         if imp.kind == "internal":
             known = _project_paths(graph, imp.project)
             target = resolve_internal_import(imp.module, imp.source_file, known)
@@ -1250,8 +1249,8 @@ def ingest_imports(graph, imports: list[ImportEdge], rust_index: dict | None = N
             # External: File → Package
             try:
                 result = graph.query(
-                    f"MATCH (src:File {{path: '{src_escaped}', project: '{imp.project}'}}), "
-                    f"(pkg:Package {{name: '{module_escaped}'}}) "
+                    f"MATCH (src:File {{path: {cypher_str(imp.source_file)}, project: {cypher_str(imp.project)}}}), "
+                    f"(pkg:Package {{name: {cypher_str(imp.module)}}}) "
                     f"MERGE (src)-[:IMPORTS]->(pkg)"
                 )
                 if result.relationships_created > 0:
@@ -1342,12 +1341,10 @@ def ingest_inherits(graph, inherits: list[InheritsEdge]) -> int:
     """Create INHERITS edges (Symbol → Symbol). Returns count of edges created."""
     count = 0
     for inh in inherits:
-        child_escaped = inh.child_name.replace("'", "\\'")
-        parent_escaped = inh.parent_name.replace("'", "\\'")
         try:
             result = graph.query(
-                f"MATCH (child:Symbol {{name: '{child_escaped}', project: '{inh.project}'}}) "
-                f"MATCH (parent:Symbol {{name: '{parent_escaped}', project: '{inh.project}'}}) "
+                f"MATCH (child:Symbol {{name: {cypher_str(inh.child_name)}, project: {cypher_str(inh.project)}}}) "
+                f"MATCH (parent:Symbol {{name: {cypher_str(inh.parent_name)}, project: {cypher_str(inh.project)}}}) "
                 f"WHERE child <> parent "
                 f"MERGE (child)-[:INHERITS]->(parent)"
             )
