@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, TransactionBehavior, params};
 use serde_json::{Map, Value, json};
 
 use crate::deps::scan_deps;
@@ -98,7 +98,9 @@ impl Portfolio {
 
     /// Upsert registry entries; with `prune`, drop projects no longer listed. Returns the dropped names.
     pub fn sync_projects(&mut self, entries: &[Project], prune: bool) -> Result<Vec<String>> {
-        let tx = self.db.transaction()?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         for e in entries {
             let desc: String = e
                 .description
@@ -144,7 +146,9 @@ impl Portfolio {
         ex: &mut SymbolExtractor,
     ) -> Result<ScanReport> {
         let mut report = ScanReport::default();
-        let tx = self.db.transaction()?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let known: HashMap<String, (i64, Option<f64>, Option<i64>)> = tx
             .prepare("SELECT id, path, mtime, size FROM files WHERE project = ?")?
             .query_map([name], |r| {

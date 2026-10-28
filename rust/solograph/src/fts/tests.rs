@@ -183,3 +183,53 @@ fn score_is_bm25_not_a_rank_dressed_as_relevance() {
     assert!(scores[0] > scores[1] && scores[1] > 0.0);
     assert_ne!(scores[0], 1.0);
 }
+
+/// Review 28 Oct: a sync read inside a DEFERRED transaction and then wrote; under
+/// WAL the upgrade fails at once with SQLITE_BUSY whatever the busy timeout, so
+/// two sessions syncing together lost (10 of 15 concurrent runs failed).
+#[test]
+fn concurrent_syncs_wait_for_each_other_instead_of_failing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("index.db");
+    FtsStore::open(&db).unwrap();
+    let workers = 6;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(workers));
+    let handles: Vec<_> = (0..workers)
+        .map(|w| {
+            let (db, dir, barrier) = (
+                db.clone(),
+                tmp.path().join(format!("src{w}")),
+                barrier.clone(),
+            );
+            std::thread::spawn(move || {
+                std::fs::create_dir_all(&dir).unwrap();
+                for i in 0..40 {
+                    std::fs::write(
+                        dir.join(format!("w{w}-{i}.txt")),
+                        format!("doc {w} {i}\nbody"),
+                    )
+                    .unwrap();
+                }
+                let mut store = FtsStore::open(&db).unwrap();
+                barrier.wait();
+                // Each worker lists only its own files, so each must write; none
+                // may drop another's (`under` keeps the others).
+                let prefix = format!("w{w}-");
+                store.sync_under(&files(&dir), &doc, false, None, Some(&prefix))
+            })
+        })
+        .collect();
+    for h in handles {
+        let r = h
+            .join()
+            .unwrap()
+            .expect("a concurrent sync must wait, not fail");
+        assert!(r.failed.is_empty(), "{:?}", r.failed);
+    }
+    let n: i64 = FtsStore::open(&db)
+        .unwrap()
+        .db
+        .query_row("SELECT count(*) FROM docs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, (workers * 40) as i64);
+}

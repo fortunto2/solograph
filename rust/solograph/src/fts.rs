@@ -7,7 +7,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde_json::{Map, Value};
 
 use crate::text::{fold, match_expression};
@@ -262,7 +262,12 @@ impl FtsStore {
     ) -> Result<SyncReport> {
         let mut report = SyncReport::default();
         let columns = self.layout.columns;
-        let tx = self.db.transaction()?;
+        // IMMEDIATE: the write lock is taken up front, so a second writer waits on
+        // busy_timeout. A deferred transaction that read first could not upgrade
+        // under WAL and failed at once with SQLITE_BUSY (review, 28 Oct 2026).
+        let mut tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let known: HashMap<String, Known> = {
             let mut stmt = tx.prepare("SELECT doc_id, mtime, size, gone, offset FROM docs")?;
             stmt.query_map([], |r| {
@@ -289,12 +294,15 @@ impl FtsStore {
             let grown = |p: &Known| {
                 p.3.is_some_and(|o| o != 0) && p.2 == 0 && p.1.is_some_and(|s| size > s)
             };
+            // One savepoint per document: a failure half-way leaves nothing of it,
+            // instead of a row with a fresh mtime and no text ("unchanged" forever).
+            let sp = tx.savepoint()?;
             let outcome = match (append, prev) {
                 (Some(append), Some(p)) if grown(p) => append(path, p.3.unwrap_or(0))
-                    .and_then(|d| Self::append_tail(&tx, doc_id, &d, mtime, size)),
+                    .and_then(|d| Self::append_tail(&sp, doc_id, &d, mtime, size)),
                 _ => parse(path).and_then(|d| {
                     Self::put(
-                        &tx,
+                        &sp,
                         columns,
                         doc_id,
                         d.as_ref(),
@@ -305,7 +313,10 @@ impl FtsStore {
                 }),
             };
             match outcome {
-                Ok(()) => report.read += 1,
+                Ok(()) => {
+                    sp.commit()?;
+                    report.read += 1;
+                }
                 Err(_) => report.failed.push(doc_id.clone()),
             }
         }
@@ -314,7 +325,12 @@ impl FtsStore {
             .filter(|id| !listed.contains(id.as_str()) && under.is_none_or(|p| id.starts_with(p)));
         for doc_id in vanished {
             if keep_gone {
-                tx.execute("UPDATE docs SET gone = 1 WHERE doc_id = ?", [doc_id])?;
+                // Only the newly gone: re-marking 638 archived rows made every
+                // session search a writer.
+                tx.execute(
+                    "UPDATE docs SET gone = 1 WHERE doc_id = ? AND gone = 0",
+                    [doc_id],
+                )?;
             } else {
                 tx.execute(
                     "DELETE FROM fts WHERE rowid = (SELECT id FROM docs WHERE doc_id = ?)",
@@ -335,7 +351,9 @@ impl FtsStore {
         if doc_ids.is_empty() {
             return Ok(());
         }
-        let tx = self.db.transaction()?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         for doc_id in doc_ids {
             tx.execute(
                 "DELETE FROM fts WHERE rowid = (SELECT id FROM docs WHERE doc_id = ?)",
