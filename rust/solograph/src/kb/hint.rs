@@ -110,6 +110,25 @@ impl KnowledgeBase {
             .count()
     }
 
+    /// Whether an FTS expression matches more than a twentieth of the whole KB,
+    /// as rarity is judged for wiki words below: a word, not a name.
+    fn common_in_kb(&self, expr: &str) -> bool {
+        let count = |sql: &str, p: Option<&str>| -> i64 {
+            match p {
+                Some(e) => self.store.db.query_row(sql, [e], |r| r.get(0)),
+                None => self.store.db.query_row(sql, [], |r| r.get(0)),
+            }
+            .unwrap_or(0)
+        };
+        let total = count("SELECT count(*) FROM docs WHERE gone = 0", None);
+        let df = count(
+            "SELECT count(*) FROM fts JOIN docs d ON d.id = fts.rowid \
+             WHERE fts MATCH ?1 AND d.gone = 0",
+            Some(expr),
+        );
+        df as f64 > (total as f64 * 0.05).max(2.0)
+    }
+
     /// Rare words (few pages: they name one) and topical ones (up to a fifth of the
     /// pages: too common to name a page, specific enough to be the topic).
     fn rarity(&self, toks: &[String]) -> (Vec<String>, Vec<String>) {
@@ -156,6 +175,39 @@ impl KnowledgeBase {
             .into_iter()
             .filter(|(_, c)| self.config.is_page(&c.path))
             .take(5)
+            .collect())
+    }
+
+    /// Pages whose file name the prompt spells out: every word of the slug of three
+    /// letters or more ("project" and years aside), at least two of them. "kill
+    /// iterate scale" names kill-iterate-scale.md though no word of it is rare.
+    fn slug_named(&self, toks: &[String]) -> Result<Vec<Candidate>> {
+        let mut stmt = self.store.db.prepare(&format!(
+            "SELECT d.doc_id, fts.title, fts.keys FROM fts JOIN docs d ON d.id = fts.rowid \
+             WHERE {UNDER}"
+        ))?;
+        let rows: Vec<(String, String, String)> = stmt
+            .query_map(params![Option::<String>::None, self.config.pages], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows
+            .into_iter()
+            .filter(|(id, _, _)| self.config.is_page(id))
+            .filter(|(id, _, _)| {
+                let words: Vec<&str> = stem(id)
+                    .split('-')
+                    .filter(|w| {
+                        w.len() >= 3 && *w != "project" && !w.chars().all(|c| c.is_ascii_digit())
+                    })
+                    .collect();
+                words.len() >= 2 && words.iter().all(|w| toks.iter().any(|t| t == w))
+            })
+            .map(|(path, title, keys)| Candidate {
+                path,
+                title,
+                line: keys.lines().next().unwrap_or("").to_string(),
+            })
             .collect())
     }
 
@@ -320,10 +372,17 @@ pub fn hint(kb: &mut KnowledgeBase, prompt: &str, session: &str, state: &Path) -
         return Ok(silent);
     }
     let low = p.to_lowercase();
-    let extra = kb
-        .aliases()
-        .map(|a| a.equivalents(&low).join(" "))
-        .unwrap_or_default();
+    // An alias only names a page when its spelling is rare across the whole KB:
+    // "лайа" is a name, "виза" and "турция" are words that, through visa and
+    // turkey, pointed at a visa-photo app and the company page in talk about a
+    // visa case and contact lenses (replay of 300 real prompts, 28 Oct 2026).
+    let used = kb.aliases().map(|a| a.used(&low)).unwrap_or_default();
+    let extra: Vec<String> = used
+        .into_iter()
+        .filter(|(spelling, _)| !kb.common_in_kb(spelling))
+        .map(|(_, term)| term)
+        .collect();
+    let extra = extra.join(" ");
     let text = format!("{low} {extra}");
     let toks = tokens(&text);
     // Most Russian prompts have no Latin word and no alias: nothing to look up.
@@ -345,6 +404,15 @@ pub fn hint(kb: &mut KnowledgeBase, prompt: &str, session: &str, state: &Path) -
     {
         picked.push(c);
     }
+    for c in kb.slug_named(&toks)? {
+        let path = abs(&c.path);
+        if picked.len() < MAX_PAGES
+            && !seen.contains(&path)
+            && !picked.iter().any(|x| x.path == path)
+        {
+            picked.push(Candidate { path, ..c });
+        }
+    }
     let (rare, topical) = kb.rarity(&toks);
     if !rare.is_empty() {
         for (rowid, c) in kb.candidates(&rare)? {
@@ -352,8 +420,16 @@ pub fn hint(kb: &mut KnowledgeBase, prompt: &str, session: &str, state: &Path) -
                 break;
             }
             let path = abs(&c.path);
-            let named = format!("{} {} {}", stem(&c.path).replace('-', " "), c.title, c.line)
-                .to_lowercase();
+            // The file name and title name a page; its summary line only describes
+            // it. A word found in the summary alone needs the prompt's topic behind
+            // it: "Irvine" in an address pointed at a hackathon held there (replay
+            // of 300 real prompts, 28 Oct 2026).
+            let strong = format!("{} {}", stem(&c.path).replace('-', " "), c.title);
+            let named = if topical.is_empty() {
+                strong.to_lowercase()
+            } else {
+                format!("{strong} {}", c.line).to_lowercase()
+            };
             if seen.contains(&path)
                 || picked.iter().any(|x| x.path == path)
                 || !rare.iter().any(|t| named.contains(t.as_str()))

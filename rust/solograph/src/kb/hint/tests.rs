@@ -335,3 +335,70 @@ fn two_letter_words_tell_stacks_apart() {
     let out = f.hint("which stack for a python api with fastapi", "k6");
     assert!(out.contains("python-api.yaml"), "{out}");
 }
+
+#[test]
+fn a_common_russian_word_does_not_become_a_page_name_through_an_alias() {
+    // Replay of 300 real prompts, 28 Oct: "турции" -> turkey named the company page
+    // in talk about lenses and chess, "визу" -> visa a visa-photo app in talk about
+    // a visa case. A spelling used all over the KB is a word, not a name.
+    let mut f = Fixture::new();
+    f.write(
+        "wiki/visa-photo-app.md",
+        "---\ntitle: \"Visa photo app\"\n---\n\nChecks a visa photo against the spec.\n",
+    );
+    f.write(
+        "wiki/_aliases.yaml",
+        "- [лайа, лайя, laya]\n- [виза, visa]\n",
+    );
+    for i in 0..10 {
+        f.write(
+            &format!("crm/note-{i}.md"),
+            &format!("# Заметка {i}\n\nвиза, документы для визы, визовый центр\n"),
+        );
+    }
+    f.kb.sync().unwrap(); // the hint reads KB-wide counts from the index
+    let out = f.hint("кейс на визу надо подготовить и отправить юристу", "a1");
+    assert!(!out.contains("visa-photo-app"), "{out}");
+    // A rare spelling still reaches its page.
+    let out = f.hint("а что там лайа на маке умеет?", "a2");
+    assert!(out.contains("laya-open-jev-on-mac"), "{out}");
+}
+
+#[test]
+fn a_word_only_in_the_summary_needs_the_topic_to_back_it() {
+    // Replay of 300 real prompts, 28 Oct: a street address with "Irvine" pointed
+    // at a hackathon held in Irvine, named only in its index_line.
+    let mut f = Fixture::new();
+    f.write(
+        "wiki/brocheck-hackathon.md",
+        "---\ntitle: \"BroCheck: a 50-minute build\"\nindex_line: \"Post: Lightning Hackathon at EvoNexus Irvine, decision models\"\n---\n\nA build.\n",
+    );
+    let out = f.hint("413 Saint Vincent Irvine, они дома будут после 11го", "i1");
+    assert!(!out.contains("brocheck"), "{out}");
+    // In the title or file name, the word is a name and needs no backing.
+    let out = f.hint("а что там лайа на маке умеет?", "i2");
+    assert!(out.contains("laya-open-jev-on-mac"), "{out}");
+}
+
+#[test]
+fn a_page_whose_file_name_is_spelled_out_is_named() {
+    // "kill iterate scale" names kill-iterate-scale.md though no word is rare
+    // (8 of 15 named prompts were missed this way, 28 Oct).
+    let mut f = Fixture::new();
+    f.write(
+        "wiki/kill-iterate-scale.md",
+        "---\ntitle: \"Kill, iterate or scale\"\n---\n\nWeekly rules for the project skill agent session.\n",
+    );
+    // Common words here, as in a real wiki: none of them is rare enough to name it.
+    for i in 0..12 {
+        f.write(
+            &format!("wiki/note-{i}.md"),
+            &format!("---\ntitle: \"Note {i}\"\n---\n\nWe kill, iterate and scale things.\n"),
+        );
+    }
+    let out = f.hint("правила kill iterate scale для продуктов напомни", "s1");
+    assert!(out.contains("kill-iterate-scale"), "{out}");
+    // Two of the three words are not the name.
+    let out = f.hint("kill the build and scale the workers", "s2");
+    assert!(!out.contains("kill-iterate-scale"), "{out}");
+}

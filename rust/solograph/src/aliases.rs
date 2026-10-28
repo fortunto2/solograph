@@ -135,8 +135,25 @@ impl Aliases {
     }
 
     /// The KB's own terms for the spellings a query uses, as written (lowercased).
-    pub fn equivalents(&self, query: &str) -> Vec<&str> {
-        self.named(query).map(|g| g.term.text.as_str()).collect()
+    pub fn equivalents(&self, query: &str) -> Vec<String> {
+        self.used(query).into_iter().map(|(_, t)| t).collect()
+    }
+
+    /// Each group the query names: the spelling it used, as an FTS term, and the
+    /// KB's term as written. The hint checks how common that spelling is.
+    pub fn used(&self, query: &str) -> Vec<(String, String)> {
+        let words = terms_of(query);
+        self.groups
+            .iter()
+            .filter_map(|g| {
+                let m = g.spellings.iter().find(|m| {
+                    m.words
+                        .iter()
+                        .all(|(k, _)| words.iter().any(|(w, _)| same(w, k)))
+                })?;
+                Some((m.term(), g.term.text.clone()))
+            })
+            .collect()
     }
 
     /// The query's own terms, OR the KB's term for each other spelling it uses.
