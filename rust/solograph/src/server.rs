@@ -20,6 +20,48 @@ use crate::portfolio::Portfolio;
 use crate::sessions::SessionSearch;
 use crate::sources::SourceIndex;
 
+/// Arguments as clients send them, not only as the schema says. Some clients
+/// sent numbers and booleans as strings ("10", "true") in 2026, and an empty
+/// filter string meant "no filter" to the Python server; strict types turned
+/// both into errors or into zero results (review, 28 Oct 2026).
+mod lenient {
+    use serde::{Deserialize, Deserializer, de::Error};
+    use serde_json::Value;
+
+    pub fn usize<'de, D: Deserializer<'de>>(d: D) -> Result<usize, D::Error> {
+        match Value::deserialize(d)? {
+            Value::Number(n) => n
+                .as_u64()
+                .map(|n| n as usize)
+                .ok_or_else(|| D::Error::custom("not a count")),
+            Value::String(s) => s.trim().parse().map_err(D::Error::custom),
+            _ => Err(D::Error::custom("expected a number")),
+        }
+    }
+
+    pub fn u64<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+        usize(d).map(|n| n as u64)
+    }
+
+    pub fn bool<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+        match Value::deserialize(d)? {
+            Value::Bool(b) => Ok(b),
+            Value::String(s) => match s.trim() {
+                "true" | "1" | "yes" => Ok(true),
+                "false" | "0" | "no" | "" => Ok(false),
+                other => Err(D::Error::custom(format!("not a boolean: {other}"))),
+            },
+            Value::Number(n) => Ok(n.as_i64() != Some(0)),
+            _ => Err(D::Error::custom("expected a boolean")),
+        }
+    }
+
+    /// "" and null are no filter.
+    pub fn filter<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+        Ok(Option::<String>::deserialize(d)?.filter(|s| !s.trim().is_empty()))
+    }
+}
+
 fn five() -> usize {
     5
 }
@@ -35,16 +77,16 @@ pub struct KbSearchArgs {
     /// Search words (e.g. "privacy architecture", "агент память")
     query: String,
     /// Number of results (default 5)
-    #[serde(default = "five")]
+    #[serde(default = "five", deserialize_with = "lenient::usize")]
     n_results: usize,
     /// Filter by frontmatter `type` (substring match)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::filter")]
     doc_type: Option<String>,
     /// Add up to 3 pages linked to or from the top hits ([[wikilinks]]), marked `graph_source`
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::bool")]
     expand_graph: bool,
     /// Only files under this path prefix (e.g. "wiki/")
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::filter")]
     path: Option<String>,
 }
 
@@ -53,10 +95,10 @@ pub struct SessionSearchArgs {
     /// Search words (e.g. "hubspot webhook", "транскрипция midi")
     query: String,
     /// Number of results (default 5)
-    #[serde(default = "five")]
+    #[serde(default = "five", deserialize_with = "lenient::usize")]
     n_results: usize,
     /// Filter by project name, substring (e.g. "life2film")
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::filter")]
     project: Option<String>,
 }
 
@@ -65,13 +107,13 @@ pub struct SymbolSearchArgs {
     /// Words or an identifier (e.g. "auth middleware", "MontageProfile")
     query: String,
     /// Limit to one project (exact registry name)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::filter")]
     project: Option<String>,
     /// "function", "class" or "protocol"
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::filter")]
     kind: Option<String>,
     /// Number of results (default 20)
-    #[serde(default = "twenty")]
+    #[serde(default = "twenty", deserialize_with = "lenient::usize")]
     n_results: usize,
 }
 
@@ -84,14 +126,14 @@ pub struct ProjectArgs {
 #[derive(Deserialize, JsonSchema)]
 pub struct SharedArgs {
     /// Optional package name or part of one (e.g. "react", "supabase")
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::filter")]
     package: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ProjectInfoArgs {
     /// Project name (e.g. "my-app"). Omit for full list.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::filter")]
     name: Option<String>,
 }
 
@@ -100,13 +142,13 @@ pub struct WebFetchArgs {
     /// URL to fetch
     url: String,
     /// Max content length in chars (default 20000)
-    #[serde(default = "web_max")]
+    #[serde(default = "web_max", deserialize_with = "lenient::usize")]
     max_length: usize,
     /// Strip HTML tags and return plain text (default true)
-    #[serde(default = "yes")]
+    #[serde(default = "yes", deserialize_with = "lenient::bool")]
     extract_text: bool,
     /// Request timeout in seconds (default 30)
-    #[serde(default = "web_timeout")]
+    #[serde(default = "web_timeout", deserialize_with = "lenient::u64")]
     timeout: u64,
 }
 fn web_max() -> usize {
@@ -124,10 +166,10 @@ pub struct SourceSearchArgs {
     /// Search query (e.g. "startup idea", "revenue growth")
     query: String,
     /// Filter by source name (e.g. "telegram", "youtube"). Omit to search all.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::filter")]
     source: Option<String>,
     /// Number of results (default 5)
-    #[serde(default = "five")]
+    #[serde(default = "five", deserialize_with = "lenient::usize")]
     n_results: usize,
 }
 
@@ -487,5 +529,33 @@ impl ServerHandler for Solograph {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("solograph", env!("CARGO_PKG_VERSION")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{KbSearchArgs, SharedArgs, SymbolSearchArgs};
+
+    #[test]
+    fn strings_for_numbers_and_flags_and_empty_filters_are_understood() {
+        let a: KbSearchArgs = serde_json::from_value(
+            json!({"query": "x", "n_results": "10", "expand_graph": "true", "path": "", "doc_type": null}),
+        )
+        .unwrap();
+        assert_eq!(
+            (a.n_results, a.expand_graph, a.path, a.doc_type),
+            (10, true, None, None)
+        );
+        let s: SymbolSearchArgs =
+            serde_json::from_value(json!({"query": "x", "project": "", "kind": " "})).unwrap();
+        assert_eq!((s.project, s.kind, s.n_results), (None, None, 20));
+        let p: SharedArgs = serde_json::from_value(json!({"package": ""})).unwrap();
+        assert_eq!(p.package, None);
+        assert!(
+            serde_json::from_value::<KbSearchArgs>(json!({"query": "x", "n_results": "ten"}))
+                .is_err()
+        );
     }
 }

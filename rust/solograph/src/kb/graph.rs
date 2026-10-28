@@ -16,6 +16,8 @@ use super::KnowledgeBase;
 #[derive(Debug, Clone, Default)]
 pub struct Page {
     pub title: String,
+    /// Frontmatter `type`, which kb_search hits carry too.
+    pub kind: String,
     pub tags: Vec<String>,
     pub links: Vec<String>,
 }
@@ -148,6 +150,7 @@ impl Graph {
                 json!({
                     "file": id,
                     "title": p.title,
+                    "type": p.kind,
                     "tags": p.tags.join(","),
                     "graph_source": format!("via link: {via_title}"),
                 })
@@ -331,6 +334,7 @@ impl KnowledgeBase {
                 id,
                 Page {
                     title: title.unwrap_or_default(),
+                    kind: meta["type"].as_str().unwrap_or("").to_string(),
                     tags,
                     links,
                 },

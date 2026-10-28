@@ -101,6 +101,13 @@ impl Args {
         self.switches.contains("json")
     }
 
+    /// Every positional word from `i` on, as one query: `symbols montage profile`
+    /// used to search "montage" alone (review, 28 Oct 2026).
+    fn words(&self, i: usize, what: &str) -> Result<String> {
+        self.arg(i, what)?;
+        Ok(self.pos[i..].join(" "))
+    }
+
     fn arg(&self, i: usize, what: &str) -> Result<&str> {
         self.pos
             .get(i)
@@ -150,7 +157,7 @@ pub fn run(cmd: &str, raw: &[String]) -> Option<Result<()>> {
 
 fn symbols(a: &Args) -> Result<()> {
     let hits = portfolio(a)?.search_symbols(
-        a.arg(0, "query")?,
+        &a.words(0, "query")?,
         a.num("limit", 20)?,
         a.val("project"),
         a.val("kind"),
@@ -177,7 +184,7 @@ fn symbols(a: &Args) -> Result<()> {
 fn sessions(a: &Args) -> Result<()> {
     let root = a.path("claude-dir");
     let out = SessionSearch::open(None, root.as_deref())?.search(
-        a.arg(0, "query")?,
+        &a.words(0, "query")?,
         a.num("limit", 5)?,
         a.val("project"),
     )?;
@@ -621,7 +628,7 @@ fn sources(a: &Args) -> Result<()> {
     let sub = a.arg(0, "sources command: search, list, tags or related")?;
     let source = a.val("source");
     let out = match sub {
-        "search" => Value::Array(idx.search(a.arg(1, "query")?, source, a.num("limit", 5)?)?),
+        "search" => Value::Array(idx.search(&a.words(1, "query")?, source, a.num("limit", 5)?)?),
         "list" => Value::Array(idx.list_sources()?),
         "tags" => Value::Array(idx.list_tags(source.unwrap_or("youtube"))?),
         "related" => Value::Array(idx.related_videos(
@@ -636,7 +643,7 @@ fn sources(a: &Args) -> Result<()> {
     }
     let rows = out.as_array().cloned().unwrap_or_default();
     match sub {
-        "search" => print_source_hits(a.arg(1, "query")?, source, &rows),
+        "search" => print_source_hits(&a.words(1, "query")?, source, &rows),
         "list" => print_source_list(&rows),
         "tags" => print_tags(source.unwrap_or("youtube"), &rows),
         _ => print_related(a.arg(1, "video")?, &rows),

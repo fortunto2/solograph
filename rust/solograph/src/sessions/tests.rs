@@ -152,11 +152,16 @@ fn project_filter() {
         "deploy the landing",
         "Done.",
     );
-    transcript(
+    let s2 = transcript(
         &t.path().join("claude/projects/-w-other/s2.jsonl"),
         "deploy the landing",
         "Done.",
     );
+    // A session's project is its working directory, as in a real transcript.
+    let text = std::fs::read_to_string(&s2)
+        .unwrap()
+        .replace("/w/proj", "/w/other");
+    std::fs::write(&s2, text).unwrap();
     assert_eq!(
         ids(&s.search("deploy landing", 5, Some("other")).unwrap()),
         ["s2"]
@@ -292,7 +297,9 @@ fn the_reader_matches_python_on_meta() {
         "Done.",
     );
     let doc = read_transcript(&path, 0).unwrap();
-    assert_eq!(doc.kind, "proj");
+    // kind is the working directory now, so a project filter matches the real
+    // name; the displayed project is its last part, as before.
+    assert_eq!(doc.kind, "/w/proj");
     assert_eq!(
         Value::Object(doc.meta),
         json!({"session_id": "s1", "project": "proj", "project_path": "/w/proj", "branch": "",
@@ -449,4 +456,75 @@ fn a_transcript_with_no_cwd_at_all_is_not_indexed() {
     )
     .unwrap();
     assert!(ids(&search(t.path()).search("семейная", 5, None).unwrap()).is_empty());
+}
+
+#[test]
+fn a_hyphenated_project_is_found_by_its_real_name() {
+    // Review 28 Oct: the label came from splitting the Claude dir name on every
+    // '-', so `-p video-analyzer` found nothing (30 of 53 real dirs).
+    let t = tempfile::tempdir().unwrap();
+    let cwd = t.path().join("w/video-analyzer");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let path = transcript(
+        &t.path().join("claude/projects/-w-video-analyzer/s1.jsonl"),
+        "montage profile tuning",
+        "Done.",
+    );
+    let text = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("\"/w/proj\"", &format!("\"{}\"", cwd.display()));
+    std::fs::write(&path, text).unwrap();
+    let out = search(t.path())
+        .search("montage", 5, Some("video-analyzer"))
+        .unwrap();
+    assert_eq!(ids(&out), ["s1"]);
+    assert_eq!(out["results"][0]["project"], "video-analyzer");
+}
+
+#[test]
+fn a_session_started_with_a_skill_is_found_by_its_arguments() {
+    // Review 28 Oct: every user text starting with '<' was dropped, so the
+    // arguments of /solo:research never reached the index.
+    let t = tempfile::tempdir().unwrap();
+    let path = proj(t.path()).join("s1.jsonl");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let lines = [
+        json!({"type": "user", "cwd": "/w/proj", "timestamp": "2026-10-01T10:00:00Z", "message": {"content":
+            "<command-message>solo:research</command-message>\n<command-name>/solo:research</command-name>\n<command-args>therapist note-taking marketplace</command-args>"}}),
+        json!({"type": "assistant", "message": {"model": "m", "content": [{"type": "text", "text": "Researching."}]}}),
+    ];
+    std::fs::write(&path, lines.iter().map(line).collect::<String>()).unwrap();
+    let out = search(t.path())
+        .search("therapist marketplace", 5, None)
+        .unwrap();
+    assert_eq!(ids(&out), ["s1"]);
+    assert!(
+        out["results"][0]["title"]
+            .as_str()
+            .unwrap()
+            .contains("therapist"),
+        "{out}"
+    );
+}
+
+#[test]
+fn the_resume_command_survives_a_space_in_the_path() {
+    let t = tempfile::tempdir().unwrap();
+    let cwd = t.path().join("w/My Project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let path = transcript(
+        &proj(t.path()).join("s1.jsonl"),
+        "space test prompt",
+        "Done.",
+    );
+    let text = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("\"/w/proj\"", &format!("\"{}\"", cwd.display()));
+    std::fs::write(&path, text).unwrap();
+    let out = search(t.path()).search("space test", 5, None).unwrap();
+    let resume = out["results"][0]["resume"].as_str().unwrap();
+    assert!(
+        resume.starts_with(&format!("cd '{}'", cwd.display())),
+        "{resume}"
+    );
 }

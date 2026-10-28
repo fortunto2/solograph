@@ -25,6 +25,32 @@ pub fn derive_project_name(dir_name: &str) -> String {
     }
 }
 
+/// What a slash command was called with: "/solo:research therapist marketplace".
+/// Claude Code writes it as tags, and every user text starting with '<' used to
+/// be dropped with them (review, 28 Oct 2026).
+fn slash_command(text: &str) -> Option<String> {
+    let tag = |t: &str| -> Option<&str> {
+        let open = format!("<{t}>");
+        let start = text.find(&open)? + open.len();
+        let end = text[start..].find(&format!("</{t}>"))? + start;
+        Some(text[start..end].trim())
+    };
+    let name = tag("command-name")?;
+    let args = tag("command-args").unwrap_or("");
+    Some(format!("{name} {args}").trim().to_string())
+}
+
+/// A path as one shell word.
+fn shell_quote(p: &str) -> String {
+    if p.chars()
+        .all(|c| c.is_ascii_alphanumeric() || "/._-~".contains(c))
+    {
+        p.to_string()
+    } else {
+        format!("'{}'", p.replace('\'', "'\\''"))
+    }
+}
+
 pub fn claude_dir() -> PathBuf {
     env_path("CLAUDE_SESSIONS_DIR").unwrap_or_else(|| home().join(".claude"))
 }
@@ -224,7 +250,14 @@ pub fn read_transcript(path: &Path, offset: i64) -> Result<Doc> {
             match block.get("type").and_then(Value::as_str) {
                 Some("text") => {
                     let text = block.get("text").and_then(Value::as_str).unwrap_or("");
-                    if text.chars().count() > 5 && !text.starts_with('<') {
+                    if typ == "user"
+                        && let Some(cmd) = slash_command(text)
+                    {
+                        if first_prompt.is_empty() {
+                            first_prompt = cmd.clone();
+                        }
+                        parts.push(cmd);
+                    } else if text.chars().count() > 5 && !text.starts_with('<') {
                         parts.push(text.to_string());
                         if typ == "user" && first_prompt.is_empty() {
                             first_prompt = clean_title(text).unwrap_or_default();
@@ -264,13 +297,28 @@ pub fn read_transcript(path: &Path, offset: i64) -> Result<Doc> {
             meta.shift_remove(k);
         }
     }
-    let project = derive_project_name(
+    let label = derive_project_name(
         &path
             .parent()
             .and_then(Path::file_name)
             .unwrap_or_default()
             .to_string_lossy(),
     );
+    // The working directory names the project; the Claude dir name split on '-'
+    // turned "video-analyzer" into "analyzer" (review, 28 Oct 2026). `kind` holds
+    // the full path, so a project filter (substring) matches its real name.
+    let cwd = meta
+        .get("project_path")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let project = Path::new(cwd)
+        .file_name()
+        .map_or_else(|| label.clone(), |n| n.to_string_lossy().into_owned());
+    let kind = if cwd.is_empty() {
+        label
+    } else {
+        cwd.to_string()
+    };
     let mut full = Map::new();
     full.insert(
         "session_id".into(),
@@ -282,10 +330,39 @@ pub fn read_transcript(path: &Path, offset: i64) -> Result<Doc> {
         title,
         keys: String::new(),
         body: parts.join("\n\n"),
-        kind: project,
+        kind,
         meta: full,
         end: Some(end),
     })
+}
+
+/// Rows written before a session's project was its working directory: `kind`
+/// becomes the path and `project` its last part. Writes only when a row needs it,
+/// so an index already relabelled costs one read.
+fn relabel(store: &FtsStore) -> Result<()> {
+    let rows: Vec<(String, String)> = store
+        .db
+        .prepare(
+            "SELECT doc_id, json_extract(meta, '$.project_path') AS pp FROM docs \
+             WHERE coalesce(pp, '') != '' AND kind IS NOT pp",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let tx = store.db.unchecked_transaction()?;
+    for (doc_id, pp) in rows {
+        let name = Path::new(&pp)
+            .file_name()
+            .map_or_else(|| pp.clone(), |n| n.to_string_lossy().into_owned());
+        tx.execute(
+            "UPDATE docs SET kind = ?2, meta = json_set(meta, '$.project', ?3) WHERE doc_id = ?1",
+            rusqlite::params![doc_id, pp, name],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 /// A session under a folder holding one of these is never indexed.
@@ -351,6 +428,7 @@ impl SessionSearch {
                 .db
                 .execute_batch(&format!("PRAGMA user_version = {TITLES_CLEANED}"))?;
         }
+        relabel(&store)?;
         Ok(Self {
             store,
             projects_dir: root.join("projects"),
@@ -455,7 +533,10 @@ impl SessionSearch {
                 let pp = pp.as_str().map_or_else(|| pp.to_string(), str::to_string);
                 r.insert(
                     "resume".into(),
-                    json!(format!("cd {pp} && claude --resume {doc_id}")),
+                    json!(format!(
+                        "cd {} && claude --resume {doc_id}",
+                        shell_quote(&pp)
+                    )),
                 );
             }
             results.push(Value::Object(r));
