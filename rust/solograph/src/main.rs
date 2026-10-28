@@ -52,6 +52,8 @@ Usage:
   solograph scan [-p NAME]               merge new checkouts into the registry, then index
                                          every project; with -p, index just that one
   solograph registry                     merge new checkouts into the registry only
+  solograph registry --list [--scope F]  name|path per project, read-only; --scope F keeps
+                                         the names in F's `scope:` list (a .solograph.yaml)
   solograph sync-sessions [--claude-dir DIR]   read new and grown transcripts into the index
   solograph index-kb [--kb-path DIR]     sync the knowledge-base index now
   --db-path FILE                         the portfolio store for symbols/explain/deps/stats/
@@ -201,10 +203,22 @@ fn main() -> ExitCode {
             http::serve(port)
         }),
         Some("scan") => parsed().and_then(|a| scan(&a)),
-        Some("registry") => {
-            let path = registry::default_path();
-            registry::refresh(&path, None).map(|r| print_registry_report(&r, &path))
-        }
+        Some("registry") => parsed().and_then(|a| {
+            let path = a.path("registry").unwrap_or_else(registry::default_path);
+            if !a.on("list") {
+                return registry::refresh(&path, None).map(|r| print_registry_report(&r, &path));
+            }
+            let reg = registry::load(&path)?
+                .ok_or_else(|| anyhow::anyhow!("no registry at {}", path.display()))?;
+            let scope = a
+                .path("scope")
+                .map(|f| registry::load_scope(&f))
+                .transpose()?;
+            for line in registry::listing(&reg, scope.as_deref())? {
+                println!("{line}");
+            }
+            Ok(())
+        }),
         Some("sync-sessions") => parsed().and_then(|a| sync_sessions(&a)),
         Some("index-kb") => parsed().and_then(|a| index_kb(&a)),
         // Debugging aid, not in the usage text: stems of stdin words, one per line,

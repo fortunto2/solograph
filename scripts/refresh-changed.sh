@@ -34,11 +34,10 @@ CLI="$HOME/.solo/bin/solograph"
 REGISTRY="$HOME/.solo/registry.yaml"
 STAMP_DIR="$SOLOGRAPH/.refresh-stamps"
 LOG="$SOLOGRAPH/.refresh.log"
-# The project's own interpreter, never `python3` from PATH: launchd's PATH puts
-# Homebrew first, Homebrew moved python3 to 3.14 on 21 Aug without PyYAML, and
-# from that night every run died reading the registry and logged "done —
-# scanned 0, failed 0". 70 nights, zero projects scanned, nothing red.
-PY="$SOLOGRAPH/.venv/bin/python"
+# YAML is read by the binary, never by a Python: Homebrew moved python3 to 3.14
+# on 21 Aug without PyYAML and 70 nights scanned zero projects; on 28 Oct the
+# project venv was being rebuilt at 04:10 and the run failed. `registry --list`
+# parses with the same code the scan does.
 # Projects to leave out, space-separated. rust-code used to be skipped by
 # default — a deep graph scan of it took 27 minutes on 22 Aug — but a scan of
 # definitions only covers all 77 projects, rust-code included, in 38 seconds.
@@ -58,15 +57,13 @@ find_scope_file() {
 }
 
 SCOPE_FILE=$(find_scope_file)
+SCOPE_ARG=""
 if [ -n "${SOLOGRAPH_SCOPE:-}" ]; then
     [ "$SOLOGRAPH_SCOPE" = "all" ] && WANTED="" || WANTED="$SOLOGRAPH_SCOPE"
     SCOPE_SRC="SOLOGRAPH_SCOPE"
 elif [ -n "$SCOPE_FILE" ]; then
-    WANTED=$("$PY" -c "
-import yaml, pathlib, sys
-d = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text()) or {}
-print(' '.join(d.get('scope', [])))
-" "$SCOPE_FILE" 2>>"$LOG") || { say "FAILED reading scope $SCOPE_FILE"; exit 1; }
+    WANTED=""                  # the scope file narrows the listing below
+    SCOPE_ARG="$SCOPE_FILE"
     SCOPE_SRC="$SCOPE_FILE"
 else
     WANTED=""
@@ -92,12 +89,8 @@ fi
 
 # Read the registry before the loop, not in a process substitution: a crash
 # there is invisible to the loop, which just sees no lines and reports success.
-PROJECTS=$("$PY" -c "
-import yaml, pathlib
-d = yaml.safe_load(pathlib.Path('$REGISTRY').read_text())
-for p in d.get('projects', []):
-    print(f\"{p['name']}|{p['path']}\")
-" 2>>"$LOG") || { say "FAILED reading $REGISTRY"; exit 1; }
+PROJECTS=$("$CLI" registry --list --registry "$REGISTRY" ${SCOPE_ARG:+--scope "$SCOPE_ARG"} 2>>"$LOG") \
+    || { say "FAILED reading $REGISTRY${SCOPE_ARG:+ with scope $SCOPE_ARG}"; exit 1; }
 [ -n "$PROJECTS" ] || { say "FAILED: $REGISTRY lists no projects"; exit 1; }
 [ -n "$SKIP" ] && say "skipping: $SKIP (SOLOGRAPH_SKIP)"
 

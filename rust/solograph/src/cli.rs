@@ -31,6 +31,7 @@ const VALUED: &[(&str, &[&str])] = &[
     ("db-path", &["--db-path"]),
     ("registry", &["-r", "--registry"]),
     ("claude-dir", &["--claude-dir"]),
+    ("scope", &["--scope"]),
 ];
 /// Switches. `--deep` and `--incremental` are accepted and ignored: post-commit
 /// hooks installed in client repos still pass them.
@@ -39,6 +40,7 @@ const SWITCHES: &[(&str, &[&str])] = &[
     ("graph", &["--graph"]),
     ("deep", &["--deep"]),
     ("incremental", &["-i", "--incremental"]),
+    ("list", &["--list"]),
 ];
 
 pub struct Args {
@@ -77,6 +79,10 @@ impl Args {
 
     pub fn path(&self, name: &str) -> Option<PathBuf> {
         self.val(name).map(PathBuf::from)
+    }
+
+    pub fn on(&self, name: &str) -> bool {
+        self.switches.contains(name)
     }
 
     fn num(&self, name: &str, default: usize) -> Result<usize> {

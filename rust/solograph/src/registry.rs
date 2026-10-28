@@ -55,6 +55,40 @@ pub fn load(path: &Path) -> Result<Option<Registry>> {
     Ok(Some(serde_yaml::from_str(&std::fs::read_to_string(path)?)?))
 }
 
+#[derive(Deserialize, Default)]
+struct ScopeFile {
+    #[serde(default)]
+    scope: Vec<String>,
+}
+
+/// The `scope:` names of a `.solograph.yaml`: which repositories are one product.
+pub fn load_scope(path: &Path) -> Result<Vec<String>> {
+    let f: Option<ScopeFile> = serde_yaml::from_str(&std::fs::read_to_string(path)?)?;
+    Ok(f.unwrap_or_default().scope)
+}
+
+/// `name|path` per project, in registry order, for the nightly script. With a
+/// scope, only those names, and a name the registry lacks is an error: it used
+/// to be skipped in silence.
+pub fn listing(reg: &Registry, scope: Option<&[String]>) -> Result<Vec<String>> {
+    if let Some(names) = scope {
+        let missing: Vec<&str> = names
+            .iter()
+            .filter(|n| !reg.projects.iter().any(|p| &p.name == *n))
+            .map(String::as_str)
+            .collect();
+        if !missing.is_empty() {
+            anyhow::bail!("not in the registry: {}", missing.join(", "));
+        }
+    }
+    Ok(reg
+        .projects
+        .iter()
+        .filter(|p| scope.is_none_or(|names| names.contains(&p.name)))
+        .map(|p| format!("{}|{}", p.name, p.path))
+        .collect())
+}
+
 fn q(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
 }

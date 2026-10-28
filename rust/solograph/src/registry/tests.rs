@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{detect_stacks, load, refresh, resolve_scan_paths};
+use super::{detect_stacks, listing, load, load_scope, refresh, resolve_scan_paths};
 
 fn repo(path: &Path, files: &[(&str, &str)]) -> PathBuf {
     std::fs::create_dir_all(path.join(".git")).unwrap();
@@ -191,4 +191,39 @@ fn the_written_registry_quotes_dates_for_pyyaml() {
         text.lines().any(|l| l.starts_with("last_scan: \"20")),
         "{text}"
     );
+}
+
+/// The nightly script read the registry with the project's Python venv; on
+/// 28 Oct the venv was being rebuilt at 04:10 and the run failed. The binary
+/// that already parses the registry now answers the listing itself.
+#[test]
+fn listing_is_name_pipe_path_and_a_scope_narrows_it_loudly() {
+    let t = tempfile::tempdir().unwrap();
+    let reg = t.path().join("registry.yaml");
+    let (a, b) = (t.path().join("a"), t.path().join("b"));
+    python_registry(&reg, &[("alpha", &a), ("beta", &b)], "");
+    let r = load(&reg).unwrap().unwrap();
+
+    let all = listing(&r, None).unwrap();
+    assert_eq!(
+        all,
+        vec![
+            format!("alpha|{}", a.display()),
+            format!("beta|{}", b.display())
+        ]
+    );
+
+    let scope_file = t.path().join(".solograph.yaml");
+    std::fs::write(&scope_file, "# comment\nscope:\n  - beta   # why\n").unwrap();
+    let scope = load_scope(&scope_file).unwrap();
+    assert_eq!(
+        listing(&r, Some(&scope)).unwrap(),
+        vec![format!("beta|{}", b.display())]
+    );
+
+    // A name only on disk used to be skipped in silence ("Project not found").
+    let err = listing(&r, Some(&["gamma".to_string()]))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("gamma"), "{err}");
 }
