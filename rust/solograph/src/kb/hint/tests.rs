@@ -266,3 +266,72 @@ fn no_stacks_in_the_config_means_no_stack_hint() {
     .text;
     assert_eq!(out, "");
 }
+
+/// Stack templates the way they really differ: one large, mentioning everything
+/// in passing, and small focused ones.
+fn stack_fixture() -> Fixture {
+    let f = Fixture::new();
+    let filler: String = (0..300).map(|i| format!("word{i} ")).collect();
+    f.write(
+        "1-methodology/stacks/rust-native.yaml",
+        &format!("name: Rust Native\nnotes: ffi for ios and swiftui apps, python bindings, cli tools\n{filler}\n"),
+    );
+    f.write(
+        "1-methodology/stacks/ios-swift.yaml",
+        "name: iOS Swift\nframework: SwiftUI\nplatform: ios iphone app\n",
+    );
+    f.write(
+        "1-methodology/stacks/python-api.yaml",
+        "name: Python API\nframework: FastAPI\nauth: token expiry\n",
+    );
+    f
+}
+
+#[test]
+fn the_focused_stack_beats_the_large_one_that_mentions_everything() {
+    // Review 28 Oct: an unnormalised idf sum sent this to rust-native.yaml.
+    let mut f = stack_fixture();
+    let out = f.hint("which stack for an ios app with swiftui", "k1");
+    assert!(out.contains("ios-swift.yaml"), "{out}");
+}
+
+#[test]
+fn a_stack_trace_or_an_expiring_token_is_not_a_stack_question() {
+    let mut f = stack_fixture();
+    for (i, p) in [
+        "here is the python stack trace from the failing test",
+        "the call stack overflows in the parser again",
+        "токен истекает через час и python api падает",
+        "стекло на экране треснуло, python app",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let out = f.hint(p, &format!("k2-{i}"));
+        assert!(!out.contains("Stack:"), "{p} -> {out}");
+    }
+}
+
+#[test]
+fn a_russian_stack_question_in_any_case_form_is_one() {
+    let mut f = stack_fixture();
+    let out = f.hint("какой стек выбрать для ios приложения на swiftui", "k3");
+    assert!(out.contains("ios-swift.yaml"), "{out}");
+    let out = f.hint("подскажи по стеку для python api с fastapi", "k4");
+    assert!(out.contains("python-api.yaml"), "{out}");
+}
+
+#[test]
+fn two_letter_words_tell_stacks_apart() {
+    // "ml" and "ai" were dropped as too short, so "Python ML/AI" looked shorter
+    // than "Python API" and won every python question, or lost this one.
+    let mut f = stack_fixture();
+    f.write(
+        "1-methodology/stacks/python-ml.yaml",
+        "name: Python ML/AI\nframework: training loops, api for inference\n",
+    );
+    let out = f.hint("стек для python ml модели", "k5");
+    assert!(out.contains("python-ml.yaml"), "{out}");
+    let out = f.hint("which stack for a python api with fastapi", "k6");
+    assert!(out.contains("python-api.yaml"), "{out}");
+}

@@ -13,7 +13,7 @@
 //! search uses ("лайа" → laya). Until Oct 2026 this was scripts/wiki_hint.py with
 //! its own FTS index and its own hardcoded alias dict.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -32,12 +32,33 @@ const STOP: &[&str] = &[
     "get", "got", "has", "have", "had", "will", "would", "should", "could", "just", "also", "more",
     "most", "some", "only", "than", "then", "them", "they", "there", "their", "our", "its",
 ];
-const STACK_WORDS: [&str; 2] = ["стек", "stack"];
 const HEADER: &str =
     "The wiki has measured notes on this — read before answering or searching the web:";
 
 static TOKEN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[a-z][a-z0-9+#.\-]{2,}").expect("static regex"));
+/// "stack" and "стек" as words, in any Russian case; not "стекло" or "истекает".
+static STACK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\bstacks?\b|\bстек(?:а|е|у|ом|и|ов|ам|ами|ах)?\b").expect("static regex")
+});
+/// Two-letter words that say nothing about a stack.
+const SHORT_STOP: &[&str] = &[
+    "an", "in", "on", "to", "of", "is", "it", "be", "or", "as", "at", "by", "we", "me", "my", "do",
+    "if", "so", "up", "no", "us",
+];
+/// Words for matching stack templates: two letters count here ("ml", "ai", "go").
+static STACK_WORD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[a-z][a-z0-9+#.\-]+").expect("static regex"));
+/// The same word meaning something else: a trace, a frame, an overflow.
+static NOT_STACK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\bcall\s+stack|\bstack\s*(?:trace|frame|overflow)").expect("static regex")
+});
+
+/// Whether a prompt asks which stack to use (review, 28 Oct 2026: a substring
+/// check sent "stack trace" and "токен истекает" to a stack template).
+fn asks_for_a_stack(text: &str) -> bool {
+    STACK.is_match(text) && !NOT_STACK.is_match(text)
+}
 
 /// Where per-session "already pointed at" lists live.
 pub fn state_dir() -> PathBuf {
@@ -161,51 +182,107 @@ impl KnowledgeBase {
     }
 }
 
-/// "Which stack for X?": the stack template sharing the most (and rarest) of the
-/// prompt's words; rarity in the wiki does not apply.
-fn stack(dir: &Path, toks: &[String]) -> Option<Candidate> {
-    let mut files: Vec<(PathBuf, String, HashSet<String>)> = std::fs::read_dir(dir)
+/// "Which stack for X?": the template BM25 ranks first for the prompt's words,
+/// over two fields scored separately, its name (with the file name) and its text,
+/// as the Python hint's FTS5 columns were. The port's unnormalised idf sum always
+/// chose the largest template (review, 28 Oct 2026).
+fn stack(dir: &Path, prompt: &str) -> Option<Candidate> {
+    let mut toks: Vec<String> = Vec::new();
+    for m in STACK_WORD.find_iter(&prompt.to_lowercase()) {
+        let t = m
+            .as_str()
+            .trim_matches(|c| c == '.' || c == '-')
+            .to_string();
+        if !STOP.contains(&t.as_str()) && !SHORT_STOP.contains(&t.as_str()) && !toks.contains(&t) {
+            toks.push(t);
+        }
+    }
+    #[derive(Default)]
+    struct Field {
+        tf: HashMap<String, f64>,
+        len: f64,
+    }
+    impl Field {
+        fn of(text: &str) -> Self {
+            let low = text.to_lowercase();
+            let mut f = Self::default();
+            for m in STACK_WORD.find_iter(&low) {
+                let t = m.as_str().trim_matches(|c| c == '.' || c == '-');
+                *f.tf.entry(t.to_string()).or_default() += 1.0;
+            }
+            // Length in every word, short ones too: counting only the matchable
+            // ones made "Python ML/AI" look shorter than "Python API" and win.
+            f.len = low
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| !w.is_empty())
+                .count() as f64;
+            f
+        }
+    }
+    struct Template {
+        path: PathBuf,
+        name: String,
+        fields: [Field; 2],
+    }
+    let mut docs: Vec<Template> = std::fs::read_dir(dir)
         .ok()?
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
         .filter_map(|p| {
             let text = std::fs::read_to_string(&p).ok()?;
-            let words = tokens(&text.to_lowercase()).into_iter().collect();
+            let stem = p
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
             let name = text
                 .lines()
                 .find_map(|l| l.strip_prefix("name:"))
-                .map_or_else(
-                    || {
-                        p.file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned()
-                    },
-                    |n| n.trim().to_string(),
-                );
-            Some((p, name, words))
+                .map_or_else(|| stem.clone(), |n| n.trim().to_string());
+            let title = Field::of(&format!("{name} {}", stem.replace('-', " ")));
+            Some(Template {
+                path: p,
+                name,
+                fields: [title, Field::of(&text)],
+            })
         })
         .collect();
-    files.sort_by(|a, b| a.0.cmp(&b.0));
-    let n = files.len() as f64;
-    let score = |words: &HashSet<String>| -> f64 {
+    docs.sort_by(|a, b| a.path.cmp(&b.path));
+    let n = docs.len() as f64;
+    let avg: Vec<f64> = (0..2)
+        .map(|i| docs.iter().map(|d| d.fields[i].len).sum::<f64>() / n.max(1.0))
+        .collect();
+    let (k1, b) = (1.2, 0.75);
+    let score = |d: &Template| -> f64 {
         toks.iter()
-            .filter(|t| words.contains(*t))
             .map(|t| {
-                let df = files.iter().filter(|f| f.2.contains(t)).count() as f64;
-                ((n + 1.0) / (df + 0.5)).ln()
+                let df = docs
+                    .iter()
+                    .filter(|x| x.fields.iter().any(|f| f.tf.contains_key(t)))
+                    .count() as f64;
+                let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
+                let per_field: f64 = d
+                    .fields
+                    .iter()
+                    .zip(&avg)
+                    .filter_map(|(f, avg)| {
+                        let tf = *f.tf.get(t)?;
+                        Some(tf * (k1 + 1.0) / (tf + k1 * (1.0 - b + b * f.len / avg)))
+                    })
+                    .sum();
+                idf * per_field
             })
             .sum()
     };
-    let best = files
+    let best = docs
         .iter()
-        .map(|f| (score(&f.2), f))
+        .map(|d| (score(d), d))
         .filter(|(s, _)| *s > 0.0)
-        .max_by(|a, b| a.0.total_cmp(&b.0).then_with(|| b.1.0.cmp(&a.1.0)))?;
+        .max_by(|a, b| a.0.total_cmp(&b.0).then_with(|| b.1.path.cmp(&a.1.path)))?;
     Some(Candidate {
-        path: best.1.0.to_string_lossy().into_owned(),
-        title: format!("Stack: {}", best.1.1),
+        path: best.1.path.to_string_lossy().into_owned(),
+        title: format!("Stack: {}", best.1.name),
         line: String::new(),
     })
 }
@@ -261,9 +338,9 @@ pub fn hint(kb: &mut KnowledgeBase, prompt: &str, session: &str, state: &Path) -
         .unwrap_or_default();
     let abs = |rel: &str| kb.root.join(rel).to_string_lossy().into_owned();
     let mut picked: Vec<Candidate> = Vec::new();
-    if STACK_WORDS.iter().any(|w| text.contains(w))
+    if asks_for_a_stack(&text)
         && let Some(dir) = kb.config.stacks.as_ref().map(|s| kb.root.join(s))
-        && let Some(c) = stack(&dir, &toks)
+        && let Some(c) = stack(&dir, &text)
         && !seen.contains(&c.path)
     {
         picked.push(c);
