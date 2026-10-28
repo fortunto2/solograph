@@ -63,6 +63,11 @@ impl Args {
         };
         let mut it = raw.iter();
         while let Some(arg) = it.next() {
+            // Everything after `--` is the query, so it may start with a dash.
+            if arg == "--" {
+                a.pos.extend(it.by_ref().cloned());
+                break;
+            }
             if let Some((name, _)) = VALUED.iter().find(|(_, s)| s.contains(&arg.as_str())) {
                 let v = it.next().with_context(|| format!("{arg} needs a value"))?;
                 a.vals.insert(name, v.clone());
@@ -763,4 +768,19 @@ fn print_related(video: &str, rows: &[Value]) {
 /// The path a subcommand points the portfolio at, for commands in main.rs.
 pub fn db_path(a: &Args) -> Option<&Path> {
     a.vals.get("db-path").map(Path::new)
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::Args;
+
+    #[test]
+    fn after_a_double_dash_everything_is_the_query() {
+        let raw: Vec<String> = ["-n", "3", "--", "-agent", "--memory"]
+            .map(String::from)
+            .to_vec();
+        let a = Args::parse(&raw).unwrap();
+        assert_eq!(a.pos, ["-agent", "--memory"]);
+        assert_eq!(a.val("limit"), Some("3"));
+    }
 }

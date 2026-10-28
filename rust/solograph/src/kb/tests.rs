@@ -260,3 +260,41 @@ fn a_repeated_frontmatter_key_keeps_the_last_value_not_nothing() {
     assert_eq!(meta["tags"], serde_json::json!(["a", "b"]));
     assert_eq!(body, "Body");
 }
+
+#[test]
+fn an_unscoped_search_keeps_a_lane_for_the_wiki() {
+    // A Russian question for an English wiki page: across the whole KB, Russian
+    // notes outside the wiki matched first and the page fell out of the top 5
+    // (6 of 22 found; 20 of 22 with --pages).
+    let t = tempfile::tempdir().unwrap();
+    let root = kb_root(t.path());
+    std::fs::write(root.join("wiki/_aliases.yaml"), "- [песочница, sandbox]\n").unwrap();
+    std::fs::write(
+        root.join("wiki/agent-sandboxing.md"),
+        "---\ntitle: Agent sandboxing\n---\nRun the agent in a sandbox on a Mac.",
+    )
+    .unwrap();
+    for i in 0..8 {
+        std::fs::write(
+            root.join(format!("notes-{i}.md")),
+            format!("# Заметка {i}\n\nпесочница для агента, песочница на маке, агент в песочнице"),
+        )
+        .unwrap();
+    }
+    let mut k = KnowledgeBase::open(&root, Some(&t.path().join("db"))).unwrap();
+    let files: Vec<String> = k
+        .search("песочница для агента на маке", 5, None, false, None)
+        .unwrap()
+        .iter()
+        .map(|h| h["file"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        files.contains(&"wiki/agent-sandboxing.md".to_string()),
+        "{files:?}"
+    );
+    let notes = files.iter().filter(|f| f.starts_with("notes-")).count();
+    assert!(
+        notes >= 3,
+        "the notes outside the wiki keep their places: {files:?}"
+    );
+}

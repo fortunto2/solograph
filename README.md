@@ -110,7 +110,7 @@ kb:
   exclude: [archive, clients/acme]   # a bare name anywhere, a path from the root
 ```
 
-`kb-graph`, `kb-hint` and `kb --pages` scope to `pages`; a typo in the section is an
+A search with no `path` takes two lanes in turn, the whole KB and the wiki, so a Russian question still reaches an English wiki page past Russian notes elsewhere (6 → 16 of 22 in the top 5; 40 questions about notes outside the wiki: same at #1, 34 → 33 in the top 5). `kb-graph`, `kb-hint` and `kb --pages` scope to `pages`; a typo in the section is an
 error, not a silent default. The same file's `scope:` key is the portfolio scan's.
 
 - **Fields.** Title; then index_line, description, tags and the file name; then the body.

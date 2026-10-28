@@ -328,6 +328,27 @@ pub struct KnowledgeBase {
     aliases: Option<(PathBuf, SystemTime, Aliases)>,
 }
 
+/// a[0], b[0], a[1], b[1], …, each document once, n at most.
+fn interleave(
+    a: Vec<Map<String, Value>>,
+    b: Vec<Map<String, Value>>,
+    n: usize,
+) -> Vec<Map<String, Value>> {
+    let mut out: Vec<Map<String, Value>> = Vec::new();
+    let (mut a, mut b) = (a.into_iter(), b.into_iter());
+    loop {
+        let (x, y) = (a.next(), b.next());
+        if x.is_none() && y.is_none() {
+            return out;
+        }
+        for h in [x, y].into_iter().flatten() {
+            if out.len() < n && !out.iter().any(|o| o["doc_id"] == h["doc_id"]) {
+                out.push(h);
+            }
+        }
+    }
+}
+
 fn config_stamp(root: &Path) -> Option<SystemTime> {
     std::fs::metadata(root.join(config::FILE))
         .and_then(|m| m.modified())
@@ -408,9 +429,20 @@ impl KnowledgeBase {
         let path = path.map(prefix);
         let path = path.as_deref();
         let expr = self.expression(query);
-        let mut results: Vec<Value> = self
-            .store
-            .search_scoped(&expr, n, doc_type, path)?
+        let wiki = &self.config.pages;
+        let hits = if path.is_none() && !wiki.is_empty() && self.root.join(wiki).is_dir() {
+            // Two lanes, taken in turn from the whole KB first. A Russian question for
+            // an English wiki page lost to Russian notes elsewhere: 6 of 22 in the top
+            // 5, against 20 with the wiki alone. Interleaved: 16 of 22 (14 of 22 on a
+            // held-out set), with 40 questions about notes outside the wiki unchanged
+            // at #1 and one fewer in the top 5 (28 Oct 2026).
+            let whole = self.store.search_scoped(&expr, n, doc_type, None)?;
+            let pages = self.store.search_scoped(&expr, n, doc_type, Some(wiki))?;
+            interleave(whole, pages, n)
+        } else {
+            self.store.search_scoped(&expr, n, doc_type, path)?
+        };
+        let mut results: Vec<Value> = hits
             .into_iter()
             .map(|h| {
                 json!({
