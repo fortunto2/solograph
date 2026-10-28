@@ -78,12 +78,11 @@ fn same(a: &str, b: &str) -> bool {
 }
 
 impl Aliases {
-    /// The alias file of a KB root, `wiki/_aliases.yaml`, with its mtime, so a
-    /// caller can reload on change.
-    pub fn locate(root: &Path) -> Option<(PathBuf, SystemTime)> {
-        let p = root.join("wiki").join("_aliases.yaml");
-        let t = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?;
-        Some((p, t))
+    /// The alias file with its mtime, so a caller can reload on change; None when
+    /// the KB has none.
+    pub fn locate(file: PathBuf) -> Option<(PathBuf, SystemTime)> {
+        let t = std::fs::metadata(&file).and_then(|m| m.modified()).ok()?;
+        Some((file, t))
     }
 
     pub fn load(path: &Path) -> Result<Self> {

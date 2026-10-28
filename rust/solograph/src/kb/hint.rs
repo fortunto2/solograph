@@ -35,9 +35,6 @@ const STOP: &[&str] = &[
 const STACK_WORDS: [&str; 2] = ["стек", "stack"];
 const HEADER: &str =
     "The wiki has measured notes on this — read before answering or searching the web:";
-/// Top-level wiki pages, not the catalog or tooling: `graph::is_meta` in SQL.
-const WIKI: &str = "d.gone = 0 AND d.doc_id GLOB 'wiki/*' AND d.doc_id NOT GLOB 'wiki/*/*' \
-                    AND d.doc_id NOT GLOB 'wiki/_*' AND d.doc_id != 'wiki/index.md'";
 
 static TOKEN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[a-z][a-z0-9+#.\-]{2,}").expect("static regex"));
@@ -68,24 +65,28 @@ struct Candidate {
     line: String,
 }
 
+/// Rows under the wiki folder; which of them are pages is `Config::is_page`.
+const UNDER: &str = "d.gone = 0 AND substr(d.doc_id, 1, length(?2)) = ?2";
+
 impl KnowledgeBase {
+    /// Wiki pages holding every word of `expr`; every wiki page without one.
     fn wiki_count(&self, expr: Option<&str>) -> usize {
-        let r = match expr {
-            None => self.store.db.query_row(
-                &format!("SELECT count(*) FROM docs d WHERE {WIKI}"),
-                [],
-                |r| r.get::<_, i64>(0),
-            ),
-            Some(e) => self.store.db.query_row(
-                &format!(
-                    "SELECT count(*) FROM fts JOIN docs d ON d.id = fts.rowid \
-                     WHERE fts MATCH ?1 AND {WIKI}"
-                ),
-                [e],
-                |r| r.get::<_, i64>(0),
+        let sql = match expr {
+            // No ?1 here; binding it anyway is fine, SQLite counts up to the largest index.
+            None => format!("SELECT d.doc_id FROM docs d WHERE {UNDER}"),
+            Some(_) => format!(
+                "SELECT d.doc_id FROM fts JOIN docs d ON d.id = fts.rowid \
+                 WHERE fts MATCH ?1 AND {UNDER}"
             ),
         };
-        r.map_or(0, |n| n as usize)
+        let ids = self.store.db.prepare(&sql).and_then(|mut s| {
+            s.query_map(params![expr, self.config.pages], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        });
+        ids.unwrap_or_default()
+            .iter()
+            .filter(|id| self.config.is_page(id))
+            .count()
     }
 
     /// Rare words (few pages: they name one) and topical ones (up to a fifth of the
@@ -114,11 +115,11 @@ impl KnowledgeBase {
             .join(" OR ");
         let mut stmt = self.store.db.prepare(&format!(
             "SELECT d.id, d.doc_id, fts.title, fts.keys FROM fts JOIN docs d ON d.id = fts.rowid \
-             WHERE fts MATCH ?1 AND {WIKI} ORDER BY {} LIMIT 5",
+             WHERE fts MATCH ?1 AND {UNDER} ORDER BY {} LIMIT 20",
             self.store.layout.bm25()
         ))?;
-        let rows = stmt
-            .query_map([q], |r| {
+        let rows: Vec<(i64, Candidate)> = stmt
+            .query_map(params![q, self.config.pages], |r| {
                 let keys: String = r.get(3)?;
                 Ok((
                     r.get(0)?,
@@ -130,7 +131,11 @@ impl KnowledgeBase {
                 ))
             })?
             .collect::<rusqlite::Result<_>>()?;
-        Ok(rows)
+        Ok(rows
+            .into_iter()
+            .filter(|(_, c)| self.config.is_page(&c.path))
+            .take(5)
+            .collect())
     }
 
     /// A page found by a rare word must also hold half the topical words, or
@@ -158,9 +163,8 @@ impl KnowledgeBase {
 
 /// "Which stack for X?": the stack template sharing the most (and rarest) of the
 /// prompt's words; rarity in the wiki does not apply.
-fn stack(root: &Path, toks: &[String]) -> Option<Candidate> {
-    let dir = root.join("1-methodology").join("stacks");
-    let mut files: Vec<(PathBuf, String, HashSet<String>)> = std::fs::read_dir(&dir)
+fn stack(dir: &Path, toks: &[String]) -> Option<Candidate> {
+    let mut files: Vec<(PathBuf, String, HashSet<String>)> = std::fs::read_dir(dir)
         .ok()?
         .flatten()
         .map(|e| e.path())
@@ -227,7 +231,8 @@ pub fn hint(kb: &mut KnowledgeBase, prompt: &str, session: &str, state: &Path) -
     if p.starts_with('/') || p.starts_with('<') || p.split_whitespace().count() < MIN_WORDS {
         return Ok(silent);
     }
-    if !kb.root.join("wiki").is_dir() {
+    let pages = kb.config.pages.clone();
+    if !kb.root.join(&pages).is_dir() {
         return Ok(silent);
     }
     let low = p.to_lowercase();
@@ -241,7 +246,7 @@ pub fn hint(kb: &mut KnowledgeBase, prompt: &str, session: &str, state: &Path) -
     if toks.is_empty() {
         return Ok(silent);
     }
-    kb.sync_under(Some("wiki/"))?;
+    kb.sync_under(Some(&pages))?;
     let sf = seen_file(state, session);
     let seen: HashSet<String> = std::fs::read_to_string(&sf)
         .ok()
@@ -250,7 +255,8 @@ pub fn hint(kb: &mut KnowledgeBase, prompt: &str, session: &str, state: &Path) -
     let abs = |rel: &str| kb.root.join(rel).to_string_lossy().into_owned();
     let mut picked: Vec<Candidate> = Vec::new();
     if STACK_WORDS.iter().any(|w| text.contains(w))
-        && let Some(c) = stack(&kb.root, &toks)
+        && let Some(dir) = kb.config.stacks.as_ref().map(|s| kb.root.join(s))
+        && let Some(c) = stack(&dir, &toks)
         && !seen.contains(&c.path)
     {
         picked.push(c);

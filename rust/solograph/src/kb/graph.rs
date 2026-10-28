@@ -27,6 +27,8 @@ pub struct Graph {
     pub edges: BTreeSet<(String, String)>,
     /// (from, slug) that resolve to no page.
     pub broken: Vec<(String, String)>,
+    /// The wiki folder (`Config::pages`): a slug is a page there first.
+    wiki: String,
 }
 
 /// The catalog (`index.md`) links to every page and `_*.md` files are tooling: as
@@ -46,7 +48,7 @@ fn dir(id: &str) -> &str {
 }
 
 impl Graph {
-    pub fn build(pages: BTreeMap<String, Page>) -> Self {
+    pub fn build(pages: BTreeMap<String, Page>, wiki: &str) -> Self {
         let mut by_stem: HashMap<String, Vec<&str>> = HashMap::new();
         for id in pages.keys() {
             by_stem
@@ -55,9 +57,9 @@ impl Graph {
                 .push(id.as_str());
         }
         let resolve = |slug: &str, from: &str| -> Option<String> {
-            let wiki = format!("wiki/{slug}.md");
-            if pages.contains_key(&wiki) {
-                return Some(wiki);
+            let in_wiki = format!("{wiki}{slug}.md");
+            if pages.contains_key(&in_wiki) {
+                return Some(in_wiki);
             }
             let hits = by_stem.get(slug)?;
             match hits.as_slice() {
@@ -85,6 +87,7 @@ impl Graph {
             pages,
             edges,
             broken,
+            wiki: wiki.to_string(),
         }
     }
 
@@ -250,7 +253,7 @@ impl Graph {
         } else {
             self.pages
                 .keys()
-                .find(|id| stem(id).eq_ignore_ascii_case(slug) && id.starts_with("wiki/"))
+                .find(|id| stem(id).eq_ignore_ascii_case(slug) && id.starts_with(&self.wiki))
                 .or_else(|| {
                     self.pages
                         .keys()
@@ -321,7 +324,7 @@ impl KnowledgeBase {
                 },
             );
         }
-        Ok(Graph::build(pages))
+        Ok(Graph::build(pages, &self.config.pages))
     }
 }
 

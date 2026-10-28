@@ -44,6 +44,7 @@ const SWITCHES: &[(&str, &[&str])] = &[
     ("list", &["--list"]),
     ("hook", &["--hook"]),
     ("check", &["--check"]),
+    ("pages", &["--pages"]),
 ];
 
 pub struct Args {
@@ -376,12 +377,18 @@ fn kb_open(a: &Args) -> Result<KnowledgeBase> {
 
 fn kb(a: &Args) -> Result<()> {
     a.arg(0, "query")?;
-    let hits = kb_open(a)?.search(
+    let mut kb = kb_open(a)?;
+    // --pages: the KB's wiki folder, so a caller need not know where it is.
+    let path = match a.val("path") {
+        Some(p) => Some(p.to_string()),
+        None => a.on("pages").then(|| kb.config.pages.clone()),
+    };
+    let hits = kb.search(
         &a.pos.join(" "),
         a.num("limit", 5)?,
         a.val("type"),
         a.on("graph"),
-        a.val("path"),
+        path.as_deref(),
     )?;
     if a.json() {
         println!("{}", pretty(&Value::Array(hits)));
@@ -405,8 +412,13 @@ fn kb(a: &Args) -> Result<()> {
 /// The wikilink graph. Plain output keeps the markers the wiki's pre-commit hooks
 /// grep for: `[orphan]`, `[broken]`, `[missing]`.
 fn kb_graph(a: &Args) -> Result<()> {
-    let g = kb_open(a)?.graph()?;
-    let r = g.report(a.val("path"), a.val("page"), a.num("limit", 15)?);
+    let mut kb = kb_open(a)?;
+    // The wiki by default; --path "" for the whole KB.
+    let scope = a
+        .val("path")
+        .map_or_else(|| kb.config.pages.clone(), String::from);
+    let g = kb.graph()?;
+    let r = g.report(Some(&scope), a.val("page"), a.num("limit", 15)?);
     if a.on("check") {
         return graph_check(&r);
     }
@@ -524,7 +536,7 @@ fn hook_payload() -> Result<(String, String)> {
 
 fn hint_text(a: &Args, prompt: &str, session: &str) -> Result<String> {
     let root = crate::kb::root_or_cwd(a.path("kb-path"));
-    if !root.join("wiki").is_dir() {
+    if !root.join(crate::kb::Config::load(&root)?.pages).is_dir() {
         return Ok(String::new());
     }
     let mut kb = KnowledgeBase::open(&root, None)?;

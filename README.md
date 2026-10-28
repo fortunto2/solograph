@@ -61,6 +61,18 @@ It replaced three things that read the same markdown separately: a Python FTS in
 JSON link graph only as fresh as the last script run (it sat at 36 nodes for eight months
 while the wiki passed 160 pages), and the hint's own index.
 
+The engine knows no KB's layout. A KB states it in `.solograph.yaml` at its root:
+
+```yaml
+kb:
+  pages: wiki/                  # the wiki: [[links]], index.md, _aliases.yaml (default wiki/)
+  stacks: 1-methodology/stacks  # YAML templates for "which stack for X?" hints (default none)
+  exclude: [archive, clients/acme]   # a bare name anywhere, a path from the root
+```
+
+`kb-graph`, `kb-hint` and `kb --pages` scope to `pages`; a typo in the section is an
+error, not a silent default. The same file's `scope:` key is the portfolio scan's.
+
 - **Fields.** Title; then index_line, description, tags and the file name; then the body.
   BM25 weights 2/2/1, measured on a 75-query known-answer set: top-1 29→31/40 on body
   words, 18→22/25 on summary words, against the old title-plus-body index.

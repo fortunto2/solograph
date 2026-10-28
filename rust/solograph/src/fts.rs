@@ -25,14 +25,41 @@ CREATE TABLE IF NOT EXISTS docs(
 );
 ";
 
-/// Which text columns the FTS table has and how BM25 weighs them; the last column
-/// is the body, where snippets come from. `version` 0 is the shared on-disk schema
+/// An FTS column, filled from the document field of the same name. An enum, not a
+/// string: a misspelt column name used to index the body without a word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Column {
+    Title,
+    Keys,
+    Body,
+}
+
+impl Column {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::Keys => "keys",
+            Self::Body => "body",
+        }
+    }
+
+    fn text(self, d: &Doc) -> &str {
+        match self {
+            Self::Title => &d.title,
+            Self::Keys => &d.keys,
+            Self::Body => &d.body,
+        }
+    }
+}
+
+/// Which text columns the FTS table has and how BM25 weighs them; snippets come
+/// from the body. `version` 0 is the shared on-disk schema
 /// Python also writes (sessions, sources) and is never dropped. A layout with a
 /// version of its own owns its file outright: a mismatch drops the tables, and the
 /// next sync re-reads the corpus from disk.
 #[derive(Debug, Clone)]
 pub struct Layout {
-    pub columns: &'static [&'static str],
+    pub columns: &'static [Column],
     pub weights: Vec<f64>,
     pub version: i64,
 }
@@ -43,12 +70,17 @@ impl Layout {
         let w: Vec<String> = self.weights.iter().map(f64::to_string).collect();
         format!("bm25(fts, {})", w.join(", "))
     }
+
+    fn names(&self) -> String {
+        let n: Vec<&str> = self.columns.iter().map(|c| c.name()).collect();
+        n.join(", ")
+    }
 }
 
 impl Default for Layout {
     fn default() -> Self {
         Self {
-            columns: &["title", "body"],
+            columns: &[Column::Title, Column::Body],
             weights: vec![3.0, 1.0],
             version: 0,
         }
@@ -135,7 +167,7 @@ impl FtsStore {
         db.execute_batch(DOCS)?;
         db.execute_batch(&format!(
             "CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5({}, tokenize='unicode61 remove_diacritics 2');",
-            layout.columns.join(", ")
+            layout.names()
         ))?;
         Ok(Self {
             path: path.to_path_buf(),
@@ -145,22 +177,19 @@ impl FtsStore {
     }
 
     /// The FTS row for a document, in the layout's column order.
-    fn insert_fts(db: &Connection, columns: &[&str], rowid: i64, d: &Doc) -> Result<()> {
-        let values: Vec<String> = columns
-            .iter()
-            .map(|c| match *c {
-                "title" => fold(&d.title),
-                "keys" => fold(&d.keys),
-                _ => fold(&d.body),
-            })
-            .collect();
+    fn insert_fts(db: &Connection, columns: &[Column], rowid: i64, d: &Doc) -> Result<()> {
+        let values: Vec<String> = columns.iter().map(|c| fold(c.text(d))).collect();
         let marks = vec!["?"; columns.len()].join(", ");
         let mut args: Vec<&dyn rusqlite::ToSql> = vec![&rowid];
         args.extend(values.iter().map(|v| v as &dyn rusqlite::ToSql));
         db.execute(
             &format!(
                 "INSERT INTO fts(rowid, {}) VALUES (?, {marks})",
-                columns.join(", ")
+                columns
+                    .iter()
+                    .map(|c| c.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             args.as_slice(),
         )?;
@@ -170,7 +199,7 @@ impl FtsStore {
     /// Insert or replace one document; `None` records the file as seen but empty.
     pub fn put(
         db: &Connection,
-        columns: &[&str],
+        columns: &[Column],
         doc_id: &str,
         doc: Option<&Doc>,
         mtime: Option<f64>,
@@ -473,7 +502,11 @@ impl FtsStore {
             let mut stmt = self.db.prepare(&format!(
                 "SELECT rowid, snippet(fts, {}, '«', '»', '…', 24) FROM fts \
                  WHERE fts MATCH ?1 AND rowid IN ({})",
-                self.layout.columns.len() - 1,
+                self.layout
+                    .columns
+                    .iter()
+                    .position(|c| *c == Column::Body)
+                    .unwrap_or(self.layout.columns.len() - 1),
                 small.join(",")
             ))?;
             for row in stmt.query_map([expr], |r| {

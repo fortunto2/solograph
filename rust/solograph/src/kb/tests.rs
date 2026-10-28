@@ -36,7 +36,7 @@ fn hidden_directories_are_not_the_knowledge_base() {
     let t = tempfile::tempdir().unwrap();
     let root = kb_root(t.path());
     let mut found = Vec::new();
-    walk(&root, &root, &mut found);
+    walk(&root, &root, &super::Config::default(), &mut found);
     let mut names: Vec<String> = found.into_iter().map(|(k, _)| k).collect();
     names.sort();
     assert_eq!(names, ["wiki/solograph.md", "wiki/visa.md"]);

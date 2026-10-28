@@ -36,10 +36,12 @@ Usage:
 
   solograph symbols QUERY [-p P] [-k KIND] [-n N]   where something is defined, every project
   solograph sessions QUERY [-p P] [-n N]            past Claude Code sessions, full text
-  solograph kb QUERY [--path P] [--type T] [--graph] [-n N]   the knowledge base: --kb-path,
-                                          else KB_PATH, else the current dir; --path wiki/
-                                          limits it to files under that prefix
-  solograph kb-graph [--path P] [--page SLUG] [-n N]   [[wikilink]] graph: hubs, connectors,
+  solograph kb QUERY [--path P | --pages] [--type T] [--graph] [-n N]   the knowledge base:
+                                          --kb-path, else KB_PATH, else the current dir;
+                                          --path limits it to files under a prefix, --pages
+                                          to the wiki (kb.pages in .solograph.yaml, wiki/)
+  solograph kb-graph [--path P] [--page SLUG] [-n N]   [[wikilink]] graph of the wiki, or of
+                                          --path P (an empty P: the whole KB): hubs, connectors,
                                           orphans, broken links, pages missing from index.md;
                                           --check prints only those and fails when there are any
   solograph kb-hint PROMPT [--session ID]   the wiki page a prompt is specifically about,

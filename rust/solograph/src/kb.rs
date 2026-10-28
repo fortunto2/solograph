@@ -14,12 +14,15 @@ use regex::Regex;
 use serde_json::{Map, Value, json};
 
 use crate::aliases::Aliases;
-use crate::fts::{Doc, FtsStore, Layout, SyncReport};
+use crate::fts::{Column, Doc, FtsStore, Layout, SyncReport};
 use crate::paths::env_path;
 use crate::yamlval::{python_str, to_json};
 
+pub mod config;
 pub mod graph;
 pub mod hint;
+
+pub use config::Config;
 
 /// Its own file: the three-column layout is not the two-column `search.db` that
 /// solograph wrote there until Oct 2026, which binaries still running keep reading.
@@ -31,14 +34,8 @@ const LAYOUT_VERSION: i64 = 1;
 /// with SOLOGRAPH_KB_WEIGHTS=t,k,b to re-measure.
 const WEIGHTS: [f64; 3] = [2.0, 2.0, 1.0];
 
-const SKIP_DIRS: [&str; 6] = [
-    "node_modules",
-    "__pycache__",
-    "archive",
-    "blog",
-    "invoices",
-    "solo-factory",
-];
+/// Never knowledge, in any KB; what else to leave out is the KB's own `exclude`.
+const SKIP_DIRS: [&str; 2] = ["node_modules", "__pycache__"];
 const SKIP_FILES: [&str; 2] = ["README.md", "INDEX.md"];
 
 pub fn layout() -> Layout {
@@ -52,7 +49,7 @@ pub fn layout() -> Layout {
         .filter(|w| w.len() == 3)
         .unwrap_or_else(|| WEIGHTS.to_vec());
     Layout {
-        columns: &["title", "keys", "body"],
+        columns: &[Column::Title, Column::Keys, Column::Body],
         weights,
         version: LAYOUT_VERSION,
     }
@@ -102,11 +99,12 @@ pub fn root_or_cwd(explicit: Option<PathBuf>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// (relative path, path) for every markdown file outside hidden and vendored dirs.
+/// (relative path, path) for every markdown file outside hidden, vendored and
+/// excluded dirs.
 ///
 /// Walks like os.walk: a symlink to a directory is listed but not entered, a
 /// symlink to a file is a file.
-fn walk(root: &Path, dir: &Path, found: &mut Vec<(String, PathBuf)>) {
+fn walk(root: &Path, dir: &Path, cfg: &Config, found: &mut Vec<(String, PathBuf)>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -121,7 +119,12 @@ fn walk(root: &Path, dir: &Path, found: &mut Vec<(String, PathBuf)>) {
             ft.is_dir()
         };
         if is_dir {
-            if !ft.is_symlink() && !name.starts_with('.') && !SKIP_DIRS.contains(&name.as_str()) {
+            let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy();
+            if !ft.is_symlink()
+                && !name.starts_with('.')
+                && !SKIP_DIRS.contains(&name.as_str())
+                && !cfg.excludes(&rel, &name)
+            {
                 subdirs.push(path);
             }
         } else if name.ends_with(".md") && !SKIP_FILES.contains(&name.as_str()) {
@@ -134,7 +137,7 @@ fn walk(root: &Path, dir: &Path, found: &mut Vec<(String, PathBuf)>) {
         }
     }
     for sub in subdirs {
-        walk(root, &sub, found);
+        walk(root, &sub, cfg, found);
     }
 }
 
@@ -260,6 +263,7 @@ pub fn parse_markdown(path: &Path) -> Result<Option<Doc>> {
 pub struct KnowledgeBase {
     pub root: PathBuf,
     pub store: FtsStore,
+    pub config: Config,
     aliases: Option<(PathBuf, SystemTime, Aliases)>,
 }
 
@@ -269,6 +273,7 @@ impl KnowledgeBase {
         Ok(Self {
             root: root.to_path_buf(),
             store: FtsStore::open_with(&dir.join(DB_FILE), layout())?,
+            config: Config::load(root)?,
             aliases: None,
         })
     }
@@ -277,19 +282,19 @@ impl KnowledgeBase {
         self.sync_under(None)
     }
 
-    /// Only the files under `prefix` (`wiki/`): the hint reads nothing else, and the
+    /// Only the files under `prefix` (the wiki): the hint reads nothing else, and the
     /// whole tree was 7x the directories (a client checkout alone held 949 of 1187).
     pub fn sync_under(&mut self, prefix: Option<&str>) -> Result<SyncReport> {
         let mut files = Vec::new();
         let dir = prefix.map_or_else(|| self.root.clone(), |p| self.root.join(p));
-        walk(&self.root, &dir, &mut files);
+        walk(&self.root, &dir, &self.config, &mut files);
         self.store
             .sync_under(&files, &parse_markdown, false, None, prefix)
     }
 
     /// The KB's alias table, re-read when the file changes; None without one.
     pub fn aliases(&mut self) -> Option<&Aliases> {
-        let found = Aliases::locate(&self.root);
+        let found = Aliases::locate(self.config.aliases_file(&self.root));
         let fresh = match (&found, &self.aliases) {
             (Some((p, t)), Some((cp, ct, _))) => p == cp && t == ct,
             (None, None) => true,

@@ -51,7 +51,8 @@ say() {
 find_scope_file() {
     dir="${SOLOGRAPH_ROOT:-$PWD}"
     while [ "$dir" != "/" ] && [ "$dir" != "$HOME" ]; do
-        [ -f "$dir/.solograph.yaml" ] && { echo "$dir/.solograph.yaml"; return; }
+        # The same file can hold only the KB's settings (`kb:`); a scope needs `scope:`.
+        grep -qs '^scope:' "$dir/.solograph.yaml" && { echo "$dir/.solograph.yaml"; return; }
         dir=$(dirname "$dir")
     done
 }

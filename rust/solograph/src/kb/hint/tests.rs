@@ -68,6 +68,11 @@ impl Fixture {
             .unwrap();
         }
         std::fs::write(wiki.join("_aliases.yaml"), "- [лайа, лайя, laya]\n").unwrap();
+        std::fs::write(
+            root.join(".solograph.yaml"),
+            "kb:\n  stacks: 1-methodology/stacks\n",
+        )
+        .unwrap();
         let kb = KnowledgeBase::open(&root, Some(&t.path().join("db"))).unwrap();
         let state = t.path().join("state");
         Self {
@@ -208,4 +213,51 @@ fn a_rare_word_alone_does_not_override_the_topic() {
     let mut f = Fixture::new();
     let out = f.hint("how to set up supabase oauth with google", "s9");
     assert!(!out.contains("codex-oauth-proxy"), "{out}");
+}
+
+#[test]
+fn the_wiki_is_wherever_the_kb_config_says() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("kb");
+    let notes = root.join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    std::fs::write(root.join(".solograph.yaml"), "kb:\n  pages: notes\n").unwrap();
+    for (slug, title, body) in pages() {
+        std::fs::write(
+            notes.join(format!("{slug}.md")),
+            format!("---\ntitle: \"{title}\"\n---\n\n{body}\n"),
+        )
+        .unwrap();
+    }
+    let mut kb = KnowledgeBase::open(&root, Some(&t.path().join("db"))).unwrap();
+    let out = hint(
+        &mut kb,
+        "how would laya run inside the harness?",
+        "c1",
+        &t.path().join("state"),
+    )
+    .unwrap();
+    assert!(out.contains("notes/laya-open-jev-on-mac.md"), "{out}");
+}
+
+#[test]
+fn no_stacks_in_the_config_means_no_stack_hint() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("kb");
+    std::fs::create_dir_all(root.join("wiki")).unwrap();
+    std::fs::create_dir_all(root.join("1-methodology/stacks")).unwrap();
+    std::fs::write(
+        root.join("1-methodology/stacks/ios-swift.yaml"),
+        "name: iOS Swift\nframework: SwiftUI\n",
+    )
+    .unwrap();
+    let mut kb = KnowledgeBase::open(&root, Some(&t.path().join("db"))).unwrap();
+    let out = hint(
+        &mut kb,
+        "какой стек взять для ios приложения со swiftui",
+        "c2",
+        &t.path().join("state"),
+    )
+    .unwrap();
+    assert_eq!(out, "");
 }
