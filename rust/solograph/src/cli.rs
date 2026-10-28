@@ -33,6 +33,7 @@ const VALUED: &[(&str, &[&str])] = &[
     ("claude-dir", &["--claude-dir"]),
     ("scope", &["--scope"]),
     ("only", &["--only"]),
+    ("days", &["--days"]),
 ];
 /// Switches. `--deep` and `--incremental` are accepted and ignored: post-commit
 /// hooks installed in client repos still pass them.
@@ -142,6 +143,7 @@ pub fn run(cmd: &str, raw: &[String]) -> Option<Result<()>> {
         "kb-graph" => kb_graph(&a),
         "kb-hint" => kb_hint(&a),
         "sources" => sources(&a),
+        "usage" => usage(&a),
         _ => return None,
     })
 }
@@ -474,9 +476,16 @@ fn kb_hint(a: &Args) -> Result<()> {
         // Registered as the UserPromptSubmit hook itself: the payload comes on stdin,
         // the hint goes back as additionalContext, and any failure is silence with
         // exit 0, because a broken hint must never break a prompt.
-        let text = hook_payload()
-            .and_then(|(prompt, session)| hint_text(a, &prompt, &session))
-            .unwrap_or_default();
+        let started = std::time::Instant::now();
+        let (session, hint) = match hook_payload() {
+            Ok((prompt, session)) => {
+                let h = hint_text(a, &prompt, &session).unwrap_or_default();
+                (session, h)
+            }
+            Err(_) => (String::new(), Default::default()),
+        };
+        crate::usage::record_hint(&session, &hint.pages, started.elapsed());
+        let text = hint.text;
         if !text.is_empty() {
             let out = serde_json::json!({"hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
@@ -486,7 +495,7 @@ fn kb_hint(a: &Args) -> Result<()> {
         }
         return Ok(());
     }
-    let text = hint_text(a, &a.pos.join(" "), a.val("session").unwrap_or(""))?;
+    let text = hint_text(a, &a.pos.join(" "), a.val("session").unwrap_or(""))?.text;
     if !text.is_empty() {
         println!("{text}");
     }
@@ -534,13 +543,70 @@ fn hook_payload() -> Result<(String, String)> {
     Ok((v["prompt"].as_str().unwrap_or("").to_string(), session))
 }
 
-fn hint_text(a: &Args, prompt: &str, session: &str) -> Result<String> {
+fn hint_text(a: &Args, prompt: &str, session: &str) -> Result<crate::kb::hint::Hint> {
     let root = crate::kb::root_or_cwd(a.path("kb-path"));
     if !root.join(crate::kb::Config::load(&root)?.pages).is_dir() {
-        return Ok(String::new());
+        return Ok(Default::default());
     }
     let mut kb = KnowledgeBase::open(&root, None)?;
     crate::kb::hint::hint(&mut kb, prompt, session, &crate::kb::hint::state_dir())
+}
+
+/// What the usage log says over the last `--days` (14): calls per tool, what found
+/// nothing, the slowest calls, how often the hook pointed somewhere.
+fn usage(a: &Args) -> Result<()> {
+    let u = |v: &Value| v.as_u64().unwrap_or(0);
+    let dir = crate::usage::location();
+    let r = crate::usage::report(&crate::usage::read(&dir, a.num("days", 14)? as i64));
+    if a.json() {
+        println!("{}", pretty(&r));
+        return Ok(());
+    }
+    println!(
+        "{} lines in {} (last {} days)",
+        r["lines"],
+        dir.display(),
+        a.num("days", 14)?
+    );
+    println!("\n  calls  median   empty  errors  tool");
+    for t in r["tools"].as_array().into_iter().flatten() {
+        println!(
+            "  {:5}  {:4} ms  {:6}  {:6}  {}",
+            u(&t["calls"]),
+            u(&t["median_ms"]),
+            u(&t["empty"]),
+            u(&t["errors"]),
+            s(t, "tool")
+        );
+    }
+    println!(
+        "\nPrompt hook: pointed at a page {} times in {} prompts",
+        u(&r["hook"]["pointed"]),
+        u(&r["hook"]["runs"])
+    );
+    println!("\nFound nothing (newest first):");
+    for e in r["found_nothing"].as_array().into_iter().flatten() {
+        println!(
+            "  {}  {:15} {}",
+            &s(e, "ts")[..10.min(s(e, "ts").len())],
+            s(e, "tool"),
+            s(e, "query")
+        );
+    }
+    println!("\nSlowest:");
+    for e in r["slowest"].as_array().into_iter().flatten() {
+        println!(
+            "  {:6} ms  {:15} {}",
+            u(&e["ms"]),
+            s(e, "tool"),
+            s(e, "query")
+        );
+    }
+    println!("\nBy project:");
+    for p in r["projects"].as_array().into_iter().flatten() {
+        println!("  {:5}  {}", u(&p["calls"]), s(p, "project"));
+    }
+    Ok(())
 }
 
 fn sources(a: &Args) -> Result<()> {

@@ -84,7 +84,9 @@ impl Fixture {
     }
 
     fn hint(&mut self, prompt: &str, session: &str) -> String {
-        hint(&mut self.kb, prompt, session, &self.state).unwrap()
+        hint(&mut self.kb, prompt, session, &self.state)
+            .unwrap()
+            .text
     }
 
     fn write(&self, rel: &str, text: &str) {
@@ -177,7 +179,8 @@ fn a_kb_without_a_wiki_is_silent() {
         "s1",
         &t.path().join("state"),
     )
-    .unwrap();
+    .unwrap()
+    .text;
     assert_eq!(out, "");
 }
 
@@ -236,7 +239,8 @@ fn the_wiki_is_wherever_the_kb_config_says() {
         "c1",
         &t.path().join("state"),
     )
-    .unwrap();
+    .unwrap()
+    .text;
     assert!(out.contains("notes/laya-open-jev-on-mac.md"), "{out}");
 }
 
@@ -258,6 +262,7 @@ fn no_stacks_in_the_config_means_no_stack_hint() {
         "c2",
         &t.path().join("state"),
     )
-    .unwrap();
+    .unwrap()
+    .text;
     assert_eq!(out, "");
 }

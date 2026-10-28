@@ -313,7 +313,7 @@ fn session_cwd(path: &Path) -> String {
     String::new()
 }
 
-fn is_private(cwd: &str) -> bool {
+pub(crate) fn is_private(cwd: &str) -> bool {
     !cwd.is_empty()
         && Path::new(cwd)
             .ancestors()

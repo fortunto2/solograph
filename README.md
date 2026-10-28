@@ -92,6 +92,7 @@ Web search is not here: it lives in the separate [searxng MCP server](https://gi
 - **Sessions are archived.** Claude Code deletes transcripts after 30 days (`cleanupPeriodDays`). The index keeps their text and marks them `transcript: deleted`; live ones come with a `claude --resume` command. Batch runs started from temp directories (`claude -p` in `/tmp`, agent scratchpads) are left out.
 - **Private folders stay private.** A session whose working directory is inside a folder holding `.solograph-private` (or Spotlight's `.metadata_never_index`) is never indexed, and is purged if it was.
 - **Scores are BM25** — higher is better, comparable within one answer only.
+- **Every call is logged, for the next change.** One JSON line per MCP tool call (arguments, result count, first three ids, milliseconds) and per prompt-hook run (session, pages pointed at, never the prompt), in `usage/` next to the portfolio store, so a second profile's queries stay in its own store. `solograph usage` reads it back: calls per tool, the queries that found nothing, the slowest. Nothing is written from a process started in a folder marked `.solograph-private`, and the CLI is not logged, so evals and scripts do not drown it.
 
 ### The knowledge base
 
@@ -143,6 +144,7 @@ solograph sources search "pricing tiers" -s youtube
 solograph sources list | tags | related VIDEO
 solograph explain my-app | deps my-app | stats | shared [react]
 solograph dupes escape                             # names defined in several places
+solograph usage [--days 14]                        # what agents asked: calls, what found nothing, slowest
 solograph scan [-p my-app]                         # registry merge + index what changed
 solograph sync-sessions | index-kb                 # warm an index (searches sync on their own)
 solograph http                                     # sources over HTTP, port 8002
@@ -163,6 +165,8 @@ Python, for the sources index only: `solograph-cli index-youtube -c GregIsenberg
 | `CODEGRAPH_REGISTRY` | `~/.solo/registry.yaml` | Project registry |
 | `CODEGRAPH_SCAN_PATH` | `~/startups/active` | Comma-separated directories `registry` looks for checkouts in |
 | `KB_PATH` | current dir | Knowledge base root; index at `$KB_PATH/.solo/kb/kb.db` (before Oct 2026: `search.db`, left for binaries still running) |
+| `SOLOGRAPH_LOG_DIR` | `usage/` next to the portfolio store | Usage log, one JSON line per MCP call and per hook run (`YYYY-MM.jsonl`) |
+| `SOLOGRAPH_LOG` | on | `off` stops the usage log |
 | `SOLOGRAPH_KB_WEIGHTS` | `2,2,1` | BM25 weights for title, summary fields, body, to re-measure |
 | `CLAUDE_SESSIONS_DIR` | `~/.claude` | Claude config dir whose `projects/` holds transcripts |
 | `CODEGRAPH_SESSIONS_DB` | `~/.solo/sessions` | Session index directory (`search.db`) |

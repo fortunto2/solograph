@@ -466,6 +466,24 @@ impl Solograph {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for Solograph {
+    /// Every tool call goes through here, so the usage log sees all of them.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, ErrorData> {
+        let started = std::time::Instant::now();
+        let (name, args) = (request.name.to_string(), request.arguments.clone());
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        let out = self.tool_router.call(tcc).await;
+        let result = match &out {
+            Ok(rmcp::model::CallToolResponse::Complete(r)) => Some(r),
+            _ => None,
+        };
+        crate::usage::record_tool(&name, args.as_ref(), result, started.elapsed());
+        out
+    }
+
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("solograph", env!("CARGO_PKG_VERSION")))

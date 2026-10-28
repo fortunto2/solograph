@@ -223,10 +223,17 @@ fn seen_file(state: &Path, session: &str) -> PathBuf {
     state.join(format!("{name}.json"))
 }
 
+/// What the hint said, and the pages it pointed at (for the usage log).
+#[derive(Debug, Default)]
+pub struct Hint {
+    pub text: String,
+    pub pages: Vec<String>,
+}
+
 /// The hint for one prompt, empty when silent. Pages pointed at are remembered
 /// under `state` for the session.
-pub fn hint(kb: &mut KnowledgeBase, prompt: &str, session: &str, state: &Path) -> Result<String> {
-    let silent = String::new();
+pub fn hint(kb: &mut KnowledgeBase, prompt: &str, session: &str, state: &Path) -> Result<Hint> {
+    let silent = Hint::default();
     let p = prompt.trim();
     if p.starts_with('/') || p.starts_with('<') || p.split_whitespace().count() < MIN_WORDS {
         return Ok(silent);
@@ -298,7 +305,10 @@ pub fn hint(kb: &mut KnowledgeBase, prompt: &str, session: &str, state: &Path) -
             about.chars().take(160).collect::<String>()
         ));
     }
-    Ok(lines.join("\n"))
+    Ok(Hint {
+        text: lines.join("\n"),
+        pages: picked.into_iter().map(|c| c.path).collect(),
+    })
 }
 
 #[cfg(test)]

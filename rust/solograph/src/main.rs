@@ -19,6 +19,7 @@ mod sessions;
 mod sources;
 mod stem;
 mod text;
+mod usage;
 mod web;
 mod yamlval;
 
@@ -51,6 +52,9 @@ Usage:
   solograph sources list | tags [-s SRC] | related VIDEO [-s SRC]
   solograph explain PROJECT | deps PROJECT | stats | shared [PACKAGE]
   solograph dupes [NAME] [-p P] [--min N] [-n N] [--show N]   names defined in several places
+  solograph usage [--days N]             what agents asked over MCP and the hook decided:
+                                         calls per tool, what found nothing, the slowest
+                                         (the log: usage/ next to the portfolio store)
   Every read takes --json: the exact value the matching MCP tool returns.
 
   solograph scan [-p NAME]               merge new checkouts into the registry, then index
