@@ -143,12 +143,16 @@ pub fn record_tool(
 }
 
 /// One run of the prompt hook: whether it pointed anywhere, never the prompt.
-pub fn record_hint(session: &str, pages: &[String], elapsed: Duration) {
+pub fn record_hint(session: &str, pages: &[String], gate: Option<(f64, bool)>, elapsed: Duration) {
     let Some(dir) = dir() else { return };
     let mut m = base("hook", "kb_hint", elapsed);
     m.insert("session".into(), json!(session));
     m.insert("n".into(), json!(pages.len()));
     m.insert("top".into(), json!(pages));
+    if let Some((p, open)) = gate {
+        m.insert("gate".into(), json!((p * 1000.0).round() / 1000.0));
+        m.insert("nudged".into(), json!(open));
+    }
     let _ = append(&dir, &Value::Object(m));
 }
 
@@ -239,6 +243,7 @@ pub fn report(lines: &[Value]) -> Value {
         .iter()
         .filter(|l| l["n"].as_u64().unwrap_or(0) > 0)
         .count();
+    let nudged = hooks.iter().filter(|l| l["nudged"] == true).count();
     let mut projects: HashMap<String, usize> = HashMap::new();
     for l in lines.iter().filter(|l| l["via"] == "mcp") {
         let cwd = l["cwd"].as_str().unwrap_or("");
@@ -254,7 +259,7 @@ pub fn report(lines: &[Value]) -> Value {
         "tools": tools,
         "found_nothing": empty,
         "slowest": slowest,
-        "hook": {"runs": hooks.len(), "pointed": fired},
+        "hook": {"runs": hooks.len(), "pointed": fired, "nudged": nudged},
         "projects": projects.iter().take(10).map(|(p, n)| json!({"project": p, "calls": n})).collect::<Vec<_>>(),
     })
 }
@@ -312,7 +317,7 @@ mod tests {
         assert_eq!(r["tools"][0]["empty"], 1);
         assert_eq!(r["found_nothing"][0]["query"], "лайа на маке");
         assert_eq!(r["slowest"][0]["ms"], 900);
-        assert_eq!(r["hook"], json!({"runs": 1, "pointed": 1}));
+        assert_eq!(r["hook"], json!({"runs": 1, "pointed": 1, "nudged": 0}));
         assert_eq!(
             r["projects"][0],
             json!({"project": "solopreneur", "calls": 2})

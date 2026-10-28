@@ -98,3 +98,48 @@ fn anything_wrong_is_silence_and_exit_zero() {
     let payload = r#"{"prompt": "how would laya run inside the harness?"}"#;
     assert_eq!(hook(t.path(), &nowhere, payload), (true, String::new()));
 }
+
+/// A KB that has a memory gate: synthetic weights (the real ones are private).
+fn kb_with_gate(root: &Path) {
+    kb(root);
+    std::fs::write(
+        root.join("gate.json"),
+        r#"{"features": "w+c34/v1", "bias": -1.2, "threshold": 0.5,
+           "weights": {"w:нас": 2.0, "c: у ": 0.8, "c:али ": 1.1, "w:мы": 0.9}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join(".solograph.yaml"),
+        "kb:\n  memory_gate: gate.json\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_prompt_leaning_on_earlier_work_gets_the_memory_nudge() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("kb");
+    kb_with_gate(&root);
+    let payload = r#"{"prompt": "у нас было такое, мы делали это раньше", "session_id": "g1"}"#;
+    let (ok, out) = hook(t.path(), &root, payload);
+    assert!(ok);
+    let v: Value = serde_json::from_str(&out).expect(&out);
+    let ctx = v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        ctx.contains("session_search") && ctx.contains("p=0.7"),
+        "{ctx}"
+    );
+    // A short approval never opens it, whatever its words.
+    let (_, out) = hook(
+        t.path(),
+        &root,
+        r#"{"prompt": "да мы", "session_id": "g2"}"#,
+    );
+    assert_eq!(out, "");
+    // Without a gate in the config the hook only names pages, as before.
+    let bare = t.path().join("bare");
+    kb(&bare);
+    assert_eq!(hook(t.path(), &bare, payload), (true, String::new()));
+}

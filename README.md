@@ -113,6 +113,7 @@ kb:
   pages: wiki/                  # the wiki: [[links]], index.md, _aliases.yaml (default wiki/)
   stacks: 1-methodology/stacks  # YAML templates for "which stack for X?" hints (default none)
   exclude: [archive, clients/acme]   # a bare name anywhere, a path from the root
+  memory_gate: harness/memory-gate.json  # weights for the memory nudge (default none)
 ```
 
 A search with no `path` takes two lanes in turn, the whole KB and the wiki, so a Russian question still reaches an English wiki page past Russian notes elsewhere (6 → 16 of 22 in the top 5; 40 questions about notes outside the wiki: same at #1, 34 → 33 in the top 5). `kb-graph`, `kb-hint` and `kb --pages` scope to `pages`; a typo in the section is an
@@ -135,6 +136,17 @@ error, not a silent default. The same file's `scope:` key is the portfolio scan'
   each page once per session. `solograph hook` runs it on every prompt
   (`kb-hint --hook` still works alone): it reads the hook's JSON and answers it, syncs only `wiki/`,
   and is silent with exit 0 on any failure. The rules are in `src/kb/hint.rs`.
+- **Memory nudge.** With `memory_gate:` set, the hook also scores each prompt of three words
+  or more for leaning on the user's earlier work ("как мы делали", "у нас свой крейт…") and,
+  past the file's threshold, tells the agent to look it up with `session_search` and
+  `kb_search`. It says *that*, not *what*: the agent writes a better query than the raw
+  prompt, and injecting results for the prompt itself was half noise. Before the nudge the
+  agent searched after 17% of such prompts. The scorer is a logistic regression over words
+  and character 3-4-grams (`src/kb/memgate.rs`); the weights come from your own labelled
+  prompts, so they hold fragments of them and stay in your KB, not here. On a 290-prompt
+  hard set it scored AUC 0.908 against 0.889 for the three small neural models it replaced
+  (258 MB resident, ~100 ms a prompt); this adds under a millisecond. Each run logs `gate`
+  and `nudged` to the usage log; `solograph usage` counts the nudges.
 
 ## CLI
 

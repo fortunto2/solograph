@@ -21,6 +21,7 @@ use crate::yamlval::{python_str, to_json};
 pub mod config;
 pub mod graph;
 pub mod hint;
+pub mod memgate;
 
 pub use config::Config;
 

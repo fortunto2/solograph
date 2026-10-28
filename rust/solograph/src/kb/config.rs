@@ -30,6 +30,9 @@ pub struct Config {
     /// Directories the walk does not enter: a bare name anywhere, a path with a `/`
     /// from the root. Hidden directories, node_modules and __pycache__ always.
     pub exclude: Vec<String>,
+    /// Weights of the prompt hook's memory gate (kb/memgate.rs), relative to the root;
+    /// private by nature. Without it the hook only names wiki pages.
+    pub memory_gate: Option<String>,
 }
 
 impl Default for Config {
@@ -38,6 +41,7 @@ impl Default for Config {
             pages: "wiki/".into(),
             stacks: None,
             exclude: Vec::new(),
+            memory_gate: None,
         }
     }
 }

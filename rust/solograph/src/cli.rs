@@ -501,8 +501,9 @@ fn hook(a: &Args) -> Result<()> {
         && (a.path("kb-path").is_some() || crate::paths::env_path("KB_PATH").is_some())
     {
         let h = hint_text(a, &prompt, &session).unwrap_or_default();
-        crate::usage::record_hint(&session, &h.pages, started.elapsed());
-        parts.push(h.text);
+        let gate = gate_score(a, &prompt);
+        crate::usage::record_hint(&session, &h.pages, gate, started.elapsed());
+        parts.push(context(h.text, gate));
     }
     let state = crate::kb::hint::state_dir();
     if let Ok(Some(map)) = crate::hook::map_for(
@@ -527,15 +528,16 @@ fn kb_hint(a: &Args) -> Result<()> {
         // the hint goes back as additionalContext, and any failure is silence with
         // exit 0, because a broken hint must never break a prompt.
         let started = std::time::Instant::now();
-        let (session, hint) = match hook_payload() {
+        let (session, hint, gate) = match hook_payload() {
             Ok((prompt, session)) => {
                 let h = hint_text(a, &prompt, &session).unwrap_or_default();
-                (session, h)
+                let g = gate_score(a, &prompt);
+                (session, h, g)
             }
-            Err(_) => (String::new(), Default::default()),
+            Err(_) => (String::new(), Default::default(), None),
         };
-        crate::usage::record_hint(&session, &hint.pages, started.elapsed());
-        let text = hint.text;
+        crate::usage::record_hint(&session, &hint.pages, gate, started.elapsed());
+        let text = context(hint.text, gate);
         if !text.is_empty() {
             let out = serde_json::json!({"hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
@@ -545,11 +547,39 @@ fn kb_hint(a: &Args) -> Result<()> {
         }
         return Ok(());
     }
-    let text = hint_text(a, &a.pos.join(" "), a.val("session").unwrap_or(""))?.text;
+    let prompt = a.pos.join(" ");
+    let hint = hint_text(a, &prompt, a.val("session").unwrap_or(""))?;
+    let text = context(hint.text, gate_score(a, &prompt));
     if !text.is_empty() {
         println!("{text}");
     }
     Ok(())
+}
+
+/// The page hint, then the memory nudge when the gate opened.
+fn context(hint: String, gate: Option<(f64, bool)>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !hint.is_empty() {
+        parts.push(hint);
+    }
+    if let Some((p, true)) = gate {
+        parts.push(crate::kb::memgate::nudge(p));
+    }
+    parts.join("\n\n")
+}
+
+/// The memory gate's score for a prompt and whether it opens, when the KB has a gate and
+/// the prompt is a sentence (a slash command or a two-word "да, делай" never needs one).
+fn gate_score(a: &Args, prompt: &str) -> Option<(f64, bool)> {
+    let p = prompt.trim();
+    if p.starts_with('/') || p.starts_with('<') || p.split_whitespace().count() < 3 {
+        return None;
+    }
+    let root = crate::kb::root_or_cwd(a.path("kb-path")).ok()?;
+    let file = crate::kb::Config::load(&root).ok()?.memory_gate?;
+    let gate = crate::kb::memgate::MemoryGate::load(&root.join(file)).ok()?;
+    let s = gate.score(p);
+    Some((s, s >= gate.threshold))
 }
 
 /// Only the problems, one per line, and a failing exit when there are any: the
@@ -637,8 +667,9 @@ fn usage(a: &Args) -> Result<()> {
         );
     }
     println!(
-        "\nPrompt hook: pointed at a page {} times in {} prompts",
+        "\nPrompt hook: pointed at a page {} times and nudged to look up memory {} times in {} prompts",
         u(&r["hook"]["pointed"]),
+        u(&r["hook"]["nudged"]),
         u(&r["hook"]["runs"])
     );
     println!("\nFound nothing (newest first):");
