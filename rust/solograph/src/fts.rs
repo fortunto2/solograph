@@ -10,7 +10,7 @@ use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde_json::{Map, Value};
 
-use crate::text::{fold, match_expression};
+use crate::text::fold;
 
 const DOCS: &str = "
 CREATE TABLE IF NOT EXISTS docs(
@@ -418,14 +418,15 @@ impl FtsStore {
         Ok(())
     }
 
-    /// BM25 hits: doc_id, kind, title, snippet, the stored meta, score, gone.
+    /// BM25 hits for free text: doc_id, kind, title, snippet, meta, score, gone.
+    #[cfg(test)]
     pub fn search(
         &self,
         query: &str,
         n_results: usize,
         kind: Option<&str>,
     ) -> Result<Vec<Map<String, Value>>> {
-        self.search_expr(&match_expression(query), n_results, kind)
+        self.search_expr(&crate::text::match_expression(query), n_results, kind)
     }
 
     /// The same, for an FTS5 expression built by the caller (see SessionSearch).
