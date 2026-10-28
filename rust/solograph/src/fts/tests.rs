@@ -16,6 +16,7 @@ fn doc(path: &Path) -> Result<Option<Doc>> {
     );
     Ok(Some(Doc {
         title: text.lines().next().unwrap_or("").to_string(),
+        keys: String::new(),
         body: text.clone(),
         kind: "notes".into(),
         meta,

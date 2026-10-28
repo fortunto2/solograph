@@ -14,12 +14,22 @@ fn put(idx: &SourceIndex, doc_id: &str, title: &str, body: &str, kind: &str, met
     let Value::Object(meta) = meta else { panic!() };
     let doc = Doc {
         title: title.into(),
+        keys: String::new(),
         body: body.into(),
         kind: kind.into(),
         meta,
         end: None,
     };
-    FtsStore::put(&idx.store.db, doc_id, Some(&doc), None, None, false).unwrap();
+    FtsStore::put(
+        &idx.store.db,
+        idx.store.layout.columns,
+        doc_id,
+        Some(&doc),
+        None,
+        None,
+        false,
+    )
+    .unwrap();
 }
 
 fn doc(idx: &SourceIndex, source: &str, id: &str, title: &str, content: &str, popularity: i64) {

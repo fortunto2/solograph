@@ -38,7 +38,7 @@ The scrapers are a separate, optional Python CLI: `uv tool install --editable .`
 | `codegraph_stats` | Counts: projects, files, symbols by kind, packages |
 | `project_info` | Registry entry for a project, or the whole registry |
 | `session_search` | What was asked and answered in past Claude Code sessions, including ones Claude Code already deleted |
-| `kb_search` | Markdown knowledge base, by frontmatter title, type, tags and body |
+| `kb_search` | Markdown knowledge base: title and summary fields weigh above the body; `path` scopes it (`wiki/`), `expand_graph` adds up to 3 [[wikilinked]] pages |
 | `source_search` | Indexed YouTube transcripts (timestamped links), ProductHunt, TrustMRR, Telegram |
 | `source_list` / `source_tags` / `source_related` | What is indexed, topic tags, videos sharing tags |
 | `web_fetch` | Fetch a URL as text |
@@ -48,18 +48,43 @@ Web search is not here: it lives in the separate [searxng MCP server](https://gi
 ### How the indexes behave
 
 - **Symbols by their words.** Names are split on camelCase and snake_case (as codebase-memory-mcp's tokenizer does), so a phrase finds every spelling. All words rank above some words; an exact name comes first. Definitions only — functions, classes, protocols — from tree-sitter grammars for Python, Swift, TypeScript, JavaScript, Kotlin, Rust, Go, Java, Ruby, C, C++, PHP, HCL, Bash and SQL.
-- **Lexical, stemmed.** "графами" finds "граф", "indexing" finds "index". No cross-language matching: a Russian conversation is found by Russian words.
+- **Lexical, stemmed.** "графами" finds "граф", "indexing" finds "index". No cross-language matching by itself: a Russian conversation is found by Russian words.
 - **Never stale.** A scan re-reads a file only when its mtime or size changed; a session search re-reads only transcripts that grew, from their last byte offset — live transcripts reach hundreds of MB, and a resync costs ~10 ms.
 - **Sessions are archived.** Claude Code deletes transcripts after 30 days (`cleanupPeriodDays`). The index keeps their text and marks them `transcript: deleted`; live ones come with a `claude --resume` command. Batch runs started from temp directories (`claude -p` in `/tmp`, agent scratchpads) are left out.
 - **Private folders stay private.** A session whose working directory is inside a folder holding `.solograph-private` (or Spotlight's `.metadata_never_index`) is never indexed, and is purged if it was.
 - **Scores are BM25** — higher is better, comparable within one answer only.
+
+### The knowledge base
+
+One index (`$KB_PATH/.solo/kb/kb.db`) serves search, the link graph and the prompt hint.
+It replaced three things that read the same markdown separately: a Python FTS index, a
+JSON link graph only as fresh as the last script run (it sat at 36 nodes for eight months
+while the wiki passed 160 pages), and the hint's own index.
+
+- **Fields.** Title; then index_line, description, tags and the file name; then the body.
+  BM25 weights 2/2/1, measured on a 75-query known-answer set: top-1 29→31/40 on body
+  words, 18→22/25 on summary words, against the old title-plus-body index.
+- **Links.** `[[slug]]` and `[[slug|label]]` outside code are recorded at sync, so the graph
+  is never stale. `solograph kb-graph` lists hubs, connectors, orphans, broken links and pages
+  missing from `index.md`; `expand_graph` adds the pages most linked to the hits (Σ 1/rank,
+  catalog and `_*` pages excluded, at most 3).
+- **Aliases.** A YAML table in the KB, `wiki/_aliases.yaml`: each group lists other spellings
+  of a term, the term the KB writes **last** — `- [песочница, sandbox]`. A query word matching
+  an earlier member (by stem) also searches the last; the last expands to nothing. One way on
+  purpose: expanding both ways sent English queries to Russian documents (top-1 fell 31→24/40).
+  On 22 Russian questions for English pages: 0 found before, 21 in the top 5 within `wiki/`.
+- **Hint.** `solograph kb-hint PROMPT --session ID` names a page when the prompt holds a word
+  rare in the wiki that names it and the page covers the prompt's topic; silent otherwise,
+  each page once per session. ~22 ms on a 160-page wiki. Built for a UserPromptSubmit hook.
 
 ## CLI
 
 ```bash
 solograph symbols "auth middleware" [-p my-app]    # definitions across every project
 solograph sessions "webhook retry" [-p my-app]     # past sessions, archived ones too
-solograph kb "privacy architecture"                # the knowledge base (KB_PATH)
+solograph kb "privacy architecture" [--path wiki/] # the knowledge base (KB_PATH, else cwd)
+solograph kb-graph [--path wiki/] [--page slug]    # hubs, orphans, broken links, backlinks
+solograph kb-hint "prompt" --session ID            # the UserPromptSubmit pointer, or nothing
 solograph sources search "pricing tiers" -s youtube
 solograph sources list | tags | related VIDEO
 solograph explain my-app | deps my-app | stats | shared [react]
@@ -83,7 +108,9 @@ Python, for the sources index only: `solograph-cli index-youtube -c GregIsenberg
 | `SOLOGRAPH_PORTFOLIO_DB` | (none) | Names the portfolio store outright |
 | `CODEGRAPH_REGISTRY` | `~/.solo/registry.yaml` | Project registry |
 | `CODEGRAPH_SCAN_PATH` | `~/startups/active` | Comma-separated directories `registry` looks for checkouts in |
-| `KB_PATH` | (none) | Knowledge base root; index at `$KB_PATH/.solo/kb/search.db` |
+| `KB_PATH` | current dir | Knowledge base root; index at `$KB_PATH/.solo/kb/kb.db` (before Oct 2026: `search.db`, left for binaries still running) |
+| `SOLOGRAPH_KB_ALIASES` | `wiki/_aliases.yaml` | Alias table, if not in the KB |
+| `SOLOGRAPH_KB_WEIGHTS` | `2,2,1` | BM25 weights for title, summary fields, body, to re-measure |
 | `CLAUDE_SESSIONS_DIR` | `~/.claude` | Claude config dir whose `projects/` holds transcripts |
 | `CODEGRAPH_SESSIONS_DB` | `~/.solo/sessions` | Session index directory (`search.db`) |
 | `SOURCES_ROOT` | `~/.solo/sources` | Sources index (`search.db`) and YouTube VTT cache |

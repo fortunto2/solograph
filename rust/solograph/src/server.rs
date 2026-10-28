@@ -40,9 +40,12 @@ pub struct KbSearchArgs {
     /// Filter by frontmatter `type` (substring match)
     #[serde(default)]
     doc_type: Option<String>,
-    /// Add knowledge-graph neighbours of the top hits (1-hop)
+    /// Add up to 3 pages linked to or from the top hits ([[wikilinks]]), marked `graph_source`
     #[serde(default)]
     expand_graph: bool,
+    /// Only files under this path prefix (e.g. "wiki/")
+    #[serde(default)]
+    path: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -184,40 +187,6 @@ fn failed(tool: &str, e: anyhow::Error) -> CallToolResult {
 }
 
 /// KB_PATH, else the working directory when it looks like a knowledge base.
-fn detect_kb_path() -> Option<PathBuf> {
-    if let Some(p) = env_path("KB_PATH") {
-        return Some(p);
-    }
-    let cwd = std::env::current_dir().ok()?;
-    if cwd.join(".solo").join("kb").exists() {
-        return Some(cwd);
-    }
-    let mut checked = 0;
-    for dir in std::fs::read_dir(&cwd)
-        .ok()?
-        .flatten()
-        .filter(|e| e.path().is_dir())
-    {
-        for f in std::fs::read_dir(dir.path())
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
-            if checked >= 5 {
-                return None;
-            }
-            if f.path().extension().is_some_and(|x| x == "md") {
-                checked += 1;
-                let head = std::fs::read(f.path()).unwrap_or_default();
-                if head.starts_with(b"---") {
-                    return Some(cwd);
-                }
-            }
-        }
-    }
-    None
-}
-
 fn registry_path() -> Option<PathBuf> {
     match env_path("CODEGRAPH_REGISTRY") {
         Some(p) => p.exists().then_some(p),
@@ -279,7 +248,7 @@ impl Default for Solograph {
 #[tool_router]
 impl Solograph {
     #[tool(
-        description = "Full-text search over the knowledge base (markdown with YAML frontmatter).\n\nBM25 ranking with Russian and English stemming: \"графами\" finds \"граф\".\nMatching is lexical, so use the words the document would use, in its\nlanguage. New and edited files are picked up on every call. `score` is\nBM25: higher is better, comparable only within one answer."
+        description = "Full-text search over the knowledge base (markdown with YAML frontmatter).\n\nBM25 ranking with Russian and English stemming: \"графами\" finds \"граф\". Title, then summary and tags, then\nbody, in that order of weight. Matching is lexical; a Russian word also\nsearches the English equivalents the KB lists in its alias table. New and edited files are picked up on every call. `score` is\nBM25: higher is better, comparable only within one answer."
     )]
     async fn kb_search(
         &self,
@@ -287,7 +256,7 @@ impl Solograph {
     ) -> Result<CallToolResult, ErrorData> {
         let mut st = self.stores();
         if st.kb.is_none() {
-            let Some(root) = detect_kb_path() else {
+            let Some(root) = crate::kb::detect_root() else {
                 return Ok(list_result(vec![
                     json!({"error": "KB not configured. Set KB_PATH env var."}),
                 ]));
@@ -299,7 +268,13 @@ impl Solograph {
         }
         let kb = st.kb.as_mut().expect("opened above");
         Ok(
-            match kb.search(&a.query, a.n_results, a.doc_type.as_deref(), a.expand_graph) {
+            match kb.search(
+                &a.query,
+                a.n_results,
+                a.doc_type.as_deref(),
+                a.expand_graph,
+                a.path.as_deref(),
+            ) {
                 Ok(v) => list_result(v),
                 Err(e) => failed("kb_search", e),
             },

@@ -9,7 +9,6 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 use crate::kb::KnowledgeBase;
-use crate::paths::env_path;
 use crate::portfolio::Portfolio;
 use crate::portfolio::queries::DupesQuery;
 use crate::sessions::SessionSearch;
@@ -26,6 +25,9 @@ const VALUED: &[(&str, &[&str])] = &[
     ("show", &["--show"]),
     ("port", &["--port"]),
     ("kb-path", &["--kb-path"]),
+    ("path", &["--path"]),
+    ("page", &["--page"]),
+    ("session", &["--session"]),
     ("db-path", &["--db-path"]),
     ("registry", &["-r", "--registry"]),
     ("claude-dir", &["--claude-dir"]),
@@ -127,6 +129,8 @@ pub fn run(cmd: &str, raw: &[String]) -> Option<Result<()>> {
         "deps" => deps(&a),
         "dupes" => dupes(&a),
         "kb" => kb(&a),
+        "kb-graph" => kb_graph(&a),
+        "kb-hint" => kb_hint(&a),
         "sources" => sources(&a),
         _ => return None,
     })
@@ -357,16 +361,18 @@ fn dupes(a: &Args) -> Result<()> {
     Ok(())
 }
 
+fn kb_open(a: &Args) -> Result<KnowledgeBase> {
+    KnowledgeBase::open(&crate::kb::root_or_cwd(a.path("kb-path")), None)
+}
+
 fn kb(a: &Args) -> Result<()> {
-    let root = a.path("kb-path").or_else(|| env_path("KB_PATH"));
-    let Some(root) = root else {
-        bail!("Set KB_PATH env var or pass --kb-path")
-    };
-    let hits = KnowledgeBase::open(&root, None)?.search(
-        a.arg(0, "query")?,
+    a.arg(0, "query")?;
+    let hits = kb_open(a)?.search(
+        &a.pos.join(" "),
         a.num("limit", 5)?,
         a.val("type"),
         a.switches.contains("graph"),
+        a.val("path"),
     )?;
     if a.json() {
         println!("{}", pretty(&Value::Array(hits)));
@@ -378,7 +384,79 @@ fn kb(a: &Args) -> Result<()> {
                 .as_f64()
                 .map_or_else(String::new, |x| format!("{x:6.2}"));
             println!("{score:>6}  {}  — {}", s(h, "file"), s(h, "title"));
+            let snip = s(h, "snippet").replace('\n', " ");
+            if !snip.is_empty() {
+                println!("        {}", clip(&snip, 140));
+            }
         }
+    }
+    Ok(())
+}
+
+/// The wikilink graph. Plain output keeps the markers the wiki's pre-commit hooks
+/// grep for: `[orphan]`, `[broken]`, `[missing]`.
+fn kb_graph(a: &Args) -> Result<()> {
+    let g = kb_open(a)?.graph()?;
+    let r = g.report(a.val("path"), a.val("page"), a.num("limit", 15)?);
+    if a.json() {
+        println!("{}", pretty(&r));
+        return Ok(());
+    }
+    println!(
+        "{} pages, {} links (scope: {})",
+        r["pages"],
+        r["links"],
+        s(&r, "scope")
+    );
+    for (title, key, n) in [
+        ("Most linked-TO pages (hubs):", "hubs", "in"),
+        ("Most links FROM (connectors):", "connectors", "out"),
+    ] {
+        println!("\n{title}");
+        for h in r[key].as_array().into_iter().flatten() {
+            println!("  {:3}  {}", h[n], s(h, "page"));
+        }
+    }
+    println!("\nOrphan pages (not linked from any other page, catalog included):");
+    for o in r["orphans"].as_array().into_iter().flatten() {
+        println!("  [orphan] {}", o.as_str().unwrap_or(""));
+    }
+    println!("\nBroken wikilinks:");
+    for b in r["broken"].as_array().into_iter().flatten() {
+        println!("  [broken] [[{}]] in {}", s(b, "link"), s(b, "from"));
+    }
+    println!("\nPages not in index.md:");
+    for m in r["not_in_index"].as_array().into_iter().flatten() {
+        println!("  [missing] {}", m.as_str().unwrap_or(""));
+    }
+    println!("\nTop tags:");
+    for t in r["tags"].as_array().into_iter().flatten() {
+        println!("  {:3}  {}", t["count"], s(t, "tag"));
+    }
+    if let Some(p) = r.get("page") {
+        println!("\n{}:", s(p, "id"));
+        for b in p["backlinks"].as_array().into_iter().flatten() {
+            println!("  ← {}", b.as_str().unwrap_or(""));
+        }
+        for l in p["links"].as_array().into_iter().flatten() {
+            println!("  → {}", l.as_str().unwrap_or(""));
+        }
+    }
+    Ok(())
+}
+
+fn kb_hint(a: &Args) -> Result<()> {
+    let mut kb = kb_open(a)?;
+    let out = crate::kb::hint::hint(
+        &mut kb,
+        &a.pos.join(" "),
+        a.val("session").unwrap_or(""),
+        &crate::kb::hint::state_dir(),
+    )?;
+    if a.json() {
+        println!("{}", pretty(&out));
+    } else if let Some(text) = out["text"].as_str().filter(|t| !t.is_empty()) {
+        println!("{text}");
     }
     Ok(())
 }

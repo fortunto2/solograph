@@ -25,38 +25,47 @@ fn is_cyrillic(token: &str) -> bool {
 /// OR, not AND: BM25 already ranks documents that match more and rarer terms
 /// higher. Short tokens and tokens with digits stay whole.
 pub fn match_expression(query: &str) -> String {
-    let folded = fold(&query.to_lowercase());
     let mut terms: Vec<String> = Vec::new();
-    for m in WORD.find_iter(&folded) {
-        let token = m.as_str();
-        let len = token.chars().count();
-        let term = if len < 3 || token.chars().any(char::is_numeric) {
-            format!("\"{token}\"")
-        } else {
-            let stemmed = if is_cyrillic(token) {
-                stem::russian(token)
-            } else {
-                stem::english(token)
-            };
-            // A Snowball stem is not always a prefix ("vocabulary" -> "vocabulari"),
-            // and a prefix query needs one.
-            let prefix: String = stemmed
-                .chars()
-                .zip(token.chars())
-                .take_while(|(a, b)| a == b)
-                .map(|(a, _)| a)
-                .collect();
-            if prefix.chars().count() >= 3 {
-                format!("\"{prefix}\"*")
-            } else {
-                format!("\"{token}\"")
-            }
-        };
+    for (_, term) in terms_of(query) {
         if !terms.contains(&term) {
             terms.push(term);
         }
     }
     terms.join(" OR ")
+}
+
+/// Each word of `text` as (key, FTS5 term): the key is the stemmed prefix the term
+/// matches on (or the word itself when it stays whole), so two words with the same
+/// key are the same word to the index — "песочницу" and "песочница".
+pub fn terms_of(text: &str) -> Vec<(String, String)> {
+    let folded = fold(&text.to_lowercase());
+    WORD.find_iter(&folded).map(|m| term(m.as_str())).collect()
+}
+
+fn term(token: &str) -> (String, String) {
+    let len = token.chars().count();
+    if len < 3 || token.chars().any(char::is_numeric) {
+        return (token.to_string(), format!("\"{token}\""));
+    }
+    let stemmed = if is_cyrillic(token) {
+        stem::russian(token)
+    } else {
+        stem::english(token)
+    };
+    // A Snowball stem is not always a prefix ("vocabulary" -> "vocabulari"),
+    // and a prefix query needs one.
+    let prefix: String = stemmed
+        .chars()
+        .zip(token.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a)
+        .collect();
+    if prefix.chars().count() >= 3 {
+        let t = format!("\"{prefix}\"*");
+        (prefix, t)
+    } else {
+        (token.to_string(), format!("\"{token}\""))
+    }
 }
 
 /// `resolve_montage_profile`, `MontageProfile`, `HTTPServer` → their lowercase words.

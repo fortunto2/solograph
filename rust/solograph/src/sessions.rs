@@ -280,6 +280,7 @@ pub fn read_transcript(path: &Path, offset: i64) -> Result<Doc> {
     full.extend(meta);
     Ok(Doc {
         title,
+        keys: String::new(),
         body: parts.join("\n\n"),
         kind: project,
         meta: full,

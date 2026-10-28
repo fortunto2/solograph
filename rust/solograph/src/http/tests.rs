@@ -19,6 +19,7 @@ fn idx_with_docs(tmp: &std::path::Path) -> SourceIndex {
         };
         let doc = Doc {
             title: title.into(),
+            keys: String::new(),
             body: body.into(),
             kind: "telegram".into(),
             meta,
@@ -26,6 +27,7 @@ fn idx_with_docs(tmp: &std::path::Path) -> SourceIndex {
         };
         FtsStore::put(
             &idx.store.db,
+            idx.store.layout.columns,
             &format!("telegram/{id}"),
             Some(&doc),
             None,

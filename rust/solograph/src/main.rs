@@ -3,6 +3,7 @@
 //! needs. Python keeps only the scrapers and indexers (YouTube, ProductHunt,
 //! TrustMRR, Telegram), which write the sources index this binary reads.
 
+mod aliases;
 mod cli;
 mod deps;
 mod english;
@@ -35,7 +36,13 @@ Usage:
 
   solograph symbols QUERY [-p P] [-k KIND] [-n N]   where something is defined, every project
   solograph sessions QUERY [-p P] [-n N]            past Claude Code sessions, full text
-  solograph kb QUERY [--type T] [--graph] [-n N]    the knowledge base (KB_PATH or --kb-path)
+  solograph kb QUERY [--path P] [--type T] [--graph] [-n N]   the knowledge base: --kb-path,
+                                          else KB_PATH, else the current dir; --path wiki/
+                                          limits it to files under that prefix
+  solograph kb-graph [--path P] [--page SLUG] [-n N]   [[wikilink]] graph: hubs, connectors,
+                                          orphans, broken links, pages missing from index.md
+  solograph kb-hint PROMPT [--session ID]   the wiki page a prompt is specifically about,
+                                          if any (the UserPromptSubmit hint; silent otherwise)
   solograph sources search QUERY [-s SRC] [-n N]    YouTube / ProductHunt / TrustMRR / Telegram
   solograph sources list | tags [-s SRC] | related VIDEO [-s SRC]
   solograph explain PROJECT | deps PROJECT | stats | shared [PACKAGE]
@@ -140,14 +147,11 @@ fn sync_sessions(a: &cli::Args) -> Result<()> {
 }
 
 fn index_kb(a: &cli::Args) -> Result<()> {
-    let root = a.path("kb-path").or_else(|| paths::env_path("KB_PATH"));
-    let Some(root) = root else {
-        bail!("Set KB_PATH env var or pass --kb-path")
-    };
+    let root = kb::root_or_cwd(a.path("kb-path"));
     let stats = kb::KnowledgeBase::open(&root, None)?.stats()?;
     println!(
-        "KB index: {} documents, {} read now",
-        stats["documents"], stats["read_now"]
+        "KB index: {} documents, {} read now, {} alias groups",
+        stats["documents"], stats["read_now"], stats["alias_groups"]
     );
     Ok(())
 }

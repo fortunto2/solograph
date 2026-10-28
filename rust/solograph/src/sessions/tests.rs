@@ -331,12 +331,22 @@ fn an_archived_title_that_was_a_system_line_is_fixed_on_open() {
     let body = "[Project: solopreneur | 2026-03-01]\n\nPrompts:\n1. [Request interrupted by user for tool use]\n2. разбери чеки за март\n";
     let doc = crate::fts::Doc {
         title: "[Request interrupted by user for tool use]".into(),
+        keys: String::new(),
         body: body.into(),
         kind: "solopreneur".into(),
         meta: serde_json::Map::new(),
         end: None,
     };
-    crate::fts::FtsStore::put(&s.store.db, "old", Some(&doc), None, None, true).unwrap();
+    crate::fts::FtsStore::put(
+        &s.store.db,
+        s.store.layout.columns,
+        "old",
+        Some(&doc),
+        None,
+        None,
+        true,
+    )
+    .unwrap();
     // An index from before the fix: titles not yet cleaned.
     s.store.db.execute_batch("PRAGMA user_version = 0").unwrap();
     drop(s);
