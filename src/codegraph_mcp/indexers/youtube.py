@@ -259,6 +259,7 @@ def fetch_video_metadata(video_id: str) -> dict:
         "chapters": [],
         "tags": [],
         "transcript": "",
+        "rate_limited": False,
         "segments": [],
         "upload_date": "",
     }
@@ -304,6 +305,7 @@ def fetch_video_metadata(video_id: str) -> dict:
     # 2. Transcript via VTT — reuse cached file or download fresh
     transcript = ""
     vtt_raw = ""
+    rate_limited = False
     VTT_DIR.mkdir(parents=True, exist_ok=True)
     saved_vtt = VTT_DIR / f"{video_id}.vtt"
 
@@ -314,9 +316,13 @@ def fetch_video_metadata(video_id: str) -> dict:
         with tempfile.TemporaryDirectory() as tmpdir:
             out_path = f"{tmpdir}/vid"
             try:
-                subprocess.run(
+                # Paced: a 45-channel refresh drew HTTP 429 on subtitles for half its
+                # videos (28 Oct 2026), and YouTube then refuses the IP for a while.
+                proc = subprocess.run(
                     [
                         "yt-dlp",
+                        "--sleep-subtitles",
+                        "2",
                         "--write-auto-sub",
                         "--write-sub",
                         "--sub-lang",
@@ -333,6 +339,7 @@ def fetch_video_metadata(video_id: str) -> dict:
                     text=True,
                     timeout=30,
                 )
+                rate_limited = "429" in (proc.stderr or "") or "Too Many Requests" in (proc.stderr or "")
                 for suffix in [".en.vtt", ".en-orig.vtt", ".en-US.vtt"]:
                     p = Path(f"{out_path}{suffix}")
                     if p.exists():
@@ -350,6 +357,7 @@ def fetch_video_metadata(video_id: str) -> dict:
             transcript = vtt_to_text(vtt_raw)
 
     segments = parse_vtt_segments(vtt_raw) if vtt_raw else []
+    rate_limited = rate_limited and not vtt_raw
 
     return {
         "title": title,
@@ -358,6 +366,7 @@ def fetch_video_metadata(video_id: str) -> dict:
         "description": description,
         "duration": duration,
         "chapters": chapters,
+        "rate_limited": rate_limited,
         "tags": tags,
         "transcript": transcript,
         "segments": segments,
@@ -509,6 +518,7 @@ class YouTubeIndexer:
         total_chunks = 0
         total_skipped_exists = 0
         total_skipped_no_transcript = 0
+        total_rate_limited = 0
         total_with_chapters = 0
 
         splitter = get_text_splitter()
@@ -563,8 +573,13 @@ class YouTubeIndexer:
                     transcript = fetch_transcript(self.searxng_url, video_id) or ""
 
                 if not transcript or len(transcript) < 200:
-                    total_skipped_no_transcript += 1
-                    print("    No transcript available")
+                    if meta.get("rate_limited"):
+                        # Not written, so the next run tries it again.
+                        total_rate_limited += 1
+                        print("    YouTube rate-limited the subtitles (429) — retried next run")
+                    else:
+                        total_skipped_no_transcript += 1
+                        print("    No transcript available")
                     continue
 
                 print(
@@ -672,6 +687,9 @@ class YouTubeIndexer:
         print(f"  With chapters:           {total_with_chapters}")
         print(f"  Skipped (exists):        {total_skipped_exists}")
         print(f"  Skipped (no transcript): {total_skipped_no_transcript}")
+        print(f"  Rate-limited (429, retried next run): {total_rate_limited}")
+        if total_rate_limited:
+            print("  YouTube refused subtitles for this IP; run the refresh again in a few hours.")
         print(f"{'=' * 60}")
 
         return stats
