@@ -186,7 +186,7 @@ fn failed(tool: &str, e: anyhow::Error) -> CallToolResult {
     ))])
 }
 
-/// KB_PATH, else the working directory when it looks like a knowledge base.
+/// CODEGRAPH_REGISTRY, else ~/.solo/registry.yaml, when it exists.
 fn registry_path() -> Option<PathBuf> {
     match env_path("CODEGRAPH_REGISTRY") {
         Some(p) => p.exists().then_some(p),

@@ -245,7 +245,8 @@ impl Portfolio {
                 if s.is_empty() { w.to_string() } else { s }
             })
             .collect();
-        let expr = match_expression(&words.join(" "));
+        let words = words.join(" ");
+        let expr = match_expression(&words);
         if expr.is_empty() {
             return Ok(Vec::new());
         }
@@ -274,7 +275,7 @@ impl Portfolio {
         let mut stmt = self.db.prepare(&sql)?;
         let mut order: Vec<i64> = Vec::new();
         let mut hits: HashMap<i64, (i32, Map<String, Value>)> = HashMap::new();
-        let all_words = expr.split(" OR ").collect::<Vec<_>>().join(" AND ");
+        let all_words = crate::text::all_terms(&words);
         for m in [all_words.as_str(), expr.as_str()] {
             let mut binds: Vec<Box<dyn rusqlite::ToSql>> =
                 vec![Box::new(m.to_string()), Box::new(limit)];

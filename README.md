@@ -75,7 +75,9 @@ while the wiki passed 160 pages), and the hint's own index.
   On 22 Russian questions for English pages: 0 found before, 21 in the top 5 within `wiki/`.
 - **Hint.** `solograph kb-hint PROMPT --session ID` names a page when the prompt holds a word
   rare in the wiki that names it and the page covers the prompt's topic; silent otherwise,
-  each page once per session. ~22 ms on a 160-page wiki. Built for a UserPromptSubmit hook.
+  each page once per session. Register `solograph kb-hint --hook --kb-path DIR` as the
+  UserPromptSubmit hook itself: it reads the hook's JSON and answers it, syncs only `wiki/`,
+  and is silent with exit 0 on any failure. The rules are in `src/kb/hint.rs`.
 
 ## CLI
 
@@ -84,6 +86,7 @@ solograph symbols "auth middleware" [-p my-app]    # definitions across every pr
 solograph sessions "webhook retry" [-p my-app]     # past sessions, archived ones too
 solograph kb "privacy architecture" [--path wiki/] # the knowledge base (KB_PATH, else cwd)
 solograph kb-graph [--path wiki/] [--page slug]    # hubs, orphans, broken links, backlinks
+solograph kb-graph --path wiki/ --check            # only the problems; fails when there are any
 solograph kb-hint "prompt" --session ID            # the UserPromptSubmit pointer, or nothing
 solograph sources search "pricing tiers" -s youtube
 solograph sources list | tags | related VIDEO
@@ -98,7 +101,7 @@ Every read takes `--json` and then prints exactly what the matching MCP tool ret
 
 Python, for the sources index only: `solograph-cli index-youtube -c GregIsenberg -n 10`, `index-producthunt`, `index-trustmrr`, `source-delete`, and `compact` for the KB inbox.
 
-`scripts/refresh-changed.sh` is the nightly job: registry merge, a scan of every project, session-index sync. It is meant for launchd or cron.
+`scripts/refresh-changed.sh` is the nightly job: registry merge, a scan of every project, session-index sync. It is meant for launchd or cron, and needs only the binary: `SOLOGRAPH_SCOPE="a b"` or a `.solograph.yaml` narrows it, and a name the registry lacks fails the run.
 
 ## Configuration
 
@@ -109,7 +112,6 @@ Python, for the sources index only: `solograph-cli index-youtube -c GregIsenberg
 | `CODEGRAPH_REGISTRY` | `~/.solo/registry.yaml` | Project registry |
 | `CODEGRAPH_SCAN_PATH` | `~/startups/active` | Comma-separated directories `registry` looks for checkouts in |
 | `KB_PATH` | current dir | Knowledge base root; index at `$KB_PATH/.solo/kb/kb.db` (before Oct 2026: `search.db`, left for binaries still running) |
-| `SOLOGRAPH_KB_ALIASES` | `wiki/_aliases.yaml` | Alias table, if not in the KB |
 | `SOLOGRAPH_KB_WEIGHTS` | `2,2,1` | BM25 weights for title, summary fields, body, to re-measure |
 | `CLAUDE_SESSIONS_DIR` | `~/.claude` | Claude config dir whose `projects/` holds transcripts |
 | `CODEGRAPH_SESSIONS_DB` | `~/.solo/sessions` | Session index directory (`search.db`) |

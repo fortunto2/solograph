@@ -16,8 +16,7 @@
 //! - [инженерия контекста, context engineering]
 //! ```
 //!
-//! (`groups: [...]` around the list also works.) A query word matches a member by
-//! its stemmed key, so inflected Russian ("песочницу") still matches "песочница".
+//! A query word matches a member by its stemmed key, so inflected Russian ("песочницу") still matches "песочница".
 //! A phrase member matches when every one of its words is in the query, and is
 //! searched as all its words together.
 //!
@@ -30,7 +29,7 @@ use std::time::SystemTime;
 
 use anyhow::Result;
 
-use crate::text::{match_expression, terms_of};
+use crate::text::{all_terms, match_expression, terms_of};
 
 /// One member as written, and its words' (key, term) pairs.
 #[derive(Debug)]
@@ -49,11 +48,12 @@ impl Member {
 
     /// The FTS5 term: one word, or all of a phrase's words.
     fn term(&self) -> String {
+        let all = all_terms(&self.text);
         if self.words.len() == 1 {
-            return self.words[0].1.clone();
+            all
+        } else {
+            format!("({all})")
         }
-        let parts: Vec<&str> = self.words.iter().map(|(_, t)| t.as_str()).collect();
-        format!("({})", parts.join(" AND "))
     }
 }
 
@@ -78,19 +78,12 @@ fn same(a: &str, b: &str) -> bool {
 }
 
 impl Aliases {
-    /// The alias file for a KB root: $SOLOGRAPH_KB_ALIASES, else `wiki/_aliases.yaml`,
-    /// else `_aliases.yaml`; with its mtime, so a caller can reload on change.
+    /// The alias file of a KB root, `wiki/_aliases.yaml`, with its mtime, so a
+    /// caller can reload on change.
     pub fn locate(root: &Path) -> Option<(PathBuf, SystemTime)> {
-        let mut candidates: Vec<PathBuf> = Vec::new();
-        if let Some(p) = crate::paths::env_path("SOLOGRAPH_KB_ALIASES") {
-            candidates.push(p);
-        }
-        candidates.push(root.join("wiki").join("_aliases.yaml"));
-        candidates.push(root.join("_aliases.yaml"));
-        candidates.into_iter().find_map(|p| {
-            let t = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?;
-            Some((p, t))
-        })
+        let p = root.join("wiki").join("_aliases.yaml");
+        let t = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?;
+        Some((p, t))
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -98,11 +91,7 @@ impl Aliases {
     }
 
     pub fn parse(text: &str) -> Self {
-        let value: serde_yaml::Value = serde_yaml::from_str(text).unwrap_or_default();
-        let list = match &value {
-            serde_yaml::Value::Mapping(m) => m.get("groups").cloned().unwrap_or_default(),
-            other => other.clone(),
-        };
+        let list: serde_yaml::Value = serde_yaml::from_str(text).unwrap_or_default();
         let groups = list
             .as_sequence()
             .into_iter()
@@ -217,8 +206,8 @@ mod tests {
     }
 
     #[test]
-    fn groups_key_one_member_groups_and_bad_yaml_are_handled() {
-        assert_eq!(Aliases::parse("groups:\n  - [a1x, b2y]\n").len(), 1);
+    fn one_member_groups_and_bad_yaml_are_handled() {
+        assert_eq!(Aliases::parse("- [a1x, b2y]\n").len(), 1);
         assert!(Aliases::parse("- [alone]\n").is_empty());
         assert!(Aliases::parse(": not yaml [").is_empty());
     }

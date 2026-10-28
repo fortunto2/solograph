@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{KnowledgeBase, frontmatter, markdown_files};
+use super::{KnowledgeBase, frontmatter, walk};
 
 fn kb_root(tmp: &Path) -> PathBuf {
     let root = tmp.join("kb");
@@ -34,10 +34,10 @@ fn kb(tmp: &Path) -> KnowledgeBase {
 #[test]
 fn hidden_directories_are_not_the_knowledge_base() {
     let t = tempfile::tempdir().unwrap();
-    let mut names: Vec<String> = markdown_files(&kb_root(t.path()))
-        .into_iter()
-        .map(|(k, _)| k)
-        .collect();
+    let root = kb_root(t.path());
+    let mut found = Vec::new();
+    walk(&root, &root, &mut found);
+    let mut names: Vec<String> = found.into_iter().map(|(k, _)| k).collect();
     names.sort();
     assert_eq!(names, ["wiki/solograph.md", "wiki/visa.md"]);
 }
@@ -204,4 +204,20 @@ fn an_index_in_the_old_layout_is_rebuilt_not_misread() {
     let hits = k.search("attorney", 5, None, false, None).unwrap();
     assert_eq!(hits[0]["file"], "wiki/visa.md");
     assert!(!k.ids().unwrap().contains("ghost.md"));
+}
+
+#[test]
+fn a_scoped_sync_reads_and_drops_only_under_its_prefix() {
+    let t = tempfile::tempdir().unwrap();
+    let mut k = kb(t.path());
+    std::fs::write(k.root.join("notes.md"), "# Notes\n\nOutside the wiki.").unwrap();
+    assert_eq!(k.sync().unwrap().indexed, 3);
+
+    std::fs::remove_file(k.root.join("wiki/visa.md")).unwrap();
+    std::fs::remove_file(k.root.join("notes.md")).unwrap();
+    let r = k.sync_under(Some("wiki/")).unwrap();
+    // The wiki page that vanished is gone; the file outside the scope waits for a
+    // full sync instead of being dropped because the scoped walk did not list it.
+    assert_eq!((r.removed, r.indexed), (1, 2));
+    assert_eq!(k.sync().unwrap().indexed, 1);
 }

@@ -36,7 +36,7 @@ pub fn is_meta(id: &str) -> bool {
     name == "index.md" || name.starts_with('_')
 }
 
-fn stem(id: &str) -> &str {
+pub(super) fn stem(id: &str) -> &str {
     let name = id.rsplit('/').next().unwrap_or(id);
     name.strip_suffix(".md").unwrap_or(name)
 }
@@ -162,32 +162,29 @@ impl Graph {
             .keys()
             .filter(|id| Self::in_scope(id, prefix))
             .collect();
-        let indeg = self.in_degree();
-        let mut hubs: Vec<(&str, usize)> = scoped
-            .iter()
-            .filter(|id| !is_meta(id))
-            .map(|id| (id.as_str(), indeg.get(id.as_str()).copied().unwrap_or(0)))
-            .filter(|(_, n)| *n > 0)
-            .collect();
-        hubs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        // Pages with a nonzero degree, most first.
+        let ranked = |deg: &HashMap<&str, usize>| -> Vec<(&str, usize)> {
+            let mut v: Vec<(&str, usize)> = scoped
+                .iter()
+                .filter(|id| !is_meta(id))
+                .filter_map(|id| deg.get(id.as_str()).map(|n| (id.as_str(), *n)))
+                .collect();
+            v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+            v
+        };
         let mut outdeg: HashMap<&str, usize> = HashMap::new();
         for (a, _) in &self.edges {
             *outdeg.entry(a.as_str()).or_default() += 1;
         }
-        let mut connectors: Vec<(&str, usize)> = scoped
-            .iter()
-            .filter(|id| !is_meta(id))
-            .map(|id| (id.as_str(), outdeg.get(id.as_str()).copied().unwrap_or(0)))
-            .filter(|(_, n)| *n > 0)
-            .collect();
-        connectors.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        let hubs = ranked(&self.in_degree());
+        let connectors = ranked(&outdeg);
         // Orphan: nothing links here at all — the catalog counts, as it always did
         // for `make wiki-orphans`, so a page is orphaned when it is neither linked
         // nor in the catalog.
         let linked: BTreeSet<&str> = self.edges.iter().map(|(_, b)| b.as_str()).collect();
         let orphans: Vec<&str> = scoped
             .iter()
-            .filter(|id| !is_meta(id) && !id.ends_with("/log.md") && !linked.contains(id.as_str()))
+            .filter(|id| !is_meta(id) && !linked.contains(id.as_str()))
             .map(|id| id.as_str())
             .collect();
         let broken: Vec<Value> = self
@@ -207,9 +204,7 @@ impl Graph {
         let not_in_index: Vec<&str> = if self.pages.contains_key(&catalog) {
             scoped
                 .iter()
-                .filter(|id| {
-                    !is_meta(id) && !id.ends_with("/log.md") && !in_catalog.contains(id.as_str())
-                })
+                .filter(|id| !is_meta(id) && !in_catalog.contains(id.as_str()))
                 .map(|id| stem(id))
                 .collect()
         } else {
@@ -284,6 +279,11 @@ impl KnowledgeBase {
     /// The link graph of the whole KB, synced first.
     pub fn graph(&mut self) -> Result<Graph> {
         self.sync()?;
+        self.link_graph()
+    }
+
+    /// The link graph as the index holds it now.
+    pub fn link_graph(&self) -> Result<Graph> {
         let mut stmt = self.store.db.prepare(
             "SELECT d.doc_id, d.meta, f.title FROM docs d LEFT JOIN fts f ON f.rowid = d.id",
         )?;

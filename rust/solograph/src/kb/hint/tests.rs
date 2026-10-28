@@ -79,8 +79,7 @@ impl Fixture {
     }
 
     fn hint(&mut self, prompt: &str, session: &str) -> String {
-        let out = hint(&mut self.kb, prompt, session, &self.state).unwrap();
-        out["text"].as_str().unwrap().to_string()
+        hint(&mut self.kb, prompt, session, &self.state).unwrap()
     }
 
     fn write(&self, rel: &str, text: &str) {
@@ -174,7 +173,7 @@ fn a_kb_without_a_wiki_is_silent() {
         &t.path().join("state"),
     )
     .unwrap();
-    assert_eq!(out["text"], "");
+    assert_eq!(out, "");
 }
 
 #[test]

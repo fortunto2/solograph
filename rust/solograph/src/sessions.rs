@@ -440,7 +440,7 @@ impl SessionSearch {
         project: Option<&str>,
     ) -> Result<Vec<Map<String, Value>>> {
         let any = crate::text::match_expression(query);
-        let all = any.split(" OR ").collect::<Vec<_>>().join(" AND ");
+        let all = crate::text::all_terms(query);
         let mut hits = self.store.search_expr(&all, n, project)?;
         if hits.len() < n && all != any {
             let seen: HashSet<String> = hits.iter().map(|h| h["doc_id"].to_string()).collect();

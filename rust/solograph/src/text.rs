@@ -25,13 +25,23 @@ fn is_cyrillic(token: &str) -> bool {
 /// OR, not AND: BM25 already ranks documents that match more and rarer terms
 /// higher. Short tokens and tokens with digits stay whole.
 pub fn match_expression(query: &str) -> String {
+    unique_terms(query).join(" OR ")
+}
+
+/// The same terms, every one required: the first, stricter pass of a search, and
+/// "all words of this phrase".
+pub fn all_terms(text: &str) -> String {
+    unique_terms(text).join(" AND ")
+}
+
+fn unique_terms(text: &str) -> Vec<String> {
     let mut terms: Vec<String> = Vec::new();
-    for (_, term) in terms_of(query) {
+    for (_, term) in terms_of(text) {
         if !terms.contains(&term) {
             terms.push(term);
         }
     }
-    terms.join(" OR ")
+    terms
 }
 
 /// Each word of `text` as (key, FTS5 term): the key is the stemmed prefix the term

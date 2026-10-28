@@ -37,6 +37,12 @@ def test_a_429_on_subtitles_is_reported_as_rate_limited(monkeypatch, tmp_path):
     assert meta["rate_limited"] is True
 
 
+def test_a_429_inside_a_video_id_is_not_a_rate_limit(monkeypatch, tmp_path):
+    monkeypatch.setattr(youtube, "VTT_DIR", tmp_path)
+    monkeypatch.setattr(subprocess, "run", _fake_run("ERROR: [youtube] x429yQ: Video unavailable"))
+    assert youtube.fetch_video_metadata("x429yQabcde")["rate_limited"] is False
+
+
 def test_a_video_without_subtitles_is_not_rate_limited(monkeypatch, tmp_path):
     monkeypatch.setattr(youtube, "VTT_DIR", tmp_path)
     monkeypatch.setattr(subprocess, "run", _fake_run("WARNING: There are no subtitles for the requested languages"))

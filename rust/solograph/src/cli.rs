@@ -32,6 +32,7 @@ const VALUED: &[(&str, &[&str])] = &[
     ("registry", &["-r", "--registry"]),
     ("claude-dir", &["--claude-dir"]),
     ("scope", &["--scope"]),
+    ("only", &["--only"]),
 ];
 /// Switches. `--deep` and `--incremental` are accepted and ignored: post-commit
 /// hooks installed in client repos still pass them.
@@ -41,6 +42,8 @@ const SWITCHES: &[(&str, &[&str])] = &[
     ("deep", &["--deep"]),
     ("incremental", &["-i", "--incremental"]),
     ("list", &["--list"]),
+    ("hook", &["--hook"]),
+    ("check", &["--check"]),
 ];
 
 pub struct Args {
@@ -377,7 +380,7 @@ fn kb(a: &Args) -> Result<()> {
         &a.pos.join(" "),
         a.num("limit", 5)?,
         a.val("type"),
-        a.switches.contains("graph"),
+        a.on("graph"),
         a.val("path"),
     )?;
     if a.json() {
@@ -404,6 +407,9 @@ fn kb(a: &Args) -> Result<()> {
 fn kb_graph(a: &Args) -> Result<()> {
     let g = kb_open(a)?.graph()?;
     let r = g.report(a.val("path"), a.val("page"), a.num("limit", 15)?);
+    if a.on("check") {
+        return graph_check(&r);
+    }
     if a.json() {
         println!("{}", pretty(&r));
         return Ok(());
@@ -452,19 +458,77 @@ fn kb_graph(a: &Args) -> Result<()> {
 }
 
 fn kb_hint(a: &Args) -> Result<()> {
-    let mut kb = kb_open(a)?;
-    let out = crate::kb::hint::hint(
-        &mut kb,
-        &a.pos.join(" "),
-        a.val("session").unwrap_or(""),
-        &crate::kb::hint::state_dir(),
-    )?;
-    if a.json() {
-        println!("{}", pretty(&out));
-    } else if let Some(text) = out["text"].as_str().filter(|t| !t.is_empty()) {
+    if a.on("hook") {
+        // Registered as the UserPromptSubmit hook itself: the payload comes on stdin,
+        // the hint goes back as additionalContext, and any failure is silence with
+        // exit 0, because a broken hint must never break a prompt.
+        let text = hook_payload()
+            .and_then(|(prompt, session)| hint_text(a, &prompt, &session))
+            .unwrap_or_default();
+        if !text.is_empty() {
+            let out = serde_json::json!({"hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": text,
+            }});
+            println!("{out}");
+        }
+        return Ok(());
+    }
+    let text = hint_text(a, &a.pos.join(" "), a.val("session").unwrap_or(""))?;
+    if !text.is_empty() {
         println!("{text}");
     }
     Ok(())
+}
+
+/// Only the problems, one per line, and a failing exit when there are any: the
+/// pre-commit gate reads the exit code, not the wording.
+fn graph_check(r: &Value) -> Result<()> {
+    let list = |k: &str| r[k].as_array().cloned().unwrap_or_default();
+    let mut problems: Vec<String> = Vec::new();
+    for o in list("orphans") {
+        problems.push(format!("[orphan] {}", o.as_str().unwrap_or("")));
+    }
+    for b in list("broken") {
+        problems.push(format!(
+            "[broken] [[{}]] in {}",
+            s(&b, "link"),
+            s(&b, "from")
+        ));
+    }
+    for m in list("not_in_index") {
+        problems.push(format!(
+            "[missing] {} (not in index.md)",
+            m.as_str().unwrap_or("")
+        ));
+    }
+    for p in &problems {
+        println!("  {p}");
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        bail!("{} wiki problem(s)", problems.len())
+    }
+}
+
+fn hook_payload() -> Result<(String, String)> {
+    let v: Value = serde_json::from_reader(std::io::stdin().lock())?;
+    let session = match &v["session_id"] {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    };
+    Ok((v["prompt"].as_str().unwrap_or("").to_string(), session))
+}
+
+fn hint_text(a: &Args, prompt: &str, session: &str) -> Result<String> {
+    let root = crate::kb::root_or_cwd(a.path("kb-path"));
+    if !root.join("wiki").is_dir() {
+        return Ok(String::new());
+    }
+    let mut kb = KnowledgeBase::open(&root, None)?;
+    crate::kb::hint::hint(&mut kb, prompt, session, &crate::kb::hint::state_dir())
 }
 
 fn sources(a: &Args) -> Result<()> {

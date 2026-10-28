@@ -339,7 +339,7 @@ def fetch_video_metadata(video_id: str) -> dict:
                     text=True,
                     timeout=30,
                 )
-                rate_limited = "429" in (proc.stderr or "") or "Too Many Requests" in (proc.stderr or "")
+                rate_limited = "HTTP Error 429" in (proc.stderr or "")
                 for suffix in [".en.vtt", ".en-orig.vtt", ".en-US.vtt"]:
                     p = Path(f"{out_path}{suffix}")
                     if p.exists():
@@ -519,6 +519,9 @@ class YouTubeIndexer:
         total_skipped_exists = 0
         total_skipped_no_transcript = 0
         total_rate_limited = 0
+        # A 429 is about this IP, not one video, and every further request extends
+        # the ban: after the first, the rest of the run asks YouTube nothing.
+        blocked = False
         total_with_chapters = 0
 
         splitter = get_text_splitter()
@@ -557,6 +560,10 @@ class YouTubeIndexer:
                     total_skipped_exists += 1
                     continue
 
+                if blocked:
+                    total_rate_limited += 1
+                    continue
+
                 print(f"  Processing: {title[:60]}...")
 
                 # 1. Fetch all metadata + transcript via yt-dlp
@@ -576,7 +583,8 @@ class YouTubeIndexer:
                     if meta.get("rate_limited"):
                         # Not written, so the next run tries it again.
                         total_rate_limited += 1
-                        print("    YouTube rate-limited the subtitles (429) — retried next run")
+                        blocked = True
+                        print("    YouTube rate-limited the subtitles (429): the rest waits for the next run")
                     else:
                         total_skipped_no_transcript += 1
                         print("    No transcript available")

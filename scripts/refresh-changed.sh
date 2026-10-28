@@ -56,17 +56,17 @@ find_scope_file() {
     done
 }
 
+# Which projects: the binary narrows the listing, and fails on a name the registry
+# lacks — a typo used to scan nothing and say nothing.
 SCOPE_FILE=$(find_scope_file)
-SCOPE_ARG=""
+NARROW=""; NARROW_TO=""
 if [ -n "${SOLOGRAPH_SCOPE:-}" ]; then
-    [ "$SOLOGRAPH_SCOPE" = "all" ] && WANTED="" || WANTED="$SOLOGRAPH_SCOPE"
+    [ "$SOLOGRAPH_SCOPE" = "all" ] || { NARROW="--only"; NARROW_TO="$SOLOGRAPH_SCOPE"; }
     SCOPE_SRC="SOLOGRAPH_SCOPE"
 elif [ -n "$SCOPE_FILE" ]; then
-    WANTED=""                  # the scope file narrows the listing below
-    SCOPE_ARG="$SCOPE_FILE"
+    NARROW="--scope"; NARROW_TO="$SCOPE_FILE"
     SCOPE_SRC="$SCOPE_FILE"
 else
-    WANTED=""
     SCOPE_SRC="whole registry"
 fi
 
@@ -89,17 +89,14 @@ fi
 
 # Read the registry before the loop, not in a process substitution: a crash
 # there is invisible to the loop, which just sees no lines and reports success.
-PROJECTS=$("$CLI" registry --list --registry "$REGISTRY" ${SCOPE_ARG:+--scope "$SCOPE_ARG"} 2>>"$LOG") \
-    || { say "FAILED reading $REGISTRY${SCOPE_ARG:+ with scope $SCOPE_ARG}"; exit 1; }
+PROJECTS=$("$CLI" registry --list --registry "$REGISTRY" ${NARROW:+$NARROW "$NARROW_TO"} 2>>"$LOG") \
+    || { say "FAILED reading $REGISTRY${NARROW:+ $NARROW $NARROW_TO}"; exit 1; }
 [ -n "$PROJECTS" ] || { say "FAILED: $REGISTRY lists no projects"; exit 1; }
 [ -n "$SKIP" ] && say "skipping: $SKIP (SOLOGRAPH_SKIP)"
 
 scanned=0; failed=0; quiet=0
 while IFS='|' read -r name path; do
     [ -n "$name" ] || continue
-    if [ -n "$WANTED" ]; then
-        case " $WANTED " in *" $name "*) ;; *) continue ;; esac
-    fi
     case " $SKIP " in *" $name "*) continue ;; esac
     [ -d "$path/.git" ] || { say "no git checkout: $name"; continue; }
 

@@ -37,6 +37,14 @@ pub struct Layout {
     pub version: i64,
 }
 
+impl Layout {
+    /// `bm25(fts, w1, w2, …)` with this layout's column weights.
+    pub fn bm25(&self) -> String {
+        let w: Vec<String> = self.weights.iter().map(f64::to_string).collect();
+        format!("bm25(fts, {})", w.join(", "))
+    }
+}
+
 impl Default for Layout {
     fn default() -> Self {
         Self {
@@ -210,6 +218,19 @@ impl FtsStore {
         keep_gone: bool,
         append: Option<Append>,
     ) -> Result<SyncReport> {
+        self.sync_under(files, parse, keep_gone, append, None)
+    }
+
+    /// [`Self::sync`] for one part of the corpus: `files` lists only the documents
+    /// whose id starts with `under`, and only those can vanish.
+    pub fn sync_under(
+        &mut self,
+        files: &[(String, PathBuf)],
+        parse: Parse,
+        keep_gone: bool,
+        append: Option<Append>,
+        under: Option<&str>,
+    ) -> Result<SyncReport> {
         let mut report = SyncReport::default();
         let columns = self.layout.columns;
         let tx = self.db.transaction()?;
@@ -259,7 +280,10 @@ impl FtsStore {
                 Err(_) => report.failed.push(doc_id.clone()),
             }
         }
-        for doc_id in known.keys().filter(|id| !listed.contains(id.as_str())) {
+        let vanished = known
+            .keys()
+            .filter(|id| !listed.contains(id.as_str()) && under.is_none_or(|p| id.starts_with(p)));
+        for doc_id in vanished {
             if keep_gone {
                 tx.execute("UPDATE docs SET gone = 1 WHERE doc_id = ?", [doc_id])?;
             } else {
@@ -384,11 +408,10 @@ impl FtsStore {
         // transcript — of every match before it sorts: 0.8–2.6 s a query, against
         // 1–20 ms for ranking from the index alone. Title and snippet come second,
         // for the rows that made the cut.
-        let weights: Vec<String> = self.layout.weights.iter().map(f64::to_string).collect();
         let mut sql = format!(
             "SELECT fts.rowid, d.doc_id, d.kind, d.gone, d.meta, \
-             bm25(fts, {}) AS rank FROM fts JOIN docs d ON d.id = fts.rowid WHERE fts MATCH ?1",
-            weights.join(", ")
+             {} AS rank FROM fts JOIN docs d ON d.id = fts.rowid WHERE fts MATCH ?1",
+            self.layout.bm25()
         );
         let like = kind.map(|k| format!("%{k}%"));
         sql.push_str(" AND (?3 IS NULL OR d.kind LIKE ?3)");

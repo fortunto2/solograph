@@ -40,9 +40,11 @@ Usage:
                                           else KB_PATH, else the current dir; --path wiki/
                                           limits it to files under that prefix
   solograph kb-graph [--path P] [--page SLUG] [-n N]   [[wikilink]] graph: hubs, connectors,
-                                          orphans, broken links, pages missing from index.md
+                                          orphans, broken links, pages missing from index.md;
+                                          --check prints only those and fails when there are any
   solograph kb-hint PROMPT [--session ID]   the wiki page a prompt is specifically about,
-                                          if any (the UserPromptSubmit hint; silent otherwise)
+                                          if any (the UserPromptSubmit hint; silent otherwise);
+                                          --hook reads the hook's JSON on stdin and answers it
   solograph sources search QUERY [-s SRC] [-n N]    YouTube / ProductHunt / TrustMRR / Telegram
   solograph sources list | tags [-s SRC] | related VIDEO [-s SRC]
   solograph explain PROJECT | deps PROJECT | stats | shared [PACKAGE]
@@ -52,8 +54,10 @@ Usage:
   solograph scan [-p NAME]               merge new checkouts into the registry, then index
                                          every project; with -p, index just that one
   solograph registry                     merge new checkouts into the registry only
-  solograph registry --list [--scope F]  name|path per project, read-only; --scope F keeps
-                                         the names in F's `scope:` list (a .solograph.yaml)
+  solograph registry --list [--scope F | --only NAMES]   name|path per project, read-only;
+                                         --scope keeps the names in F's `scope:` list (a
+                                         .solograph.yaml), --only the ones given; an unknown
+                                         name fails
   solograph sync-sessions [--claude-dir DIR]   read new and grown transcripts into the index
   solograph index-kb [--kb-path DIR]     sync the knowledge-base index now
   --db-path FILE                         the portfolio store for symbols/explain/deps/stats/
@@ -210,10 +214,17 @@ fn main() -> ExitCode {
             }
             let reg = registry::load(&path)?
                 .ok_or_else(|| anyhow::anyhow!("no registry at {}", path.display()))?;
-            let scope = a
-                .path("scope")
-                .map(|f| registry::load_scope(&f))
-                .transpose()?;
+            let scope = match (a.path("scope"), a.val("only")) {
+                (Some(f), _) => Some(registry::load_scope(&f)?),
+                (None, Some(names)) => Some(
+                    names
+                        .split([' ', ','])
+                        .filter(|n| !n.is_empty())
+                        .map(String::from)
+                        .collect::<Vec<_>>(),
+                ),
+                (None, None) => None,
+            };
             for line in registry::listing(&reg, scope.as_deref())? {
                 println!("{line}");
             }

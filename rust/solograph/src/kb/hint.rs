@@ -17,13 +17,12 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+use super::KnowledgeBase;
+use super::graph::stem;
+use crate::text::all_terms as expr;
 use anyhow::Result;
 use regex::Regex;
 use rusqlite::params;
-use serde_json::{Value, json};
-
-use super::KnowledgeBase;
-use crate::text::terms_of;
 
 const MIN_WORDS: usize = 3;
 const MAX_PAGES: usize = 2;
@@ -35,8 +34,8 @@ const STOP: &[&str] = &[
 ];
 const STACK_WORDS: [&str; 2] = ["стек", "stack"];
 const HEADER: &str =
-    "Rustam's wiki has measured notes on this — read before answering or searching the web:";
-/// Top-level wiki pages, not the catalog or tooling.
+    "The wiki has measured notes on this — read before answering or searching the web:";
+/// Top-level wiki pages, not the catalog or tooling: `graph::is_meta` in SQL.
 const WIKI: &str = "d.gone = 0 AND d.doc_id GLOB 'wiki/*' AND d.doc_id NOT GLOB 'wiki/*/*' \
                     AND d.doc_id NOT GLOB 'wiki/_*' AND d.doc_id != 'wiki/index.md'";
 
@@ -61,15 +60,6 @@ fn tokens(text: &str) -> Vec<String> {
         }
     }
     out
-}
-
-/// One token as an FTS5 expression: every word of it ("next.js" is two).
-fn expr(token: &str) -> String {
-    terms_of(token)
-        .into_iter()
-        .map(|(_, t)| t)
-        .collect::<Vec<_>>()
-        .join(" AND ")
 }
 
 struct Candidate {
@@ -122,17 +112,10 @@ impl KnowledgeBase {
             .map(|t| format!("({})", expr(t)))
             .collect::<Vec<_>>()
             .join(" OR ");
-        let weights: Vec<String> = self
-            .store
-            .layout
-            .weights
-            .iter()
-            .map(f64::to_string)
-            .collect();
         let mut stmt = self.store.db.prepare(&format!(
             "SELECT d.id, d.doc_id, fts.title, fts.keys FROM fts JOIN docs d ON d.id = fts.rowid \
-             WHERE fts MATCH ?1 AND {WIKI} ORDER BY bm25(fts, {}) LIMIT 5",
-            weights.join(", ")
+             WHERE fts MATCH ?1 AND {WIKI} ORDER BY {} LIMIT 5",
+            self.store.layout.bm25()
         ))?;
         let rows = stmt
             .query_map([q], |r| {
@@ -184,14 +167,7 @@ fn stack(root: &Path, toks: &[String]) -> Option<Candidate> {
         .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
         .filter_map(|p| {
             let text = std::fs::read_to_string(&p).ok()?;
-            let words = TOKEN
-                .find_iter(&text.to_lowercase())
-                .map(|m| {
-                    m.as_str()
-                        .trim_matches(|c| c == '.' || c == '-')
-                        .to_string()
-                })
-                .collect();
+            let words = tokens(&text.to_lowercase()).into_iter().collect();
             let name = text
                 .lines()
                 .find_map(|l| l.strip_prefix("name:"))
@@ -243,10 +219,10 @@ fn seen_file(state: &Path, session: &str) -> PathBuf {
     state.join(format!("{name}.json"))
 }
 
-/// The hint for one prompt: `{"text": ..., "pages": [...]}`, text empty when silent.
-/// Pages pointed at are remembered under `state` for the session.
-pub fn hint(kb: &mut KnowledgeBase, prompt: &str, session: &str, state: &Path) -> Result<Value> {
-    let silent = json!({"text": "", "pages": []});
+/// The hint for one prompt, empty when silent. Pages pointed at are remembered
+/// under `state` for the session.
+pub fn hint(kb: &mut KnowledgeBase, prompt: &str, session: &str, state: &Path) -> Result<String> {
+    let silent = String::new();
     let p = prompt.trim();
     if p.starts_with('/') || p.starts_with('<') || p.split_whitespace().count() < MIN_WORDS {
         return Ok(silent);
@@ -254,7 +230,6 @@ pub fn hint(kb: &mut KnowledgeBase, prompt: &str, session: &str, state: &Path) -
     if !kb.root.join("wiki").is_dir() {
         return Ok(silent);
     }
-    kb.sync()?;
     let low = p.to_lowercase();
     let extra = kb
         .aliases()
@@ -262,6 +237,11 @@ pub fn hint(kb: &mut KnowledgeBase, prompt: &str, session: &str, state: &Path) -
         .unwrap_or_default();
     let text = format!("{low} {extra}");
     let toks = tokens(&text);
+    // Most Russian prompts have no Latin word and no alias: nothing to look up.
+    if toks.is_empty() {
+        return Ok(silent);
+    }
+    kb.sync_under(Some("wiki/"))?;
     let sf = seen_file(state, session);
     let seen: HashSet<String> = std::fs::read_to_string(&sf)
         .ok()
@@ -282,13 +262,8 @@ pub fn hint(kb: &mut KnowledgeBase, prompt: &str, session: &str, state: &Path) -
                 break;
             }
             let path = abs(&c.path);
-            let stem = c
-                .path
-                .rsplit('/')
-                .next()
-                .unwrap_or("")
-                .trim_end_matches(".md");
-            let named = format!("{} {} {}", stem.replace('-', " "), c.title, c.line).to_lowercase();
+            let named = format!("{} {} {}", stem(&c.path).replace('-', " "), c.title, c.line)
+                .to_lowercase();
             if seen.contains(&path)
                 || picked.iter().any(|x| x.path == path)
                 || !rare.iter().any(|t| named.contains(t.as_str()))
@@ -317,10 +292,7 @@ pub fn hint(kb: &mut KnowledgeBase, prompt: &str, session: &str, state: &Path) -
             about.chars().take(160).collect::<String>()
         ));
     }
-    Ok(json!({
-        "text": lines.join("\n"),
-        "pages": picked.iter().map(|c| c.path.clone()).collect::<Vec<_>>(),
-    }))
+    Ok(lines.join("\n"))
 }
 
 #[cfg(test)]

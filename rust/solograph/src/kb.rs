@@ -94,10 +94,10 @@ pub fn detect_root() -> Option<PathBuf> {
     None
 }
 
-/// An explicit path, else [`detect_root`], else the current directory.
+/// An explicit path, else KB_PATH, else the current directory.
 pub fn root_or_cwd(explicit: Option<PathBuf>) -> PathBuf {
     explicit
-        .or_else(detect_root)
+        .or_else(|| env_path("KB_PATH"))
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."))
 }
@@ -106,12 +106,6 @@ pub fn root_or_cwd(explicit: Option<PathBuf>) -> PathBuf {
 ///
 /// Walks like os.walk: a symlink to a directory is listed but not entered, a
 /// symlink to a file is a file.
-pub fn markdown_files(root: &Path) -> Vec<(String, PathBuf)> {
-    let mut found = Vec::new();
-    walk(root, root, &mut found);
-    found
-}
-
 fn walk(root: &Path, dir: &Path, found: &mut Vec<(String, PathBuf)>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -280,8 +274,17 @@ impl KnowledgeBase {
     }
 
     pub fn sync(&mut self) -> Result<SyncReport> {
-        let files = markdown_files(&self.root);
-        self.store.sync(&files, &parse_markdown, false, None)
+        self.sync_under(None)
+    }
+
+    /// Only the files under `prefix` (`wiki/`): the hint reads nothing else, and the
+    /// whole tree was 7x the directories (a client checkout alone held 949 of 1187).
+    pub fn sync_under(&mut self, prefix: Option<&str>) -> Result<SyncReport> {
+        let mut files = Vec::new();
+        let dir = prefix.map_or_else(|| self.root.clone(), |p| self.root.join(p));
+        walk(&self.root, &dir, &mut files);
+        self.store
+            .sync_under(&files, &parse_markdown, false, None, prefix)
     }
 
     /// The KB's alias table, re-read when the file changes; None without one.
@@ -339,7 +342,7 @@ impl KnowledgeBase {
             })
             .collect();
         if expand_graph && !results.is_empty() {
-            let g = self.graph()?;
+            let g = self.link_graph()?; // synced above
             let extra = g.neighbours(&results, path, 3);
             results.extend(extra);
         }
