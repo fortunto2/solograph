@@ -412,8 +412,17 @@ impl KnowledgeBase {
     }
 
     /// The FTS5 expression for a query: its own terms, plus every alias of a term
-    /// the KB's alias table lists.
+    /// the KB's alias table lists, plus the same for the query respelt (fts/spell.rs).
     pub fn expression(&mut self, query: &str) -> String {
+        let own = self.expression_of(query);
+        let known = self.aliases().map(|a| a.spellings()).unwrap_or_default();
+        match self.store.respell(query, &known) {
+            Ok(Some(fixed)) => crate::text::union(&own, &self.expression_of(&fixed)),
+            _ => own,
+        }
+    }
+
+    fn expression_of(&mut self, query: &str) -> String {
         match self.aliases() {
             Some(a) => a.expression(query),
             None => crate::text::match_expression(query),

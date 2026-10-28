@@ -558,16 +558,29 @@ impl SessionSearch {
         n: usize,
         project: Option<&str>,
     ) -> Result<Vec<Map<String, Value>>> {
-        let any = crate::text::match_expression(query);
-        let all = crate::text::all_terms(query);
-        let mut hits = self.store.search_expr(&all, n, project)?;
-        if hits.len() < n && all != any {
-            let seen: HashSet<String> = hits.iter().map(|h| h["doc_id"].to_string()).collect();
-            for h in self.store.search_expr(&any, n, project)? {
-                if hits.len() >= n {
-                    break;
-                }
-                if !seen.contains(&h["doc_id"].to_string()) {
+        // Passes in turn, each filling what the one before left: every word as
+        // written, every word in either spelling, any word in either. A typo drops
+        // its word from the first (fts/spell.rs); a session that holds the words as
+        // written, typos and all ("придуматьк"), stays first.
+        let fixed = self.store.respell(query, &[]).ok().flatten();
+        let q = fixed.as_deref().unwrap_or(query);
+        let mut passes = vec![crate::text::all_terms(query)];
+        if fixed.is_some() {
+            passes.push(crate::text::all_terms_either(query, q));
+        }
+        passes.push(crate::text::union(
+            &crate::text::match_expression(query),
+            &crate::text::match_expression(q),
+        ));
+        passes.dedup();
+        let mut hits: Vec<Map<String, Value>> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for expr in &passes {
+            if hits.len() >= n {
+                break;
+            }
+            for h in self.store.search_expr(expr, n, project)? {
+                if hits.len() < n && seen.insert(h["doc_id"].to_string()) {
                     hits.push(h);
                 }
             }

@@ -228,6 +228,24 @@ All the query's words before some of them: a session that has every word comes f
 | all words first, title ×10 | 28 | 32 |
 | OR + recency boost | 26 | 30 |
 
+**Typos.** Every word is searched as a stemmed prefix, so one wrong letter ("солграф",
+"технопакр") matched nothing and the word dropped out. A word in fewer than 3 documents
+whose neighbour one edit away (two from 8 letters) is in at least three times as many is
+also searched as that neighbour (`src/fts/spell.rs`, the index's own vocabulary through
+fts5vocab; a KB adds its alias spellings, so "солграф" reaches "solograph"). Sessions take
+three passes in turn: every word as written, every word in either spelling, any word, so a
+session holding a typo verbatim still comes first. One typo planted in the longest word of
+each known-answer query, 0.15 → 0.16:
+
+| Set | clean @1 / @5 | with a typo, before | with a typo, after |
+|---|---|---|---|
+| KB, 40 body-word questions | 30 / 38 (same) | 19 / 31 | 27 / 38 |
+| KB, 40 questions outside the wiki | 25 / 33 (same) | 17 / 23 | 23 / 31 |
+| KB, 22 Russian questions for English pages | 0 / 16 (same) | 0 / 14 | 0 / 15 |
+| Sessions, 40 known answers | 27 / 31 (same) | 17 / 24 | 21 / 27 |
+
+Clean queries come back identical on every set; a query costs 0-14 ms more.
+
 Titles skip the lines Claude Code writes itself: 82 archived sessions were titled "[Request interrupted by user for tool use]", and prompts lose their "[Image #N]" markers.
 
 ### Equivalence with the Python 0.8 it replaced

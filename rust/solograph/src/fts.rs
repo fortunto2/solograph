@@ -672,5 +672,7 @@ pub fn truthy(v: &Value) -> bool {
     }
 }
 
+mod spell;
+
 #[cfg(test)]
 mod tests;

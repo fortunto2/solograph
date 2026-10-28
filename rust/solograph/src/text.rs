@@ -28,10 +28,42 @@ pub fn match_expression(query: &str) -> String {
     unique_terms(query).join(" OR ")
 }
 
+/// Two OR-expressions as one, each term once.
+pub fn union(a: &str, b: &str) -> String {
+    let mut terms: Vec<&str> = Vec::new();
+    for t in a.split(" OR ").chain(b.split(" OR ")) {
+        if !t.is_empty() && !terms.contains(&t) {
+            terms.push(t);
+        }
+    }
+    terms.join(" OR ")
+}
+
 /// The same terms, every one required: the first, stricter pass of a search, and
 /// "all words of this phrase".
 pub fn all_terms(text: &str) -> String {
     unique_terms(text).join(" AND ")
+}
+
+/// Every word required, in either spelling: `b` is `a` with some words replaced
+/// one for one (fts/spell.rs). A word spelt the same way twice is one term.
+pub fn all_terms_either(a: &str, b: &str) -> String {
+    let (ta, tb) = (terms_of(a), terms_of(b));
+    if ta.len() != tb.len() {
+        return all_terms(a);
+    }
+    let mut out: Vec<String> = Vec::new();
+    for ((_, x), (_, y)) in ta.iter().zip(&tb) {
+        let t = if x == y {
+            x.clone()
+        } else {
+            format!("({x} OR {y})")
+        };
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    out.join(" AND ")
 }
 
 fn unique_terms(text: &str) -> Vec<String> {
@@ -198,6 +230,18 @@ pub fn window_snippet(body: &str, expr: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn either_spelling_keeps_one_term_per_word() {
+        assert_eq!(
+            super::all_terms_either("как солграф ищет", "как солограф ищет"),
+            "\"как\"* AND (\"солграф\"* OR \"солограф\"*) AND \"ищет\"*"
+        );
+        assert_eq!(
+            super::union("\"a\" OR \"b\"", "\"b\" OR \"c\""),
+            "\"a\" OR \"b\" OR \"c\""
+        );
+    }
 
     #[test]
     fn russian_inflections_meet_at_the_stem() {

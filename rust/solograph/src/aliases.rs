@@ -121,6 +121,17 @@ impl Aliases {
         self.groups.is_empty()
     }
 
+    /// Every one-word spelling, as written: words the KB knows of even when no page
+    /// uses them ("солограф"), so a typo of one can be respelt (fts/spell.rs).
+    pub fn spellings(&self) -> Vec<String> {
+        self.groups
+            .iter()
+            .flat_map(|g| &g.spellings)
+            .filter(|m| m.words.len() == 1)
+            .map(|m| crate::text::fold(&m.text))
+            .collect()
+    }
+
     /// The groups whose other spellings the query uses: a spelling with all its
     /// words in the query.
     fn named<'a>(&'a self, query: &str) -> impl Iterator<Item = &'a Group> {
