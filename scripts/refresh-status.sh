@@ -18,8 +18,11 @@ MAX_AGE_H="${SOLOGRAPH_REFRESH_MAX_AGE_H:-30}"
 
 [ -r "$LOG" ] || { echo "FAIL: no refresh log at $LOG"; exit 1; }
 
-done_line=$(grep -E '^[0-9T:-]+ done — ' "$LOG" | tail -1)
-[ -n "$done_line" ] || { echo "FAIL: the refresh has never finished a run ($LOG)"; exit 1; }
+# Only a run over the whole registry says the nightly works: a manual run over one
+# project after a failed night read as OK while 73 of 77 projects went unrefreshed
+# (review, 28 Oct 2026). A FAILED anywhere after that run still fails below.
+done_line=$(grep -E '^[0-9T:-]+ done — .*\(scope: whole registry\)' "$LOG" | tail -1)
+[ -n "$done_line" ] || { echo "FAIL: the refresh has never finished a run over the whole registry ($LOG)"; exit 1; }
 
 stamp=${done_line%% *}
 then_s=$(date -j -f %Y-%m-%dT%H:%M:%S "$stamp" +%s 2>/dev/null) ||

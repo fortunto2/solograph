@@ -62,3 +62,16 @@ def test_subtitle_downloads_are_paced(monkeypatch, tmp_path):
     youtube.fetch_video_metadata("abcdefghijk")
     subs = [c for c in seen if "--skip-download" in c]
     assert subs and "--sleep-subtitles" in subs[0]
+
+
+def test_a_429_on_the_metadata_call_is_rate_limited_too(monkeypatch, tmp_path):
+    # Review 28 Oct: a refused `yt-dlp -j` returned the empty result with
+    # rate_limited False, so a blocked IP still read as "no transcript".
+    def run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd, 1, stdout="", stderr="ERROR: [youtube] x: HTTP Error 429: Too Many Requests"
+        )
+
+    monkeypatch.setattr(youtube, "VTT_DIR", tmp_path)
+    monkeypatch.setattr(subprocess, "run", run)
+    assert youtube.fetch_video_metadata("abcdefghijk")["rate_limited"] is True

@@ -273,7 +273,8 @@ def fetch_video_metadata(video_id: str) -> dict:
             timeout=30,
         )
         if result.returncode != 0 or not result.stdout.strip():
-            return empty
+            # The metadata call is refused with 429 too once the IP is blocked.
+            return {**empty, "rate_limited": "HTTP Error 429" in (result.stderr or "")}
         data = json.loads(result.stdout)
     except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
         return empty
@@ -531,6 +532,11 @@ class YouTubeIndexer:
             print(f"Channel: @{ch['handle']} ({ch['name']})")
             print(f"{'=' * 60}")
 
+            if blocked:
+                # Discovery asks YouTube too; every request extends the ban.
+                print("  skipped: YouTube is refusing this IP (429), next run")
+                continue
+
             # Discovery: yt-dlp primary → SearXNG fallback
             videos = fetch_channel_videos_ytdlp(ch["handle"], limit=limit)
             if not videos and searxng_available:
@@ -752,6 +758,9 @@ class YouTubeIndexer:
                     transcript = fetch_transcript(self.searxng_url, video_id) or ""
 
             if not transcript or len(transcript) < 200:
+                if meta.get("rate_limited"):
+                    print("    YouTube refused this IP (HTTP 429): run again in a few hours", file=sys.stderr)
+                    break
                 print(f"    No transcript for {video_id}")
                 continue
 

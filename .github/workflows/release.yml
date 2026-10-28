@@ -1,7 +1,11 @@
 # A tag `vX.Y.Z` builds the binary for macOS (Apple silicon) and Linux (x86_64) and
-# attaches both to a GitHub release, so installing needs `curl`, not a Rust toolchain:
-#   curl -L -o ~/.solo/bin/solograph \
+# publishes a GitHub release with both, so installing needs `curl`, not Rust:
+#   curl -fL -o ~/.solo/bin/solograph \
 #     https://github.com/fortunto2/solograph/releases/latest/download/solograph-macos-arm64
+#
+# The release stays a draft until both binaries are attached. Published first, it
+# was "Latest" for 3-9 minutes with no assets, and an install in that window got a
+# 404 page written over the binary (review, 28 Oct 2026).
 name: release
 
 on:
@@ -12,24 +16,26 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  draft:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Create the release
+      - name: Create the release as a draft
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+        run: gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
 
   build:
-    needs: release
+    needs: draft
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-14
             asset: solograph-macos-arm64
-          - os: ubuntu-latest
+          # 22.04 for an older glibc floor: a binary built on the newest runner
+          # does not start on a machine a release or two behind.
+          - os: ubuntu-22.04
             asset: solograph-linux-x86_64
     runs-on: ${{ matrix.os }}
     steps:
@@ -42,8 +48,18 @@ jobs:
       - name: Smoke test the binary
         run: |
           cp rust/target/release/solograph "${{ matrix.asset }}"
-          ./"${{ matrix.asset }}" --help | head -3
-      - name: Attach to the release
+          ./"${{ matrix.asset }}" --version
+      - name: Attach to the draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$GITHUB_REF_NAME" "${{ matrix.asset }}" --clobber
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish once every binary is there
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest

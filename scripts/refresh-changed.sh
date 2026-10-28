@@ -62,8 +62,11 @@ find_scope_file() {
 SCOPE_FILE=$(find_scope_file)
 NARROW=""; NARROW_TO=""
 if [ -n "${SOLOGRAPH_SCOPE:-}" ]; then
-    [ "$SOLOGRAPH_SCOPE" = "all" ] || { NARROW="--only"; NARROW_TO="$SOLOGRAPH_SCOPE"; }
-    SCOPE_SRC="SOLOGRAPH_SCOPE"
+    if [ "$SOLOGRAPH_SCOPE" = "all" ]; then
+        SCOPE_SRC="whole registry"      # refresh-status counts only these runs
+    else
+        NARROW="--only"; NARROW_TO="$SOLOGRAPH_SCOPE"; SCOPE_SRC="SOLOGRAPH_SCOPE"
+    fi
 elif [ -n "$SCOPE_FILE" ]; then
     NARROW="--scope"; NARROW_TO="$SCOPE_FILE"
     SCOPE_SRC="$SCOPE_FILE"

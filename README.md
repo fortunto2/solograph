@@ -25,7 +25,7 @@ A prebuilt binary from the [latest release](https://github.com/fortunto2/sologra
 
 ```bash
 mkdir -p ~/.solo/bin
-curl -L -o ~/.solo/bin/solograph \
+curl -fL -o ~/.solo/bin/solograph \
   https://github.com/fortunto2/solograph/releases/latest/download/solograph-macos-arm64   # or solograph-linux-x86_64
 chmod +x ~/.solo/bin/solograph && ~/.solo/bin/solograph --version
 ```
@@ -40,7 +40,7 @@ CODEGRAPH_SCAN_PATH=~/projects ~/.solo/bin/solograph scan     # every git checko
 ~/.solo/bin/solograph symbols "auth middleware"               # what the agent will get
 ```
 
-Sessions need nothing: the index reads `~/.claude/projects` on the first search. Put `solograph scan` in cron or launchd so new code is indexed by morning.
+Sessions need nothing: the index reads `~/.claude/projects` on the first search. For new code by morning, cron or launchd `solograph registry && solograph scan`: `registry` adds checkouts that appeared, `scan` only reads the registry, so a project removed from it on purpose stays out.
 
 ### Your knowledge base
 
