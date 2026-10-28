@@ -221,3 +221,29 @@ fn a_scoped_sync_reads_and_drops_only_under_its_prefix() {
     assert_eq!((r.removed, r.indexed), (1, 2));
     assert_eq!(k.sync().unwrap().indexed, 1);
 }
+
+#[test]
+fn a_folder_marked_private_is_not_read_into_a_kb_above_it() {
+    // Review 28 Oct: `cd ~ && solograph kb family` read ~/personal into ~/.solo/kb.
+    let t = tempfile::tempdir().unwrap();
+    let root = kb_root(t.path());
+    let personal = root.join("personal");
+    std::fs::create_dir_all(&personal).unwrap();
+    std::fs::write(personal.join(".solograph-private"), "").unwrap();
+    std::fs::write(personal.join("family.md"), "# Family\n\nprivate notes").unwrap();
+    let mut found = Vec::new();
+    walk(&root, &root, &super::Config::default(), &mut found);
+    assert!(
+        found.iter().all(|(id, _)| !id.starts_with("personal/")),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn the_home_directory_is_never_an_implicit_kb() {
+    let home = crate::paths::home();
+    assert!(super::implicit_root(&home).is_none());
+    assert!(super::implicit_root(Path::new("/")).is_none());
+    let t = tempfile::tempdir().unwrap();
+    assert_eq!(super::implicit_root(t.path()).as_deref(), Some(t.path()));
+}

@@ -227,3 +227,26 @@ fn listing_is_name_pipe_path_and_a_scope_narrows_it_loudly() {
         .to_string();
     assert!(err.contains("gamma"), "{err}");
 }
+
+/// Review 28 Oct: serde_json leaves DEL, C1 controls and U+FFFE raw, and YAML
+/// refuses them, so one odd byte in one README broke every registry read.
+#[test]
+fn control_characters_in_a_description_still_load() {
+    let t = tempfile::tempdir().unwrap();
+    let reg = super::Registry {
+        projects: vec![super::Project {
+            name: "odd".into(),
+            path: "/x/odd".into(),
+            description: Some("a\u{7f}b\u{9d}c\u{fffe}d\u{1}e".into()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let path = t.path().join("registry.yaml");
+    std::fs::write(&path, super::to_yaml(&reg)).unwrap();
+    let back = load(&path).unwrap().unwrap();
+    assert_eq!(
+        back.projects[0].description.as_deref(),
+        Some("a\u{7f}b\u{9d}c\u{fffe}d\u{1}e")
+    );
+}

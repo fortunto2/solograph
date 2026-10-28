@@ -8,6 +8,7 @@ mod cli;
 mod deps;
 mod english;
 mod fts;
+mod git;
 mod http;
 mod kb;
 mod paths;
@@ -89,7 +90,18 @@ fn print_registry_report(r: &registry::RefreshReport, path: &Path) {
 fn scan(a: &cli::Args) -> Result<()> {
     let reg_path = a.path("registry").unwrap_or_else(registry::default_path);
     let project = a.val("project").map(String::from);
-    if project.is_none() {
+    // `scan` reads the registry; `solograph registry` is what merges new checkouts.
+    // It used to merge here too, which re-added repos a client profile had removed
+    // on purpose (review, 28 Oct 2026). The one exception is a first run: no
+    // registry yet, and the folders to look in named explicitly.
+    if project.is_none() && !reg_path.exists() {
+        if paths::env_path("CODEGRAPH_SCAN_PATH").is_none() {
+            bail!(
+                "no registry at {}: set CODEGRAPH_SCAN_PATH to the folders holding your \
+                 checkouts, or run `solograph registry` first",
+                reg_path.display()
+            );
+        }
         let report = registry::refresh(&reg_path, None)?;
         print_registry_report(&report, &reg_path);
     }
@@ -113,13 +125,22 @@ fn scan(a: &cli::Args) -> Result<()> {
     }
     println!("Scanning {} project(s)\n", targets.len());
     let mut ex = scanner::SymbolExtractor::default();
+    let mut failed: Vec<&str> = Vec::new();
     for p in targets {
         let root = Path::new(&p.path);
         if !root.exists() {
             println!("  Skipping {} (path not found)", p.name);
             continue;
         }
-        let r = pf.scan_project(&p.name, root, &mut ex)?;
+        // One project that cannot be scanned must not stop the rest.
+        let r = match pf.scan_project(&p.name, root, &mut ex) {
+            Ok(r) => r,
+            Err(e) => {
+                println!("  {}: FAILED {e:#}", p.name);
+                failed.push(&p.name);
+                continue;
+            }
+        };
         if r.read == 0 && r.removed == 0 {
             // refresh-changed.sh counts these lines; keep the wording.
             println!("  {}: unchanged", p.name);
@@ -131,6 +152,9 @@ fn scan(a: &cli::Args) -> Result<()> {
         }
     }
     println!("\n{}", serde_json::to_string(&pf.stats()?)?);
+    if !failed.is_empty() {
+        bail!("{} project(s) failed: {}", failed.len(), failed.join(", "));
+    }
     Ok(())
 }
 
@@ -159,7 +183,7 @@ fn sync_sessions(a: &cli::Args) -> Result<()> {
 }
 
 fn index_kb(a: &cli::Args) -> Result<()> {
-    let root = kb::root_or_cwd(a.path("kb-path"));
+    let root = kb::root_or_cwd(a.path("kb-path"))?;
     let stats = kb::KnowledgeBase::open(&root, None)?.stats()?;
     println!(
         "KB index: {} documents, {} read now, {} alias groups",

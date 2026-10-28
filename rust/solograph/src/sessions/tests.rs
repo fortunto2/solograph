@@ -381,3 +381,72 @@ fn all_words_rank_above_some_words() {
     let out = s.search("migrate billing webhook", 2, None).unwrap();
     assert_eq!(ids(&out), ["all", "some"]);
 }
+
+/// A transcript in `cwd`, with the given id, in the same Claude project dir as
+/// every other here.
+fn transcript_in(tmp: &Path, id: &str, cwd: &Path, prompt: &str) -> PathBuf {
+    let path = transcript(&proj(tmp).join(format!("{id}.jsonl")), prompt, "Done.");
+    let text = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("\"/w/proj\"", &format!("\"{}\"", cwd.display()));
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+#[test]
+fn privacy_is_judged_per_transcript_not_from_the_first_one_in_the_folder() {
+    // Review 28 Oct: the verdict was cached per Claude project dir from its first
+    // transcript; a cwd-less first file made a private session searchable.
+    let t = tempfile::tempdir().unwrap();
+    let private_cwd = t.path().join("home/personal");
+    std::fs::create_dir_all(&private_cwd).unwrap();
+    std::fs::write(private_cwd.join(".solograph-private"), "").unwrap();
+    std::fs::create_dir_all(proj(t.path())).unwrap();
+    std::fs::write(
+        proj(t.path()).join("a0.jsonl"),
+        line(&json!({"type": "summary", "summary": "no cwd here"})),
+    )
+    .unwrap();
+    transcript_in(t.path(), "s1", &private_cwd, "семейная история");
+    let out = search(t.path()).search("семейная", 5, None).unwrap();
+    assert!(ids(&out).is_empty(), "{out}");
+}
+
+#[test]
+fn a_marker_added_while_the_server_runs_is_honoured_on_the_next_search() {
+    let t = tempfile::tempdir().unwrap();
+    let cwd = t.path().join("home/notes");
+    std::fs::create_dir_all(&cwd).unwrap();
+    transcript_in(t.path(), "s1", &cwd, "семейная история");
+    let mut s = search(t.path());
+    assert_eq!(ids(&s.search("семейная", 5, None).unwrap()), ["s1"]);
+    std::fs::write(cwd.join(".solograph-private"), "").unwrap();
+    assert!(ids(&s.search("семейная", 5, None).unwrap()).is_empty());
+}
+
+#[test]
+fn an_archived_session_from_a_folder_marked_private_later_is_purged() {
+    let t = tempfile::tempdir().unwrap();
+    let cwd = t.path().join("home/notes");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let path = transcript_in(t.path(), "s1", &cwd, "семейная история");
+    let mut s = search(t.path());
+    assert_eq!(ids(&s.search("семейная", 5, None).unwrap()), ["s1"]);
+    std::fs::remove_file(path).unwrap(); // Claude Code deleted it: archived
+    assert_eq!(ids(&s.search("семейная", 5, None).unwrap()), ["s1"]);
+    std::fs::write(cwd.join(".solograph-private"), "").unwrap();
+    assert!(ids(&s.search("семейная", 5, None).unwrap()).is_empty());
+}
+
+#[test]
+fn a_transcript_with_no_cwd_at_all_is_not_indexed() {
+    // Fail closed: without a working directory there is no way to tell.
+    let t = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(proj(t.path())).unwrap();
+    std::fs::write(
+        proj(t.path()).join("s1.jsonl"),
+        line(&json!({"type": "user", "message": {"content": "семейная история"}})),
+    )
+    .unwrap();
+    assert!(ids(&search(t.path()).search("семейная", 5, None).unwrap()).is_empty());
+}

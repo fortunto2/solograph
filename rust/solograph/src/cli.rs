@@ -374,7 +374,7 @@ fn dupes(a: &Args) -> Result<()> {
 }
 
 fn kb_open(a: &Args) -> Result<KnowledgeBase> {
-    KnowledgeBase::open(&crate::kb::root_or_cwd(a.path("kb-path")), None)
+    KnowledgeBase::open(&crate::kb::root_or_cwd(a.path("kb-path"))?, None)
 }
 
 fn kb(a: &Args) -> Result<()> {
@@ -544,7 +544,7 @@ fn hook_payload() -> Result<(String, String)> {
 }
 
 fn hint_text(a: &Args, prompt: &str, session: &str) -> Result<crate::kb::hint::Hint> {
-    let root = crate::kb::root_or_cwd(a.path("kb-path"));
+    let root = crate::kb::root_or_cwd(a.path("kb-path"))?;
     if !root.join(crate::kb::Config::load(&root)?.pages).is_dir() {
         return Ok(Default::default());
     }

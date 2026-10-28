@@ -3,7 +3,6 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -89,8 +88,17 @@ pub fn listing(reg: &Registry, scope: Option<&[String]>) -> Result<Vec<String>> 
         .collect())
 }
 
+/// A YAML double-quoted string. JSON escaping covers the C0 controls but leaves
+/// DEL, the C1 range and U+FFFE/U+FFFF raw, which YAML refuses: one such byte in
+/// one README made every registry read fail (review, 28 Oct 2026).
 fn q(s: &str) -> String {
-    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
+    let json = serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
+    json.chars()
+        .map(|c| match c {
+            '\u{7f}'..='\u{9f}' | '\u{fffe}' | '\u{ffff}' => format!("\\u{:04x}", c as u32),
+            c => c.to_string(),
+        })
+        .collect()
 }
 
 fn q_opt(s: &Option<String>) -> String {
@@ -244,13 +252,13 @@ pub fn detect_stacks(root: &Path) -> Vec<String> {
 }
 
 fn last_commit(root: &Path) -> Option<String> {
-    let out = Command::new("git")
-        .args(["log", "-1", "--format=%ci"])
-        .current_dir(root)
-        .output()
-        .ok()?;
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (out.status.success() && !s.is_empty()).then_some(s)
+    let out = crate::git::run(
+        root,
+        &["log", "-1", "--format=%ci"],
+        std::time::Duration::from_secs(5),
+    )?;
+    let s = String::from_utf8_lossy(&out).trim().to_string();
+    (!s.is_empty()).then_some(s)
 }
 
 fn description(root: &Path) -> String {
@@ -399,7 +407,11 @@ pub fn refresh(path: &Path, scan_paths: Option<Vec<PathBuf>>) -> Result<RefreshR
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, to_yaml(&reg))?;
+    // Written aside and renamed: a reader never sees a half-written registry,
+    // which parsed as zero projects and pruned the whole portfolio.
+    let tmp = path.with_extension("yaml.tmp");
+    std::fs::write(&tmp, to_yaml(&reg))?;
+    std::fs::rename(&tmp, path)?;
     report.total = reg.projects.len();
     Ok(report)
 }

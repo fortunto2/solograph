@@ -61,7 +61,7 @@ pub fn detect_root() -> Option<PathBuf> {
     if let Some(p) = env_path("KB_PATH") {
         return Some(p);
     }
-    let cwd = std::env::current_dir().ok()?;
+    let cwd = implicit_root(&std::env::current_dir().ok()?)?;
     if cwd.join(".solo").join("kb").exists() {
         return Some(cwd);
     }
@@ -91,12 +91,25 @@ pub fn detect_root() -> Option<PathBuf> {
     None
 }
 
-/// An explicit path, else KB_PATH, else the current directory.
-pub fn root_or_cwd(explicit: Option<PathBuf>) -> PathBuf {
-    explicit
-        .or_else(|| env_path("KB_PATH"))
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."))
+/// An explicit path, else KB_PATH, else the current directory unless it is the
+/// home directory or `/`: from there the walk would read everything below it.
+pub fn root_or_cwd(explicit: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(p) = explicit.or_else(|| env_path("KB_PATH")) {
+        return Ok(p);
+    }
+    let cwd = std::env::current_dir()?;
+    implicit_root(&cwd).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no knowledge base here ({}): pass --kb-path DIR or set KB_PATH",
+            cwd.display()
+        )
+    })
+}
+
+/// The current directory as a KB root, unless it is home or the filesystem root.
+fn implicit_root(cwd: &Path) -> Option<PathBuf> {
+    let home = crate::paths::home();
+    (cwd != home && cwd.parent().is_some()).then(|| cwd.to_path_buf())
 }
 
 /// (relative path, path) for every markdown file outside hidden, vendored and
@@ -120,10 +133,17 @@ fn walk(root: &Path, dir: &Path, cfg: &Config, found: &mut Vec<(String, PathBuf)
         };
         if is_dir {
             let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy();
+            // A folder marked private never reaches a KB rooted above it.
+            let private = || {
+                crate::sessions::PRIVATE_MARKERS
+                    .iter()
+                    .any(|m| path.join(m).exists())
+            };
             if !ft.is_symlink()
                 && !name.starts_with('.')
                 && !SKIP_DIRS.contains(&name.as_str())
                 && !cfg.excludes(&rel, &name)
+                && !private()
             {
                 subdirs.push(path);
             }

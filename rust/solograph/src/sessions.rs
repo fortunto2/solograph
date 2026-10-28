@@ -320,10 +320,18 @@ pub(crate) fn is_private(cwd: &str) -> bool {
             .any(|p| PRIVATE_MARKERS.iter().any(|m| p.join(m).exists()))
 }
 
+/// Whether a session started in `cwd` stays out of the index. No cwd at all is
+/// private too: with nothing to check, the safe answer is no.
+fn keep_out(cwd: &str) -> bool {
+    cwd.is_empty() || is_private(cwd)
+}
+
 pub struct SessionSearch {
     pub store: FtsStore,
     projects_dir: PathBuf,
-    private_dirs: HashMap<String, bool>,
+    /// Each transcript's first working directory, which never changes once
+    /// written. The privacy verdict is not cached: a marker can appear any time.
+    cwds: HashMap<PathBuf, String>,
 }
 
 impl SessionSearch {
@@ -346,21 +354,44 @@ impl SessionSearch {
         Ok(Self {
             store,
             projects_dir: root.join("projects"),
-            private_dirs: HashMap::new(),
+            cwds: HashMap::new(),
         })
     }
 
-    fn private(&mut self, path: &Path) -> bool {
-        let key = path
-            .parent()
-            .and_then(Path::file_name)
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        *self
-            .private_dirs
-            .entry(key)
-            .or_insert_with(|| is_private(&session_cwd(path)))
+    /// Judged per transcript, every sync. It used to be cached per Claude project
+    /// dir from that dir's first transcript, for the server's lifetime (review,
+    /// 28 Oct 2026): a cwd-less first file made a private session searchable, and
+    /// a marker added while the server ran was ignored.
+    fn cwd_of(&mut self, path: &Path) -> String {
+        if let Some(c) = self.cwds.get(path) {
+            return c.clone();
+        }
+        let c = session_cwd(path);
+        // Not cached while empty: the first lines of a new transcript carry none.
+        if !c.is_empty() {
+            self.cwds.insert(path.to_path_buf(), c.clone());
+        }
+        c
+    }
+
+    /// Archived sessions (transcript deleted) whose project folder is private now.
+    fn archived_private(&self, verdict: &mut HashMap<String, bool>) -> Result<Vec<String>> {
+        let mut stmt = self.store.db.prepare(
+            "SELECT doc_id, json_extract(meta, '$.project_path') FROM docs WHERE gone = 1",
+        )?;
+        let rows: Vec<(String, Option<String>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        // An archived row with no recorded folder was imported from the old vector
+        // store; there is nothing to check it against, and it is the only copy.
+        Ok(rows
+            .into_iter()
+            .filter_map(|(id, pp)| {
+                let pp = pp.filter(|p| !p.is_empty())?;
+                let private = *verdict.entry(pp.clone()).or_insert_with(|| is_private(&pp));
+                private.then_some(id)
+            })
+            .collect())
     }
 
     /// Sync the index with the transcripts on disk. None = directory unreadable.
@@ -368,12 +399,18 @@ impl SessionSearch {
         let Some(files) = transcript_files(&self.projects_dir) else {
             return Ok(None);
         };
-        let private: HashSet<String> = files
-            .iter()
-            .filter(|(_, p)| self.private(p))
-            .map(|(id, _)| id.clone())
-            .collect();
-        self.store.forget(&private)?;
+        let mut verdict: HashMap<String, bool> = HashMap::new();
+        let mut private: HashSet<String> = HashSet::new();
+        for (id, p) in &files {
+            let cwd = self.cwd_of(p);
+            if *verdict.entry(cwd.clone()).or_insert_with(|| keep_out(&cwd)) {
+                private.insert(id.clone());
+            }
+        }
+        let archived = self.archived_private(&mut verdict)?;
+        let mut gone: HashSet<String> = private.clone();
+        gone.extend(archived);
+        self.store.forget(&gone)?;
         let files: Vec<(String, PathBuf)> = files
             .into_iter()
             .filter(|(id, _)| !private.contains(id))

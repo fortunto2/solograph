@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
@@ -117,18 +116,16 @@ fn keep(fp: &Path) -> bool {
     !skipped_dir(fp) && !is_skipped_file(&name) && fp.is_file()
 }
 
-/// The files git tracks, or None when it is not a checkout.
+/// The files git tracks, or None when it is not a checkout. Each path once: mid-
+/// merge, a conflicted path is listed once per stage, and the second copy failed
+/// the scan on UNIQUE(project, path).
 fn tracked_files(root: &Path) -> Option<Vec<PathBuf>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["ls-files", "-z"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
+    let out = crate::git::run(
+        root,
+        &["ls-files", "-z", "--deduplicate"],
+        std::time::Duration::from_secs(60),
+    )?;
+    let text = String::from_utf8_lossy(&out);
     Some(
         text.split('\0')
             .filter(|n| !n.is_empty())
