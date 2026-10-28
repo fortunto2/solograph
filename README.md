@@ -52,18 +52,22 @@ cd ~/notes
 ~/.solo/bin/solograph kb-graph --check                    # orphans, broken links; exit 1 when any
 ```
 
-Two languages: add `wiki/_aliases.yaml`, one group per line, the term your pages use last — `- [песочница, sandbox]`. The prompt hint, in `~/.claude/settings.json`:
+Two languages: add `wiki/_aliases.yaml`, one group per line, the term your pages use last — `- [песочница, sandbox]`. The hook, in `~/.claude/settings.json`, registered for both events:
 
 ```json
 "hooks": {
+  "SessionStart": [
+    { "hooks": [ { "type": "command", "timeout": 3,
+      "command": "$HOME/.solo/bin/solograph hook --kb-path $HOME/notes" } ] }
+  ],
   "UserPromptSubmit": [
     { "hooks": [ { "type": "command", "timeout": 3,
-      "command": "$HOME/.solo/bin/solograph kb-hint --hook --kb-path $HOME/notes" } ] }
+      "command": "$HOME/.solo/bin/solograph hook --kb-path $HOME/notes" } ] }
   ]
 }
 ```
 
-It stays silent unless a prompt names something the wiki is specifically about, and any failure is silence with exit 0.
+On a prompt it gives the wiki hint, silent unless the prompt names something the wiki is specifically about. Once per session per project, at SessionStart or on the first prompt that starts work ("plan", "fix", "сделай", "почини"), it gives a map of the registered project holding `cwd`: stack, size, languages, layers, the first dependencies, and which tool answers what. A second profile adds `--db-path` for its own portfolio store. Any failure is silence with exit 0; 50-85 ms warm.
 
 The scrapers are a separate, optional Python CLI: `uv tool install --editable .` gives `solograph-cli index-youtube` and the rest.
 
@@ -128,8 +132,8 @@ error, not a silent default. The same file's `scope:` key is the portfolio scan'
   On 22 Russian questions for English pages: 0 found before, 21 in the top 5 within `wiki/`.
 - **Hint.** `solograph kb-hint PROMPT --session ID` names a page when the prompt holds a word
   rare in the wiki that names it and the page covers the prompt's topic; silent otherwise,
-  each page once per session. Register `solograph kb-hint --hook --kb-path DIR` as the
-  UserPromptSubmit hook itself: it reads the hook's JSON and answers it, syncs only `wiki/`,
+  each page once per session. `solograph hook` runs it on every prompt
+  (`kb-hint --hook` still works alone): it reads the hook's JSON and answers it, syncs only `wiki/`,
   and is silent with exit 0 on any failure. The rules are in `src/kb/hint.rs`.
 
 ## CLI
