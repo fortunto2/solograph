@@ -247,3 +247,16 @@ fn the_home_directory_is_never_an_implicit_kb() {
     let t = tempfile::tempdir().unwrap();
     assert_eq!(super::implicit_root(t.path()).as_deref(), Some(t.path()));
 }
+
+#[test]
+fn a_repeated_frontmatter_key_keeps_the_last_value_not_nothing() {
+    // Review 28 Oct: serde_yaml refuses a duplicate key, so the whole frontmatter
+    // was lost (title, type, tags) where PyYAML kept the last value.
+    let (meta, body) =
+        frontmatter("---\ntitle: First\ntype: concept\ntitle: Second\ntags: [a, b]\n---\nBody")
+            .unwrap();
+    assert_eq!(meta["title"], "Second");
+    assert_eq!(meta["type"], "concept");
+    assert_eq!(meta["tags"], serde_json::json!(["a", "b"]));
+    assert_eq!(body, "Body");
+}

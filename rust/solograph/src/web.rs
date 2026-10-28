@@ -45,6 +45,9 @@ pub async fn fetch(url: &str, max_length: usize, extract_text: bool, timeout: u6
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(timeout))
         .redirect(reqwest::redirect::Policy::limited(10))
+        // A login or consent page sets a cookie and redirects; without a jar the
+        // redirect loops until the limit (review, 28 Oct 2026).
+        .cookie_store(true)
         .build()
     {
         Ok(c) => c,
@@ -117,5 +120,54 @@ mod tests {
         assert_eq!(youtube_id("https://youtu.be/EsTrWCV0Ph4"), "EsTrWCV0Ph4");
         assert_eq!(youtube_id("EsTrWCV0Ph4"), "EsTrWCV0Ph4");
         assert_eq!(strip_html("<p>a</p><script>x()</script>\n<b>b</b>"), "a b");
+    }
+}
+
+#[cfg(test)]
+mod fetch_tests {
+    use super::fetch;
+
+    /// A local server: `/1251` answers in windows-1251, `/login` sets a cookie and
+    /// redirects to `/home`, which answers only with that cookie.
+    fn serve() -> String {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let addr = server.server_addr().to_ip().unwrap();
+        std::thread::spawn(move || {
+            for req in server.incoming_requests().take(4) {
+                let header = |k: &str, v: &str| tiny_http::Header::from_bytes(k, v).unwrap();
+                let cookie = req
+                    .headers()
+                    .iter()
+                    .any(|h| h.field.equiv("Cookie") && h.value.as_str().contains("s=1"));
+                let resp = match req.url() {
+                    // "Привет" in windows-1251
+                    "/1251" => {
+                        tiny_http::Response::from_data(vec![0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2])
+                            .with_header(header("Content-Type", "text/plain; charset=windows-1251"))
+                    }
+                    "/login" => tiny_http::Response::from_data(Vec::new())
+                        .with_status_code(302)
+                        .with_header(header("Set-Cookie", "s=1; Path=/"))
+                        .with_header(header("Location", "/home")),
+                    _ if cookie => tiny_http::Response::from_data(b"welcome".to_vec()),
+                    _ => tiny_http::Response::from_data(Vec::new())
+                        .with_status_code(302)
+                        .with_header(header("Location", "/login")),
+                };
+                let _ = req.respond(resp);
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn a_page_in_another_charset_is_decoded_and_a_cookie_survives_a_redirect() {
+        // Review 28 Oct: without reqwest's charset and cookies features the body was
+        // always read as UTF-8 and Set-Cookie was dropped between redirects.
+        let base = serve();
+        let page = fetch(&format!("{base}/1251"), 1000, false, 5).await;
+        assert_eq!(page["content"], "Привет", "{page}");
+        let home = fetch(&format!("{base}/login"), 1000, false, 5).await;
+        assert_eq!(home["content"], "welcome", "{home}");
     }
 }

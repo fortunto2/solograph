@@ -192,12 +192,40 @@ pub fn frontmatter(text: &str) -> Result<(Map<String, Value>, String)> {
     if open.start() != 0 {
         return Ok((Map::new(), text.to_string()));
     }
-    let fm: serde_yaml::Value = serde_yaml::from_str(&text[open.end()..close.start()])?;
+    let raw = &text[open.end()..close.start()];
+    let fm: serde_yaml::Value = match serde_yaml::from_str(raw) {
+        Ok(v) => v,
+        // A repeated key: keep the last, as PyYAML did, rather than lose it all.
+        Err(e) if e.to_string().contains("duplicate") => serde_yaml::from_str(&last_key_wins(raw))?,
+        Err(e) => return Err(e.into()),
+    };
     let meta = match to_json(&fm) {
         Value::Object(m) => m,
         _ => Map::new(),
     };
     Ok((meta, text[close.end()..].trim().to_string()))
+}
+
+/// YAML with each top-level key kept once, at its last block (the key's line and
+/// the indented or list lines under it).
+fn last_key_wins(yaml: &str) -> String {
+    let mut blocks: Vec<(String, String)> = Vec::new();
+    for line in yaml.lines() {
+        let top = !line.starts_with([' ', '\t', '-', '#']) && line.contains(':');
+        match (top, blocks.last_mut()) {
+            (true, _) => {
+                let key = line.split(':').next().unwrap_or("").trim().to_string();
+                blocks.retain(|(k, _)| *k != key);
+                blocks.push((key, format!("{line}\n")));
+            }
+            (false, Some((_, text))) => {
+                text.push_str(line);
+                text.push('\n');
+            }
+            (false, None) => {}
+        }
+    }
+    blocks.into_iter().map(|(_, t)| t).collect()
 }
 
 /// The pages a text links to: `[[slug]]` and `[[slug|label]]`, outside fenced

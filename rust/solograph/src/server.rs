@@ -189,18 +189,30 @@ pub struct RelatedArgs {
     source: String,
 }
 
-#[derive(Default)]
-struct Stores {
-    kb: Option<KnowledgeBase>,
-    sessions: Option<SessionSearch>,
-    sources: Option<SourceIndex>,
-    portfolio: Option<Portfolio>,
-}
+/// A store opened on first use, behind its own lock: one lock for all four made
+/// codegraph_stats wait 190 ms behind a session search (review, 28 Oct 2026).
+type Slot<T> = std::sync::Arc<Mutex<Option<T>>>;
 
 #[derive(Clone)]
 pub struct Solograph {
-    stores: std::sync::Arc<Mutex<Stores>>,
+    kb: Slot<KnowledgeBase>,
+    sessions: Slot<SessionSearch>,
+    sources: Slot<SourceIndex>,
+    portfolio: Slot<Portfolio>,
     tool_router: ToolRouter<Self>,
+}
+
+/// The store in `slot`, opened by `open` the first time, handed to `f`.
+fn with<S, T>(
+    slot: &Mutex<Option<S>>,
+    open: impl FnOnce() -> Result<S>,
+    f: impl FnOnce(&mut S) -> Result<T>,
+) -> Result<T> {
+    let mut guard: MutexGuard<'_, Option<S>> = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.is_none() {
+        *guard = Some(open()?);
+    }
+    f(guard.as_mut().expect("opened above"))
 }
 
 fn pretty(v: &Value) -> String {
@@ -239,13 +251,12 @@ fn registry_path() -> Option<PathBuf> {
 impl Solograph {
     pub fn new() -> Self {
         Self {
-            stores: Default::default(),
+            kb: Default::default(),
+            sessions: Default::default(),
+            sources: Default::default(),
+            portfolio: Default::default(),
             tool_router: Self::tool_router(),
         }
-    }
-
-    fn stores(&self) -> MutexGuard<'_, Stores> {
-        self.stores.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn project_info_value(name: Option<&str>) -> Result<Value> {
@@ -296,31 +307,28 @@ impl Solograph {
         &self,
         Parameters(a): Parameters<KbSearchArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let mut st = self.stores();
-        if st.kb.is_none() {
-            let Some(root) = crate::kb::detect_root() else {
-                return Ok(list_result(vec![
-                    json!({"error": "KB not configured. Set KB_PATH env var."}),
-                ]));
-            };
-            match KnowledgeBase::open(&root, None) {
-                Ok(kb) => st.kb = Some(kb),
-                Err(e) => return Ok(failed("kb_search", e)),
-            }
-        }
-        let kb = st.kb.as_mut().expect("opened above");
-        Ok(
-            match kb.search(
-                &a.query,
-                a.n_results,
-                a.doc_type.as_deref(),
-                a.expand_graph,
-                a.path.as_deref(),
-            ) {
-                Ok(v) => list_result(v),
-                Err(e) => failed("kb_search", e),
+        let Some(root) = crate::kb::detect_root() else {
+            return Ok(list_result(vec![
+                json!({"error": "KB not configured. Set KB_PATH env var."}),
+            ]));
+        };
+        let found = with(
+            &self.kb,
+            || KnowledgeBase::open(&root, None),
+            |kb| {
+                kb.search(
+                    &a.query,
+                    a.n_results,
+                    a.doc_type.as_deref(),
+                    a.expand_graph,
+                    a.path.as_deref(),
+                )
             },
-        )
+        );
+        Ok(match found {
+            Ok(v) => list_result(v),
+            Err(e) => failed("kb_search", e),
+        })
     }
 
     #[tool(
@@ -330,20 +338,15 @@ impl Solograph {
         &self,
         Parameters(a): Parameters<SessionSearchArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let mut st = self.stores();
-        if st.sessions.is_none() {
-            match SessionSearch::open(None, None) {
-                Ok(s) => st.sessions = Some(s),
-                Err(e) => return Ok(failed("session_search", e)),
-            }
-        }
-        let s = st.sessions.as_mut().expect("opened above");
-        Ok(
-            match s.search(&a.query, a.n_results, a.project.as_deref()) {
-                Ok(v) => dict_result(v),
-                Err(e) => failed("session_search", e),
-            },
-        )
+        let found = with(
+            &self.sessions,
+            || SessionSearch::open(None, None),
+            |s| s.search(&a.query, a.n_results, a.project.as_deref()),
+        );
+        Ok(match found {
+            Ok(v) => dict_result(v),
+            Err(e) => failed("session_search", e),
+        })
     }
 
     #[tool(
@@ -490,19 +493,11 @@ impl Solograph {
 
 impl Solograph {
     fn with_portfolio<T>(&self, f: impl FnOnce(&mut Portfolio) -> Result<T>) -> Result<T> {
-        let mut st = self.stores();
-        if st.portfolio.is_none() {
-            st.portfolio = Some(Portfolio::open(None)?);
-        }
-        f(st.portfolio.as_mut().expect("opened above"))
+        with(&self.portfolio, || Portfolio::open(None), f)
     }
 
     fn with_sources<T>(&self, f: impl FnOnce(&SourceIndex) -> Result<T>) -> Result<T> {
-        let mut st = self.stores();
-        if st.sources.is_none() {
-            st.sources = Some(SourceIndex::open(None)?);
-        }
-        f(st.sources.as_ref().expect("opened above"))
+        with(&self.sources, || SourceIndex::open(None), |s| f(s))
     }
 }
 

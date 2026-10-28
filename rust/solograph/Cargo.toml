@@ -15,7 +15,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 libc = "0.2"
 memchr = "2"
 regex = "1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate", "charset", "cookies"] }
 rmcp = { version = "3.8", features = ["server", "macros", "transport-io"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 rust-stemmers = "1.2"

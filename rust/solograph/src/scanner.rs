@@ -111,9 +111,12 @@ pub fn is_skipped_file(name: &str) -> bool {
         || SKIP_MARKERS.iter().any(|m| name.contains(m))
 }
 
-fn keep(fp: &Path) -> bool {
+/// Judged on the path inside the project: a project that itself lives under a
+/// `build/` or `env/` folder was indexed as empty (review, 28 Oct 2026).
+fn keep(root: &Path, fp: &Path) -> bool {
     let name = fp.file_name().unwrap_or_default().to_string_lossy();
-    !skipped_dir(fp) && !is_skipped_file(&name) && fp.is_file()
+    let inside = fp.strip_prefix(root).unwrap_or(fp);
+    !skipped_dir(inside) && !is_skipped_file(&name) && fp.is_file()
 }
 
 /// The files git tracks, or None when it is not a checkout. Each path once: mid-
@@ -142,7 +145,7 @@ pub fn project_files(root: &Path) -> Vec<(PathBuf, &'static str)> {
             .filter_map(|fp| {
                 let name = fp.file_name()?.to_string_lossy().into_owned();
                 let lang = lang_of(suffix(&name))?;
-                keep(&fp).then_some((fp, lang))
+                keep(root, &fp).then_some((fp, lang))
             })
             .collect();
     }
@@ -152,7 +155,7 @@ pub fn project_files(root: &Path) -> Vec<(PathBuf, &'static str)> {
     for ext in EXTENSIONS {
         for fp in &all {
             let name = fp.file_name().unwrap_or_default().to_string_lossy();
-            if name.ends_with(ext) && keep(fp) {
+            if name.ends_with(ext) && keep(root, fp) {
                 out.push((fp.clone(), lang_of(ext).unwrap_or("text")));
             }
         }
@@ -168,7 +171,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     paths.sort_by_key(|e| e.path());
     for e in paths {
         let Ok(ft) = e.file_type() else { continue };
-        if ft.is_dir() && !skipped_dir(&e.path()) {
+        if ft.is_dir() && !SKIP_DIRS.contains(&e.file_name().to_string_lossy().as_ref()) {
             walk(&e.path(), out);
         } else if !ft.is_dir() {
             out.push(e.path());
@@ -377,5 +380,28 @@ mod tests {
         assert_eq!(suffix("a.min.js"), ".js");
         assert_eq!(suffix(".bashrc"), "");
         assert_eq!(suffix("Makefile"), "");
+    }
+}
+
+#[cfg(test)]
+mod skip_tests {
+    #[test]
+    fn a_project_under_a_build_folder_is_still_indexed() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("build").join("proj");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/x")).unwrap();
+        std::fs::write(root.join("src/a.py"), "def a():\n    pass\n").unwrap();
+        std::fs::write(root.join("node_modules/x/b.js"), "function b() {}\n").unwrap();
+        let files: Vec<String> = super::project_files(&root)
+            .into_iter()
+            .map(|(p, _)| {
+                p.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(files, ["src/a.py"]);
     }
 }
