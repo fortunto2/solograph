@@ -259,3 +259,48 @@ fn one_long_video_does_not_crowd_out_the_others() {
     got.sort();
     assert_eq!(got, ["aaaaaaaaaaa", "bbbbbbbbbbb"]);
 }
+
+#[test]
+fn many_chunks_of_one_video_do_not_crowd_out_the_others() {
+    // Review 28 Oct: the window widened 4x per pass and built a snippet for every
+    // chunk (1,700 on the real index, 5.9 s). Videos are now chosen in SQL.
+    let t = tempfile::tempdir().unwrap();
+    let i = idx(t.path());
+    let chatty: Vec<(String, String, f64)> = (0..60)
+        .map(|k| {
+            (
+                format!("c{k}"),
+                "pricing pricing pricing tiers".to_string(),
+                k as f64,
+            )
+        })
+        .collect();
+    let chatty: Vec<(&str, &str, f64)> = chatty
+        .iter()
+        .map(|(a, b, c)| (a.as_str(), b.as_str(), *c))
+        .collect();
+    video(&i, "v1", "Pricing talk", &chatty, &[]);
+    for v in ["v2", "v3", "v4"] {
+        video(
+            &i,
+            v,
+            "Another",
+            &[("intro", "a word on pricing", 0.0)],
+            &[],
+        );
+    }
+    let hits = i.search("pricing", Some("youtube"), 4).unwrap();
+    let mut vids = ids(&hits, "video_id");
+    vids.sort();
+    assert_eq!(vids, ["v1", "v2", "v3", "v4"]);
+}
+
+#[test]
+fn an_absurd_n_returns_instead_of_looping() {
+    // n * 4 wrapped to 0 for n = 2^62 and the loop never ended.
+    let t = tempfile::tempdir().unwrap();
+    let i = idx(t.path());
+    doc(&i, "telegram", "p1", "Bootstrapped", "no investors", 0);
+    let hits = i.search("investors", None, 1usize << 62).unwrap();
+    assert_eq!(hits.len(), 1);
+}

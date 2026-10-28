@@ -447,6 +447,31 @@ impl FtsStore {
         kind: Option<&str>,
         prefix: Option<&str>,
     ) -> Result<Vec<Map<String, Value>>> {
+        self.search_inner(expr, n_results, kind, prefix, None)
+    }
+
+    /// The best match per group (`group` is an SQL expression over `d`, e.g. a
+    /// video id from meta), n groups. Choosing groups in SQL replaced widening a
+    /// window 4x per pass with a snippet for every chunk: 5.9 s on the real
+    /// sources index, against tens of ms (review, 28 Oct 2026).
+    pub fn search_grouped(
+        &self,
+        expr: &str,
+        n_results: usize,
+        kind: Option<&str>,
+        group: &str,
+    ) -> Result<Vec<Map<String, Value>>> {
+        self.search_inner(expr, n_results, kind, None, Some(group))
+    }
+
+    fn search_inner(
+        &self,
+        expr: &str,
+        n_results: usize,
+        kind: Option<&str>,
+        prefix: Option<&str>,
+        group: Option<&str>,
+    ) -> Result<Vec<Map<String, Value>>> {
         if expr.is_empty() {
             return Ok(Vec::new());
         }
@@ -463,7 +488,17 @@ impl FtsStore {
         let like = kind.map(|k| format!("%{k}%"));
         sql.push_str(" AND (?3 IS NULL OR d.kind LIKE ?3)");
         sql.push_str(" AND (?4 IS NULL OR substr(d.doc_id, 1, length(?4)) = ?4)");
-        sql.push_str(" ORDER BY rank LIMIT ?2");
+        let sql = match group {
+            // SQLite returns the other columns from the row min() picked.
+            // MATERIALIZED: flattened into the aggregate, bm25() has no FTS5 context.
+            Some(g) => format!(
+                "WITH r AS MATERIALIZED ({}) SELECT rowid, doc_id, kind, gone, meta, \
+                 min(rank) AS rank FROM r GROUP BY grp ORDER BY rank LIMIT ?2",
+                sql.replacen(" AS rank FROM", &format!(" AS rank, {g} AS grp FROM"), 1)
+                    .replacen("SELECT fts.rowid,", "SELECT fts.rowid AS rowid,", 1)
+            ),
+            None => sql + " ORDER BY rank LIMIT ?2",
+        };
         let mut stmt = self.db.prepare(&sql)?;
         let map_row = |r: &rusqlite::Row| -> rusqlite::Result<(i64, Map<String, Value>)> {
             let mut hit = Map::new();
@@ -518,8 +553,10 @@ impl FtsStore {
         }
         if !small.is_empty() {
             let mut stmt = self.db.prepare(&format!(
+                // `+rowid`: a bare rowid IN is handed to FTS5, which re-runs the
+                // MATCH per row: 66 ms for 20 snippets against 3 ms.
                 "SELECT rowid, snippet(fts, {}, '«', '»', '…', 24) FROM fts \
-                 WHERE fts MATCH ?1 AND rowid IN ({})",
+                 WHERE fts MATCH ?1 AND +rowid IN ({})",
                 self.layout
                     .columns
                     .iter()

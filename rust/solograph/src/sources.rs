@@ -47,19 +47,25 @@ impl SourceIndex {
         Ok(Self { store })
     }
 
-    /// BM25 over every source, or one. A video appears once, at its best chunk;
-    /// the window widens until it holds n videos or the hits run out.
+    /// BM25 over every source, or one. A video appears once, at its best chunk,
+    /// chosen in SQL. n is capped at 100: n * 4 used to wrap for a huge n and
+    /// loop forever.
     pub fn search(&self, query: &str, source: Option<&str>, n: usize) -> Result<Vec<Value>> {
-        let mut fetch = n * 4;
-        loop {
-            let hits = self.store.search(query, fetch, source)?;
-            let mut out = rank(&hits);
-            if out.len() >= n || hits.len() < fetch {
-                out.truncate(n);
-                return Ok(out);
-            }
-            fetch *= 4;
-        }
+        let n = n.min(100);
+        // Twice n: the popularity boost may lift a document from just below.
+        let hits = self.store.search_grouped(
+            &crate::text::match_expression(query),
+            n * 2,
+            source,
+            // A chunk's id is `youtube/<video>:<n>` (sources.py write_video), and no
+            // other kind has a colon: grouping on the id avoids parsing the meta
+            // of every match (1.1 s -> tens of ms for "vibe coding").
+            "CASE WHEN instr(d.doc_id, ':') > 0 \
+             THEN substr(d.doc_id, 1, instr(d.doc_id, ':') - 1) ELSE d.doc_id END",
+        )?;
+        let mut out = rank(&hits);
+        out.truncate(n);
+        Ok(out)
     }
 
     pub fn list_tags(&self, source: &str) -> Result<Vec<Value>> {
