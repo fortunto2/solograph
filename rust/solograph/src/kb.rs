@@ -91,6 +91,17 @@ pub fn detect_root() -> Option<PathBuf> {
     None
 }
 
+/// A path filter as a folder: "wiki" and "./wiki" mean "wiki/". Without the slash
+/// it matched wiki-archive/ too, and made the catalog "wikiindex.md".
+pub fn prefix(p: &str) -> String {
+    let p = p.trim().trim_start_matches("./");
+    if p.is_empty() || p.ends_with('/') || p.ends_with(".md") {
+        p.to_string()
+    } else {
+        format!("{p}/")
+    }
+}
+
 /// An explicit path, else KB_PATH, else the current directory unless it is the
 /// home directory or `/`: from there the walk would read everything below it.
 pub fn root_or_cwd(explicit: Option<PathBuf>) -> Result<PathBuf> {
@@ -284,7 +295,15 @@ pub struct KnowledgeBase {
     pub root: PathBuf,
     pub store: FtsStore,
     pub config: Config,
+    /// When `.solograph.yaml` was read: a long-lived server re-reads it on change.
+    config_stamp: Option<SystemTime>,
     aliases: Option<(PathBuf, SystemTime, Aliases)>,
+}
+
+fn config_stamp(root: &Path) -> Option<SystemTime> {
+    std::fs::metadata(root.join(config::FILE))
+        .and_then(|m| m.modified())
+        .ok()
 }
 
 impl KnowledgeBase {
@@ -294,6 +313,7 @@ impl KnowledgeBase {
             root: root.to_path_buf(),
             store: FtsStore::open_with(&dir.join(DB_FILE), layout())?,
             config: Config::load(root)?,
+            config_stamp: config_stamp(root),
             aliases: None,
         })
     }
@@ -305,6 +325,13 @@ impl KnowledgeBase {
     /// Only the files under `prefix` (the wiki): the hint reads nothing else, and the
     /// whole tree was 7x the directories (a client checkout alone held 949 of 1187).
     pub fn sync_under(&mut self, prefix: Option<&str>) -> Result<SyncReport> {
+        // The MCP server keeps one KnowledgeBase for its life; a config it never
+        // re-read fought every CLI run over what the index holds (review, 28 Oct).
+        let stamp = config_stamp(&self.root);
+        if stamp != self.config_stamp {
+            self.config = Config::load(&self.root)?;
+            self.config_stamp = stamp;
+        }
         let mut files = Vec::new();
         let dir = prefix.map_or_else(|| self.root.clone(), |p| self.root.join(p));
         walk(&self.root, &dir, &self.config, &mut files);
@@ -350,6 +377,8 @@ impl KnowledgeBase {
         path: Option<&str>,
     ) -> Result<Vec<Value>> {
         self.sync()?;
+        let path = path.map(prefix);
+        let path = path.as_deref();
         let expr = self.expression(query);
         let mut results: Vec<Value> = self
             .store

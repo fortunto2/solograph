@@ -62,6 +62,16 @@ impl Graph {
                 return Some(in_wiki);
             }
             let hits = by_stem.get(slug)?;
+            // A wiki page links within the wiki: the blog publishes only the wiki,
+            // so a link that lands elsewhere is a 404 there (review, 28 Oct).
+            let hits: Vec<&str> = if !wiki.is_empty() && from.starts_with(wiki) {
+                hits.iter()
+                    .copied()
+                    .filter(|h| h.starts_with(wiki))
+                    .collect()
+            } else {
+                hits.clone()
+            };
             match hits.as_slice() {
                 [one] => Some((*one).to_string()),
                 many => many
@@ -160,6 +170,8 @@ impl Graph {
     /// tags — and, with `page`, its backlinks and outgoing links. `prefix` scopes
     /// every list to pages under it (e.g. `wiki/`).
     pub fn report(&self, prefix: Option<&str>, page: Option<&str>, top: usize) -> Value {
+        let prefix = prefix.map(super::prefix);
+        let prefix = prefix.as_deref();
         let scoped: Vec<&String> = self
             .pages
             .keys()

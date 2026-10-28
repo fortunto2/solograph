@@ -505,6 +505,13 @@ fn kb_hint(a: &Args) -> Result<()> {
 /// Only the problems, one per line, and a failing exit when there are any: the
 /// pre-commit gate reads the exit code, not the wording.
 fn graph_check(r: &Value) -> Result<()> {
+    // Zero scope is never a pass: a typo in --path or `pages:` checked nothing.
+    if r["pages"].as_u64() == Some(0) {
+        bail!(
+            "no wiki pages under '{}': nothing was checked",
+            s(r, "scope")
+        );
+    }
     let list = |k: &str| r[k].as_array().cloned().unwrap_or_default();
     let mut problems: Vec<String> = Vec::new();
     for o in list("orphans") {

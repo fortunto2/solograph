@@ -168,3 +168,71 @@ fn expand_graph_appends_marked_neighbours_after_the_hits() {
         1
     );
 }
+
+#[test]
+fn a_wiki_link_must_land_in_the_wiki() {
+    // Review 28 Oct: [[raw]] resolved to 1-methodology/raw.md by stem, so the gate
+    // passed a link the blog (which publishes only wiki/) turns into a 404.
+    let t = tempfile::tempdir().unwrap();
+    fixture(&t.path().join("kb"));
+    page(
+        &t.path().join("kb"),
+        "wiki/e.md",
+        "Points at [[raw]].",
+        "E",
+        "",
+    );
+    let r = graph(t.path()).report(Some("wiki/"), None, 10);
+    assert!(
+        r["broken"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["link"] == "raw"),
+        "{}",
+        r["broken"]
+    );
+}
+
+#[test]
+fn a_scope_without_its_slash_is_the_same_folder() {
+    let t = tempfile::tempdir().unwrap();
+    fixture(&t.path().join("kb"));
+    page(
+        &t.path().join("kb"),
+        "wiki-archive/old.md",
+        "Old.",
+        "Old",
+        "",
+    );
+    let g = graph(t.path());
+    assert_eq!(
+        g.report(Some("wiki"), None, 10),
+        g.report(Some("wiki/"), None, 10)
+    );
+}
+
+#[test]
+fn the_config_is_reread_when_it_changes() {
+    // Review 28 Oct: the MCP server kept the config it opened with, so an edit to
+    // exclude: flip-flopped with every CLI run.
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("kb");
+    fixture(&root);
+    page(
+        &root,
+        "clients/acme/notes.md",
+        "acme pricing secret",
+        "Acme",
+        "",
+    );
+    let mut kb = KnowledgeBase::open(&root, Some(&t.path().join("db"))).unwrap();
+    let hit = |kb: &mut KnowledgeBase| {
+        !kb.search("acme pricing", 5, None, false, None)
+            .unwrap()
+            .is_empty()
+    };
+    assert!(hit(&mut kb));
+    std::fs::write(root.join(".solograph.yaml"), "kb:\n  exclude: [clients]\n").unwrap();
+    assert!(!hit(&mut kb), "the same open KB must see the new exclude");
+}
