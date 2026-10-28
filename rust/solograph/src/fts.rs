@@ -178,7 +178,11 @@ impl FtsStore {
 
     /// The FTS row for a document, in the layout's column order.
     fn insert_fts(db: &Connection, columns: &[Column], rowid: i64, d: &Doc) -> Result<()> {
-        let values: Vec<String> = columns.iter().map(|c| fold(c.text(d))).collect();
+        // Secrets never reach an index (see secrets.rs).
+        let values: Vec<String> = columns
+            .iter()
+            .map(|c| fold(&crate::secrets::redact(c.text(d))))
+            .collect();
         let marks = vec!["?"; columns.len()].join(", ");
         let mut args: Vec<&dyn rusqlite::ToSql> = vec![&rowid];
         args.extend(values.iter().map(|v| v as &dyn rusqlite::ToSql));
@@ -346,6 +350,65 @@ impl FtsStore {
         Ok(report)
     }
 
+    /// Clean what an index stored before redaction existed, once per rules version:
+    /// every row whose text holds a secret is rewritten without it.
+    pub fn redact_existing(&mut self) -> Result<usize> {
+        self.db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS solograph_redaction (version INTEGER NOT NULL)",
+        )?;
+        let done: Option<i64> =
+            self.db
+                .query_row("SELECT max(version) FROM solograph_redaction", [], |r| {
+                    r.get(0)
+                })?;
+        if done.unwrap_or(0) >= crate::secrets::VERSION {
+            return Ok(0);
+        }
+        let names: Vec<&str> = self.layout.columns.iter().map(|c| c.name()).collect();
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let rows: Vec<(i64, Vec<String>)> = {
+            let mut stmt = tx.prepare(&format!("SELECT rowid, {} FROM fts", names.join(", ")))?;
+            stmt.query_map([], |r| {
+                let mut cols = Vec::new();
+                for i in 0..names.len() {
+                    cols.push(r.get::<_, Option<String>>(i + 1)?.unwrap_or_default());
+                }
+                Ok((r.get(0)?, cols))
+            })?
+            .collect::<rusqlite::Result<_>>()?
+        };
+        let mut cleaned = 0;
+        for (rowid, cols) in rows {
+            let red: Vec<String> = cols
+                .iter()
+                .map(|c| crate::secrets::redact(c).into_owned())
+                .collect();
+            if red != cols {
+                let set: Vec<String> = names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| format!("{n} = ?{}", i + 2))
+                    .collect();
+                let mut args: Vec<&dyn rusqlite::ToSql> = vec![&rowid];
+                args.extend(red.iter().map(|v| v as &dyn rusqlite::ToSql));
+                tx.execute(
+                    &format!("UPDATE fts SET {} WHERE rowid = ?1", set.join(", ")),
+                    args.as_slice(),
+                )?;
+                cleaned += 1;
+            }
+        }
+        tx.execute("DELETE FROM solograph_redaction", [])?;
+        tx.execute(
+            "INSERT INTO solograph_redaction (version) VALUES (?1)",
+            [crate::secrets::VERSION],
+        )?;
+        tx.commit()?;
+        Ok(cleaned)
+    }
+
     /// Remove documents outright — text included, archive or not.
     pub fn forget(&mut self, doc_ids: &HashSet<String>) -> Result<()> {
         if doc_ids.is_empty() {
@@ -408,11 +471,15 @@ impl FtsStore {
             let title = if delta.title.is_empty() {
                 title
             } else {
-                fold(&delta.title)
+                fold(&crate::secrets::redact(&delta.title))
             };
             db.execute(
                 "INSERT INTO fts(rowid, title, body) VALUES (?, ?, ?)",
-                params![rowid, title, format!("{body}\n\n{}", fold(&delta.body))],
+                params![
+                    rowid,
+                    title,
+                    format!("{body}\n\n{}", fold(&crate::secrets::redact(&delta.body)))
+                ],
             )?;
         }
         Ok(())

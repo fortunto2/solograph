@@ -415,7 +415,8 @@ impl SessionSearch {
     pub fn open(db_path: Option<&Path>, sessions_root: Option<&Path>) -> Result<Self> {
         let db = db_path.map_or_else(default_db_path, Path::to_path_buf);
         let root = sessions_root.map_or_else(claude_dir, Path::to_path_buf);
-        let store = FtsStore::open(&db)?;
+        let mut store = FtsStore::open(&db)?;
+        store.redact_existing()?;
         // Once per index, not per open: the scan reads every row of the FTS table,
         // bodies included (tens of MB), which made each CLI call ~2 s. New documents
         // get a clean title when they are written.

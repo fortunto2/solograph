@@ -358,9 +358,11 @@ fn config_stamp(root: &Path) -> Option<SystemTime> {
 impl KnowledgeBase {
     pub fn open(root: &Path, db_dir: Option<&Path>) -> Result<Self> {
         let dir = db_dir.map_or_else(|| root.join(".solo").join("kb"), Path::to_path_buf);
+        let mut store = FtsStore::open_with(&dir.join(DB_FILE), layout())?;
+        store.redact_existing()?;
         Ok(Self {
             root: root.to_path_buf(),
-            store: FtsStore::open_with(&dir.join(DB_FILE), layout())?,
+            store,
             config: Config::load(root)?,
             config_stamp: config_stamp(root),
             aliases: None,

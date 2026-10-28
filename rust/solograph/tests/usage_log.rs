@@ -148,3 +148,43 @@ fn the_hook_logs_its_decision_never_the_prompt() {
     assert_eq!(lines[0]["session"], "s1");
     assert!(!lines[0].to_string().contains("secret"), "{}", lines[0]);
 }
+
+#[test]
+fn a_key_in_a_query_is_not_kept_in_the_log() {
+    let t = tempfile::tempdir().unwrap();
+    kb(&t.path().join("kb"));
+    let log = t.path().join("log");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_solograph"))
+        .current_dir(t.path())
+        .env("KB_PATH", t.path().join("kb"))
+        .env("SOLOGRAPH_LOG_DIR", &log)
+        .env("HOME", t.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    for msg in [
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "kb_search", "arguments": {"query": "why does sk-ant-api03-abcdefghijklmnopqrstuvwxyz fail"}}}),
+    ] {
+        writeln!(stdin, "{msg}").unwrap();
+        if msg.get("id").is_some() {
+            line.clear();
+            stdout.read_line(&mut line).unwrap();
+        }
+    }
+    drop(stdin);
+    child.wait().unwrap();
+    let logged = read(&log);
+    assert_eq!(logged.len(), 1);
+    let q = logged[0]["args"]["query"].as_str().unwrap();
+    assert!(
+        q.contains("[redacted:anthropic-key]") && !q.contains("sk-ant-api03"),
+        "{q}"
+    );
+}

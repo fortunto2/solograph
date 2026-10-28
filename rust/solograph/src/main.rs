@@ -9,12 +9,14 @@ mod deps;
 mod english;
 mod fts;
 mod git;
+mod hook;
 mod http;
 mod kb;
 mod paths;
 mod portfolio;
 mod registry;
 mod scanner;
+mod secrets;
 mod server;
 mod sessions;
 mod sources;
@@ -46,6 +48,10 @@ Usage:
                                           --path P (an empty P: the whole KB): hubs, connectors,
                                           orphans, broken links, pages missing from index.md;
                                           --check prints only those and fails when there are any
+  solograph hook [--kb-path DIR] [--db-path FILE]   the Claude Code hook for SessionStart and
+                                          UserPromptSubmit: the wiki hint on prompts (when a KB
+                                          is set), and a map of the project the session is in,
+                                          once per session, at start or when work begins
   solograph kb-hint PROMPT [--session ID]   the wiki page a prompt is specifically about,
                                           if any (the UserPromptSubmit hint; silent otherwise);
                                           --hook reads the hook's JSON on stdin and answers it

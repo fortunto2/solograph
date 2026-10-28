@@ -122,10 +122,12 @@ pub fn record_tool(
 ) {
     let Some(dir) = dir() else { return };
     let mut m = base("mcp", tool, elapsed);
-    m.insert(
-        "args".into(),
-        args.map_or(Value::Null, |a| Value::Object(a.clone())),
-    );
+    // A query may carry a pasted key; the log keeps it no more than the index does.
+    let args = args.map_or(Value::Null, |a| {
+        let text = Value::Object(a.clone()).to_string();
+        serde_json::from_str(&crate::secrets::redact(&text)).unwrap_or(Value::Null)
+    });
+    m.insert("args".into(), args);
     match result {
         Some(r) => {
             let (n, top) = summarize(r);

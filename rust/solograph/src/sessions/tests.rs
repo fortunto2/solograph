@@ -528,3 +528,64 @@ fn the_resume_command_survives_a_space_in_the_path() {
         "{resume}"
     );
 }
+
+#[test]
+fn a_secret_in_a_session_is_never_stored_or_shown() {
+    let t = tempfile::tempdir().unwrap();
+    transcript(
+        &proj(t.path()).join("s1.jsonl"),
+        "deploy failed, here is my env: OPENAI_API_KEY=abcd1234EFGH5678ijkl and AKIAZ7Q3LMN4PQR8STUV",
+        "Rotate both keys.",
+    );
+    let mut s = search(t.path());
+    let out = s.search("deploy failed env", 5, None).unwrap();
+    assert_eq!(ids(&out), ["s1"]);
+    let text = out.to_string();
+    assert!(
+        !text.contains("abcd1234EFGH5678ijkl") && !text.contains("AKIAZ7Q3LMN4PQR8STUV"),
+        "{text}"
+    );
+    // The value itself is not in the index at all.
+    assert!(ids(&s.search("AKIAZ7Q3LMN4PQR8STUV", 5, None).unwrap()).is_empty());
+    let body: String = s
+        .store
+        .db
+        .query_row("SELECT title || body FROM fts", [], |r| r.get(0))
+        .unwrap();
+    assert!(
+        body.contains("OPENAI_API_KEY=[redacted:env-secret]"),
+        "{body}"
+    );
+}
+
+#[test]
+fn an_index_written_before_redaction_is_cleaned_on_open() {
+    let t = tempfile::tempdir().unwrap();
+    transcript(
+        &proj(t.path()).join("s1.jsonl"),
+        "old session prompt",
+        "Done.",
+    );
+    {
+        let mut s = search(t.path());
+        s.search("old", 5, None).unwrap();
+        // As an older binary left it: a key straight in the body, version unset.
+        s.store
+            .db
+            .execute_batch(
+                "UPDATE fts SET body = body || ' leaked sk-ant-api03-abcdefghijklmnopqrstuvwxyz'; \
+                 DROP TABLE IF EXISTS solograph_redaction;",
+            )
+            .unwrap();
+    }
+    let s = search(t.path());
+    let body: String = s
+        .store
+        .db
+        .query_row("SELECT body FROM fts", [], |r| r.get(0))
+        .unwrap();
+    assert!(
+        body.contains("[redacted:anthropic-key]") && !body.contains("sk-ant-api03"),
+        "{body}"
+    );
+}

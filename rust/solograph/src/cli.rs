@@ -154,6 +154,7 @@ pub fn run(cmd: &str, raw: &[String]) -> Option<Result<()>> {
         "kb" => kb(&a),
         "kb-graph" => kb_graph(&a),
         "kb-hint" => kb_hint(&a),
+        "hook" => hook(&a),
         "sources" => sources(&a),
         "usage" => usage(&a),
         _ => return None,
@@ -479,6 +480,43 @@ fn kb_graph(a: &Args) -> Result<()> {
         for l in p["links"].as_array().into_iter().flatten() {
             println!("  → {}", l.as_str().unwrap_or(""));
         }
+    }
+    Ok(())
+}
+
+/// `solograph hook`: registered for SessionStart and UserPromptSubmit. The wiki hint on
+/// prompts when a KB is configured, and the project map once per session (see hook.rs).
+/// Silent with exit 0 on any failure.
+fn hook(a: &Args) -> Result<()> {
+    let started = std::time::Instant::now();
+    let Ok(v) = serde_json::from_reader::<_, Value>(std::io::stdin().lock()) else {
+        return Ok(());
+    };
+    let event = s(&v, "hook_event_name").to_string();
+    let prompt = s(&v, "prompt").to_string();
+    let session = s(&v, "session_id").to_string();
+    let cwd = std::path::PathBuf::from(s(&v, "cwd"));
+    let mut parts = Vec::new();
+    if event == "UserPromptSubmit"
+        && (a.path("kb-path").is_some() || crate::paths::env_path("KB_PATH").is_some())
+    {
+        let h = hint_text(a, &prompt, &session).unwrap_or_default();
+        crate::usage::record_hint(&session, &h.pages, started.elapsed());
+        parts.push(h.text);
+    }
+    let state = crate::kb::hint::state_dir();
+    if let Ok(Some(map)) = crate::hook::map_for(
+        a.path("db-path").as_deref(),
+        &cwd,
+        &event,
+        &prompt,
+        &session,
+        &state,
+    ) {
+        parts.push(map);
+    }
+    if let Some(out) = crate::hook::output(&event, &parts) {
+        println!("{out}");
     }
     Ok(())
 }
