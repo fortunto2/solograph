@@ -135,6 +135,7 @@ impl Aliases {
     }
 
     /// The KB's own terms for the spellings a query uses, as written (lowercased).
+    #[cfg(test)]
     pub fn equivalents(&self, query: &str) -> Vec<String> {
         self.used(query).into_iter().map(|(_, t)| t).collect()
     }
