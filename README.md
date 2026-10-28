@@ -244,7 +244,13 @@ each known-answer query, 0.15 → 0.16:
 | KB, 22 Russian questions for English pages | 0 / 16 (same) | 0 / 14 | 0 / 15 |
 | Sessions, 40 known answers | 27 / 31 (same) | 17 / 24 | 21 / 27 |
 
-Clean queries come back identical on every set; a query costs 0-14 ms more.
+Without typos the known answer keeps its rank on all 199 queries, and 196 of 199 top-5
+lists are identical; in the other 3, places 2-5 change. On the words of 300 real prompts
+(1358 distinct words of 5+ letters) the rule respelt 69: 51 right ("првоерку" → "проверку"),
+14 real but rare words wrongly ("тачке" → "точке", "брокер" → "блокер") and 4 typos to the
+wrong word ("заплонирован" → "заблокирован"). A wrong respelling adds a term but removes
+none, so it costs places lower in the list. Not caught: words under 5 letters, a typo in the
+first letter, transliteration ("фази сеарч" for "fuzzy search"). A query costs 0-14 ms more.
 
 Titles skip the lines Claude Code writes itself: 82 archived sessions were titled "[Request interrupted by user for tool use]", and prompts lose their "[Image #N]" markers.
 
