@@ -266,6 +266,10 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             Ok(())
         }
+        Some("-V" | "--version" | "version") => {
+            println!("solograph {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         Some(cmd) => cli::run(cmd, rest)
             .unwrap_or_else(|| Err(anyhow::anyhow!("unknown command: {cmd}\n\n{USAGE}"))),
     };

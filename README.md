@@ -2,6 +2,8 @@
 
 MCP server for a portfolio of projects: symbol search across every repository you own, plus full-text search over your Claude Code session history, a markdown knowledge base, and indexed external sources (YouTube, ProductHunt, TrustMRR, Telegram).
 
+**Write-up:** [Solograph, rebuilt: one Rust binary over SQLite instead of a graph database and vectors](https://rustman.org/posts/solograph-rebuilt-one-binary) — what was cut and why, what was borrowed from which repositories, and how to set up your own.
+
 One Rust binary does all of it — the MCP server, every read on the command line, an HTTP API for the sources, the nightly scan. Python is left only for the scrapers that fill the sources index (yt-dlp, Scrapy, Playwright live there).
 
 Everything is SQLite with FTS5: BM25 ranking, Snowball stemming for Russian and English, no graph database, no daemon, no embedding models, no API keys. Each index checks the disk before it answers, so there is no reindex step to forget.
@@ -19,12 +21,49 @@ What stays is what grep cannot do across repositories: one index of every projec
 
 ## Install
 
+A prebuilt binary from the [latest release](https://github.com/fortunto2/solograph/releases/latest), macOS (Apple silicon) or Linux (x86_64):
+
 ```bash
-git clone https://github.com/fortunto2/solograph && cd solograph
-make rust-install                                  # → ~/.solo/bin/solograph
-claude mcp add -s user solograph -- ~/.solo/bin/solograph
-CODEGRAPH_SCAN_PATH=~/my-projects ~/.solo/bin/solograph scan   # registry + portfolio index
+mkdir -p ~/.solo/bin
+curl -L -o ~/.solo/bin/solograph \
+  https://github.com/fortunto2/solograph/releases/latest/download/solograph-macos-arm64   # or solograph-linux-x86_64
+chmod +x ~/.solo/bin/solograph && ~/.solo/bin/solograph --version
 ```
+
+Or from source with a Rust toolchain: `cargo install --git https://github.com/fortunto2/solograph solograph --root ~/.solo`, or `make rust-install` in a clone.
+
+Then hand it to your agent and index your projects:
+
+```bash
+claude mcp add -s user solograph -e KB_PATH=$HOME/notes -- ~/.solo/bin/solograph
+CODEGRAPH_SCAN_PATH=~/projects ~/.solo/bin/solograph scan     # every git checkout under ~/projects
+~/.solo/bin/solograph symbols "auth middleware"               # what the agent will get
+```
+
+Sessions need nothing: the index reads `~/.claude/projects` on the first search. Put `solograph scan` in cron or launchd so new code is indexed by morning.
+
+### Your knowledge base
+
+A folder of markdown with YAML frontmatter, the linked pages in `wiki/` (or wherever `.solograph.yaml` says, below). `KB_PATH` above points `kb_search` at it.
+
+```bash
+cd ~/notes
+~/.solo/bin/solograph kb --pages "privacy architecture"   # search the wiki
+~/.solo/bin/solograph kb-graph --check                    # orphans, broken links; exit 1 when any
+```
+
+Two languages: add `wiki/_aliases.yaml`, one group per line, the term your pages use last — `- [песочница, sandbox]`. The prompt hint, in `~/.claude/settings.json`:
+
+```json
+"hooks": {
+  "UserPromptSubmit": [
+    { "hooks": [ { "type": "command", "timeout": 3,
+      "command": "$HOME/.solo/bin/solograph kb-hint --hook --kb-path $HOME/notes" } ] }
+  ]
+}
+```
+
+It stays silent unless a prompt names something the wiki is specifically about, and any failure is silence with exit 0.
 
 The scrapers are a separate, optional Python CLI: `uv tool install --editable .` gives `solograph-cli index-youtube` and the rest.
 
