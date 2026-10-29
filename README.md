@@ -113,6 +113,8 @@ Web search is not here: it lives in the separate [searxng MCP server](https://gi
 
 The last column is two months of transcripts (one profile) counted with the same definitions. 13 of the 45 searches were errors: `session_search` failed on every call from 27 September to 25 October in the Python server it replaced, and nothing counted errors then. Reach is the number to move: a search that is never made helps no one, and hooks that put the pointer into the prompt are what other tools found agents act on (a skill the agent must remember was never invoked in 56% of Vercel's evals; injected context was used 66% of the time against 6% in Codeminer42's).
 
+A first check of the change, before any log: the same five prompts that lean on earlier work ("what did we decide about vectors", "where is MontageProfile defined"), `claude -p` from a temp directory with nothing but the user's CLAUDE.md, the server swapped between 0.16 and 0.17. The agent called solograph on 1 of 5 prompts with 0.16 and on 5 of 5 with 0.17; the answers were right in both (the wiki held them, and with 0.16 the agent grepped it), at $0.30 and $0.32 a prompt. Five prompts, one run each: a direction, not a rate. Where grep is enough, solograph adds a step; what grep cannot reach is the sessions, deleted ones included.
+
 Search quality itself is measured offline, on known answers: a query and the page or session it should find, recall@1 and @5 before and after a change (the numbers in Session ranking below).
 
 ### The knowledge base
