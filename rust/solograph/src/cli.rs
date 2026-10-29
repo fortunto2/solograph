@@ -189,11 +189,21 @@ fn symbols(a: &Args) -> Result<()> {
 
 fn sessions(a: &Args) -> Result<()> {
     let root = a.path("claude-dir");
-    let out = SessionSearch::open(None, root.as_deref())?.search(
-        &a.words(0, "query")?,
-        a.num("limit", 5)?,
-        a.val("project"),
-    )?;
+    let mut idx = SessionSearch::open(None, root.as_deref())?;
+    idx.skip(crate::sessions::calling_session());
+    if let Some(id) = a.val("session") {
+        let out = idx.read(id, &a.words(0, "query")?, a.num("limit", 5)?)?;
+        if a.json() {
+            println!("{}", pretty(&out));
+        } else {
+            println!("{}  {}", s(&out, "session_id"), s(&out, "title"));
+            for p in out["passages"].as_array().into_iter().flatten() {
+                println!("\n[part {}]\n{}", p["part"], s(p, "text"));
+            }
+        }
+        return Ok(());
+    }
+    let out = idx.search(&a.words(0, "query")?, a.num("limit", 5)?, a.val("project"))?;
     if a.json() {
         println!("{}", pretty(&out));
         return Ok(());
@@ -644,7 +654,12 @@ fn hint_text(a: &Args, prompt: &str, session: &str) -> Result<crate::kb::hint::H
 fn usage(a: &Args) -> Result<()> {
     let u = |v: &Value| v.as_u64().unwrap_or(0);
     let dir = crate::usage::location();
-    let r = crate::usage::report(&crate::usage::read(&dir, a.num("days", 14)? as i64));
+    let claude = crate::sessions::claude_dir();
+    let turns = |session: &str| {
+        crate::usage::useful::transcript(&claude, session)
+            .and_then(|p| crate::usage::useful::Turns::read(&p))
+    };
+    let r = crate::usage::report(&crate::usage::read(&dir, a.num("days", 14)? as i64), &turns);
     if a.json() {
         println!("{}", pretty(&r));
         return Ok(());
@@ -655,12 +670,15 @@ fn usage(a: &Args) -> Result<()> {
         dir.display(),
         a.num("days", 14)?
     );
-    println!("\n  calls  median   empty  errors  tool");
+    print_useful(&r["useful"]);
+    println!("\n  calls  median     p95  chars   empty  errors  tool");
     for t in r["tools"].as_array().into_iter().flatten() {
         println!(
-            "  {:5}  {:4} ms  {:6}  {:6}  {}",
+            "  {:5}  {:4} ms  {:4} ms  {:5}  {:6}  {:6}  {}",
             u(&t["calls"]),
             u(&t["median_ms"]),
+            u(&t["p95_ms"]),
+            u(&t["median_chars"]),
             u(&t["empty"]),
             u(&t["errors"]),
             s(t, "tool")
@@ -697,6 +715,48 @@ fn usage(a: &Args) -> Result<()> {
     Ok(())
 }
 
+/// The five numbers first: they are what a change to solograph should move.
+fn print_useful(f: &Value) {
+    let u = |k: &str| f[k].as_u64().unwrap_or(0);
+    let pct = |a: u64, b: u64| {
+        (a * 100)
+            .checked_div(b)
+            .map_or_else(|| "-".to_string(), |p| format!("{p}%"))
+    };
+    println!("\nUseful (calls from Claude Code sessions; scripts and evals are left out):");
+    println!(
+        "  reach    {} of {} sessions searched ({})",
+        u("searched"),
+        u("sessions"),
+        pct(u("searched"), u("sessions"))
+    );
+    println!(
+        "  hints    {} of {} pointers and nudges were followed by a call in the same turn ({})",
+        u("followed"),
+        u("hinted"),
+        pct(u("followed"), u("hinted"))
+    );
+    println!(
+        "  found    {} of {} searches returned something ({})",
+        u("found"),
+        u("searches"),
+        pct(u("found"), u("searches"))
+    );
+    println!(
+        "  opened   {} of {} of those, in transcripts still on disk, led to opening a result ({})",
+        u("opened"),
+        u("checked"),
+        pct(u("opened"), u("checked"))
+    );
+    println!(
+        "  retried  {} of {} searches were asked again within 2 minutes ({})",
+        u("retried"),
+        u("searches"),
+        pct(u("retried"), u("searches"))
+    );
+    println!("  errors   {}", u("errors"));
+}
+
 fn sources(a: &Args) -> Result<()> {
     let idx = SourceIndex::open(None)?;
     let sub = a.arg(0, "sources command: search, list, tags or related")?;
@@ -707,7 +767,7 @@ fn sources(a: &Args) -> Result<()> {
         "tags" => Value::Array(idx.list_tags(source.unwrap_or("youtube"))?),
         "related" => Value::Array(idx.related_videos(
             source.unwrap_or("youtube"),
-            &crate::web::youtube_id(a.arg(1, "video id or URL")?),
+            &crate::sources::youtube_id(a.arg(1, "video id or URL")?),
         )?),
         other => bail!("unknown sources command: {other} (search, list, tags, related)"),
     };
@@ -802,7 +862,7 @@ fn print_tags(source: &str, rows: &[Value]) {
 }
 
 fn print_related(video: &str, rows: &[Value]) {
-    let id = crate::web::youtube_id(video);
+    let id = crate::sources::youtube_id(video);
     if rows.is_empty() {
         println!("No related videos found for {id}");
         return;

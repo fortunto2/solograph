@@ -12,6 +12,16 @@ use serde_json::{Map, Value, json};
 use crate::fts::{FtsStore, round3};
 use crate::paths::{env_path, home};
 
+static YT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?:v=|/v/|youtu\.be/)([a-zA-Z0-9_-]{11})").expect("static regex")
+});
+
+/// A video URL's 11-character id, or the input when it already is one.
+pub fn youtube_id(url: &str) -> String {
+    YT.captures(url)
+        .map_or_else(|| url.to_string(), |c| c[1].to_string())
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS videos(
     video_id TEXT PRIMARY KEY,

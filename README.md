@@ -15,9 +15,10 @@ solograph used to be a FalkorDB code graph with vector search on top. Both were 
 - **Vectors (removed in 0.7).** The session index had zero overlap with the transcripts on disk, KB search took 14 s cold and scored results by rank position, source search hung past two minutes. FTS answers in tens of milliseconds and finds 32 of 39 sessions in a known-answer test the vector index found none of.
 - **The structural graph (removed in 0.8).** 781k call edges plus imports, inheritance and session→file edges got zero structural questions from agents in four months: five calls in total, every one "list the projects" or stats. Grep answers those questions as well. On a 1,100-file Rust + Swift repository, `claude -p` with a dedicated code-graph MCP against plain Grep/Read gave the same accuracy in all 8 runs; the call-chain question cost $1.73 against $2.07 (16.5 tool calls against 25), the impact question $0.69 against $0.65.
 
+- **Seven of twelve tools (removed in 0.17).** Below, under 5 MCP tools.
 - **The second implementation (removed in 0.9).** For a day the same 12 tools existed in Rust and in Python. Two implementations of one search drift — the class of bug that kept `session_search` failing for seven weeks — so every read now comes from the binary the MCP server runs, and Python keeps only what writes the sources index.
 
-What stays is what grep cannot do across repositories: one index of every project's definitions, packages and history. The Python environment went from 862 MB to 34 MB; the binary is 33 MB.
+What stays is what grep cannot do across repositories: one index of every project's definitions, packages and history. The Python environment went from 862 MB to 34 MB; the binary is 31 MB.
 
 ## Install
 
@@ -71,20 +72,19 @@ On a prompt it gives the wiki hint, silent unless the prompt names something the
 
 The scrapers are a separate, optional Python CLI: `uv tool install --editable .` gives `solograph-cli index-youtube` and the rest.
 
-## 12 MCP tools
+## 5 MCP tools
 
 | Tool | What it answers |
 |------|-----------------|
-| `symbol_search` | Where something is defined, across every project: "montage profile" finds `resolve_montage_profile` and `MontageProfile` |
-| `codegraph_explain` | What one project is made of: stack, languages, directory layers, patterns, dependencies, files with the most definitions |
-| `codegraph_shared` | Packages used by more than one project — or every project using a given package |
-| `codegraph_stats` | Counts: projects, files, symbols by kind, packages |
-| `project_info` | Registry entry for a project, or the whole registry |
-| `session_search` | What was asked and answered in past Claude Code sessions, including ones Claude Code already deleted |
+| `session_search` | What was asked and answered in past Claude Code sessions, including ones Claude Code already deleted. The session asking is left out. With a result's `session_id`, it reads that session: the passages that match the query |
 | `kb_search` | Markdown knowledge base: title and summary fields weigh above the body; `path` scopes it (`wiki/`), `expand_graph` adds up to 3 [[wikilinked]] pages |
-| `source_search` | Indexed YouTube transcripts (timestamped links), ProductHunt, TrustMRR, Telegram |
-| `source_list` / `source_tags` / `source_related` | What is indexed, topic tags, videos sharing tags |
-| `web_fetch` | Fetch a URL as text |
+| `symbol_search` | Where something is defined, across every project: "montage profile" finds `resolve_montage_profile` and `MontageProfile` |
+| `source_search` | Indexed YouTube transcripts (timestamped links), ProductHunt, TrustMRR, Telegram; `related` gives videos sharing a video's topics, no query at all lists the sources and topics |
+| `project_info` | The projects: all of them with stacks and counts, one project's make-up (stack, languages, layers, dependencies), or every project using a `package` |
+
+Twelve until 0.17. With tool search on, Claude Code's default, the agent sees only tool names and the server's instructions until it loads a tool, so it picked from twelve bare names, four of them `codegraph_*` for a graph that no longer existed, and solograph sent no instructions. Two months of transcripts from both profiles hold 72 calls: `session_search` 34, `kb_search` 11, `symbol_search` 7, `source_search` 4, the other eight tools 11 between them (`codegraph_shared` and `source_related` none, `web_fetch` one), and 5 calls to tools removed earlier. The tools with similar products are 2-5 (episodic-memory 2, qmd 5, claude-context 4). Now the server says when to reach for each tool (848 characters of instructions), `session_search` and `kb_search` load with the session (`anthropic/alwaysLoad`), the descriptions are 5.4k characters instead of 7.9k, and answers are compact JSON, 13-46% smaller than the indented JSON before. `web_fetch` went with its HTTP client, 113 of the 253 crates in the build, and the binary shrank by 3 MB: Claude Code's own WebFetch and the searxng server's `web_extract` do that job.
+
+The session asking was left out because it came first: in 18 agent searches that found something, the session doing the search was in the results 10 times and first 7 times, since its prompt holds the very words searched for.
 
 Web search is not here: it lives in the separate [searxng MCP server](https://github.com/fortunto2/searxng-docker-tavily-adapter), so a broken import in one cannot take the other down.
 
@@ -97,7 +97,23 @@ Web search is not here: it lives in the separate [searxng MCP server](https://gi
 - **Private folders stay private.** A session whose working directory is inside a folder holding `.solograph-private` (or Spotlight's `.metadata_never_index`) is never indexed, and is purged if it was.
 - **Scores are BM25** — higher is better, comparable within one answer only.
 - **Secrets never enter an index.** Every text the session and KB indexes store passes through `secrets.rs` first: API keys and tokens (AWS, GitHub, OpenAI, Anthropic, Google, Slack, Stripe, Hugging Face, Telegram bots, JWTs), private key blocks, passwords in connection strings, and `*_TOKEN=` / `*_SECRET=` values, which keep their name and lose the value. The rules are solo-factory's `secret_guard` hook (adapted from ScreenShield), placeholders such as `your-key` or `${VAR}` left alone. Indexes written earlier are cleaned once on open: the session index here held 23 secrets in 18 sessions, now 0. The sources index, written by the Python scrapers, is not covered yet.
-- **Every call is logged, for the next change.** One JSON line per MCP tool call (arguments, result count, first three ids, milliseconds) and per prompt-hook run (session, pages pointed at, never the prompt), in `usage/` next to the portfolio store, so a second profile's queries stay in its own store. `solograph usage` reads it back: calls per tool, the queries that found nothing, the slowest. Nothing is written from a process started in a folder marked `.solograph-private`, and the CLI is not logged, so evals and scripts do not drown it.
+- **Every call is logged, for the next change.** One JSON line per MCP tool call (arguments, result count, first three ids, size, milliseconds, the client's name and Claude Code's session id) and per prompt-hook run (session, pages pointed at, never the prompt), in `usage/` next to the portfolio store, so a second profile's queries stay in its own store. `solograph usage` reads it back, below. Nothing is written from a process started in a folder marked `.solograph-private`, and the CLI is not logged, so evals and scripts do not drown it.
+
+### Is it useful? Five numbers
+
+`solograph usage` opens with them. They count only calls made inside a Claude Code session: the first log held 58 calls, 47 of them from scripts, which would have read as use.
+
+| Number | Counts | Before 0.17 |
+|---|---|---|
+| reach | sessions where the agent searched at least once, of sessions seen | 12 of 681 (1.8%) |
+| hints | pointers and nudges from the hook followed by a call before the next prompt | not logged |
+| found | searches that returned something | 31 of 45 (69%) |
+| opened | of those, searches after which the agent opened a returned file or page, or read a returned session with `session_id`, before the next prompt (from the transcript, while it is on disk) | 11 of 31 (35%) |
+| retried | searches asked again by the same tool within 2 minutes: the first answer did not do | 8 of 45 (18%) |
+
+The last column is two months of transcripts (one profile) counted with the same definitions. 13 of the 45 searches were errors: `session_search` failed on every call from 27 September to 25 October in the Python server it replaced, and nothing counted errors then. Reach is the number to move: a search that is never made helps no one, and hooks that put the pointer into the prompt are what other tools found agents act on (a skill the agent must remember was never invoked in 56% of Vercel's evals; injected context was used 66% of the time against 6% in Codeminer42's).
+
+Search quality itself is measured offline, on known answers: a query and the page or session it should find, recall@1 and @5 before and after a change (the numbers in Session ranking below).
 
 ### The knowledge base
 
@@ -153,6 +169,7 @@ error, not a silent default. The same file's `scope:` key is the portfolio scan'
 ```bash
 solograph symbols "auth middleware" [-p my-app]    # definitions across every project
 solograph sessions "webhook retry" [-p my-app]     # past sessions, archived ones too
+solograph sessions "webhook retry" --session ID    # read one found session for the query
 solograph kb "privacy architecture" [--path wiki/] # the knowledge base (KB_PATH, else cwd)
 solograph kb-graph [--path wiki/] [--page slug]    # hubs, orphans, broken links, backlinks
 solograph kb-graph --path wiki/ --check            # only the problems; fails when there are any
@@ -161,13 +178,13 @@ solograph sources search "pricing tiers" -s youtube
 solograph sources list | tags | related VIDEO
 solograph explain my-app | deps my-app | stats | shared [react]
 solograph dupes escape                             # names defined in several places
-solograph usage [--days 14]                        # what agents asked: calls, what found nothing, slowest
+solograph usage [--days 14]                        # the five numbers, then calls, what found nothing, slowest
 solograph scan [-p my-app]                         # registry merge + index what changed
 solograph sync-sessions | index-kb                 # warm an index (searches sync on their own)
 solograph http                                     # sources over HTTP, port 8002
 ```
 
-Every read takes `--json` and then prints exactly what the matching MCP tool returns, so a script and an agent see the same thing.
+Every read takes `--json` and then prints what the matching MCP tool returns, so a script and an agent see the same thing (`project_info` and `source_search` join `explain`/`stats`/`shared` and `sources list`/`tags`/`related` into one answer each).
 
 Python, for the sources index only: `solograph-cli index-youtube -c GregIsenberg -n 10`, `index-producthunt`, `index-trustmrr`, `source-delete`, and `compact` for the KB inbox.
 

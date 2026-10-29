@@ -23,7 +23,6 @@ mod sources;
 mod stem;
 mod text;
 mod usage;
-mod web;
 mod yamlval;
 
 use std::path::Path;
@@ -39,7 +38,8 @@ Usage:
   solograph http [--port N]              sources over HTTP: /search /sources /health (port 8002)
 
   solograph symbols QUERY [-p P] [-k KIND] [-n N]   where something is defined, every project
-  solograph sessions QUERY [-p P] [-n N]            past Claude Code sessions, full text
+  solograph sessions QUERY [-p P] [-n N] [--session ID]   past Claude Code sessions, full
+                                          text; --session reads that one found session for QUERY
   solograph kb QUERY [--path P | --pages] [--type T] [--graph] [-n N]   the knowledge base:
                                           --kb-path, else KB_PATH, else the current dir;
                                           --path limits it to files under a prefix, --pages
@@ -62,7 +62,8 @@ Usage:
   solograph usage [--days N]             what agents asked over MCP and the hook decided:
                                          calls per tool, what found nothing, the slowest
                                          (the log: usage/ next to the portfolio store)
-  Every read takes --json: the exact value the matching MCP tool returns.
+  Every read takes --json: the value the MCP tool returns (project_info and source_search
+  join explain/stats/shared and sources list/tags/related into one answer).
 
   solograph scan [-p NAME]               merge new checkouts into the registry, then index
                                          every project; with -p, index just that one

@@ -21,6 +21,8 @@ use anyhow::Result;
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value, json};
 
+pub mod useful;
+
 /// Fields that name a result, most specific first.
 const ID_FIELDS: [&str; 7] = [
     "file",
@@ -69,7 +71,9 @@ pub fn summarize(result: &CallToolResult) -> (usize, Vec<String>) {
                 .map(|t| serde_json::from_str(&t.text).unwrap_or(Value::Null))
                 .collect();
             match blocks.as_slice() {
-                [Value::Object(o)] => match o.get("results") {
+                // An error object found nothing; a session read found its passages.
+                [Value::Object(o)] if o.contains_key("error") => Vec::new(),
+                [Value::Object(o)] => match o.get("results").or_else(|| o.get("passages")) {
                     Some(Value::Array(a)) => a.clone(),
                     _ => blocks,
                 },
@@ -80,8 +84,15 @@ pub fn summarize(result: &CallToolResult) -> (usize, Vec<String>) {
     let top = items
         .iter()
         .take(3)
-        .filter_map(|v| ID_FIELDS.iter().find_map(|k| v.get(*k)?.as_str()))
-        .map(String::from)
+        .filter_map(|v| {
+            let id = ID_FIELDS.iter().find_map(|k| v.get(*k)?.as_str())?;
+            // A definition's file is relative to its project: "src/main.rs" alone
+            // would match a read of any repository's main.rs.
+            Some(match (v.get("line"), v["project"].as_str()) {
+                (Some(_), Some(p)) if v.get("file").is_some() => format!("{p}/{id}"),
+                _ => id.to_string(),
+            })
+        })
         .collect();
     let n = items.iter().filter(|v| !v.is_null()).count();
     (n, top)
@@ -113,15 +124,24 @@ fn base(via: &str, tool: &str, elapsed: Duration) -> Map<String, Value> {
     m
 }
 
-/// One MCP tool call. Logging never fails a call: errors are dropped.
+/// One MCP tool call. Logging never fails a call: errors are dropped. `client`
+/// is the name the client gave at connect; the session is Claude Code's, which
+/// scripts and evals do not have, so the report can leave them out.
 pub fn record_tool(
     tool: &str,
     args: Option<&Map<String, Value>>,
     result: Option<&CallToolResult>,
     elapsed: Duration,
+    client: Option<&str>,
 ) {
     let Some(dir) = dir() else { return };
     let mut m = base("mcp", tool, elapsed);
+    if let Some(s) = crate::sessions::calling_session() {
+        m.insert("session".into(), json!(s));
+    }
+    if let Some(c) = client {
+        m.insert("client".into(), json!(c));
+    }
     // A query may carry a pasted key; the log keeps it no more than the index does.
     let args = args.map_or(Value::Null, |a| {
         let text = Value::Object(a.clone()).to_string();
@@ -134,6 +154,13 @@ pub fn record_tool(
             m.insert("n".into(), json!(n));
             m.insert("top".into(), json!(top));
             m.insert("error".into(), json!(r.is_error.unwrap_or(false)));
+            let chars: usize = r
+                .content
+                .iter()
+                .filter_map(|c| c.as_text())
+                .map(|t| t.text.chars().count())
+                .sum();
+            m.insert("chars".into(), json!(chars));
         }
         None => {
             m.insert("error".into(), json!(true));
@@ -186,10 +213,10 @@ pub fn read(dir: &Path, days: i64) -> Vec<Value> {
         .collect()
 }
 
-/// What the log says: calls per tool with their median time and how often they
-/// found nothing, the queries that found nothing, the slowest calls, and how
-/// often the hook pointed somewhere.
-pub fn report(lines: &[Value]) -> Value {
+/// What the log says: whether solograph helped (`useful`), calls per tool with
+/// their time and size and how often they found nothing, the queries that found
+/// nothing, the slowest calls, and how often the hook pointed somewhere.
+pub fn report(lines: &[Value], turns: &dyn Fn(&str) -> Option<useful::Turns>) -> Value {
     let mut by_tool: HashMap<String, Vec<&Value>> = HashMap::new();
     for l in lines {
         by_tool
@@ -202,6 +229,8 @@ pub fn report(lines: &[Value]) -> Value {
         .map(|(tool, ls)| {
             let mut ms: Vec<u64> = ls.iter().filter_map(|l| l["ms"].as_u64()).collect();
             ms.sort_unstable();
+            let mut chars: Vec<u64> = ls.iter().filter_map(|l| l["chars"].as_u64()).collect();
+            chars.sort_unstable();
             let empty = ls.iter().filter(|l| l["n"].as_u64() == Some(0)).count();
             let errors = ls
                 .iter()
@@ -211,6 +240,8 @@ pub fn report(lines: &[Value]) -> Value {
                 "tool": tool,
                 "calls": ls.len(),
                 "median_ms": ms.get(ms.len() / 2).copied().unwrap_or(0),
+                "p95_ms": ms.get(ms.len() * 95 / 100).copied().unwrap_or(0),
+                "median_chars": chars.get(chars.len() / 2).copied().unwrap_or(0),
                 "empty": empty,
                 "errors": errors,
             })
@@ -256,6 +287,7 @@ pub fn report(lines: &[Value]) -> Value {
     projects.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     json!({
         "lines": lines.len(),
+        "useful": useful::report(lines, turns),
         "tools": tools,
         "found_nothing": empty,
         "slowest": slowest,
@@ -295,6 +327,19 @@ mod tests {
         let mut empty = CallToolResult::success(vec![]);
         empty.structured_content = Some(json!({"result": []}));
         assert_eq!(summarize(&empty).0, 0);
+        let failed = CallToolResult::success(vec![ContentBlock::text(
+            json!({"error": "No session x in the index"}).to_string(),
+        )]);
+        assert_eq!(summarize(&failed).0, 0);
+        let read = CallToolResult::success(vec![ContentBlock::text(
+            json!({"session_id": "s1", "passages": [{"part": 3, "text": "…"}]}).to_string(),
+        )]);
+        assert_eq!(summarize(&read).0, 1);
+        let mut symbols = CallToolResult::success(vec![]);
+        symbols.structured_content = Some(
+            json!({"result": [{"name": "main", "project": "video", "file": "src/main.rs", "line": 3}]}),
+        );
+        assert_eq!(summarize(&symbols).1, ["video/src/main.rs"]);
     }
 
     #[test]
@@ -311,7 +356,7 @@ mod tests {
         std::fs::write(t.path().join("2026-10.jsonl"), text + "not json\n").unwrap();
         let read = read(t.path(), 30);
         assert_eq!(read.len(), 3, "old lines and junk are left out");
-        let r = report(&read);
+        let r = report(&read, &|_| None);
         assert_eq!(r["tools"][0]["tool"], "kb_search");
         assert_eq!(r["tools"][0]["calls"], 2);
         assert_eq!(r["tools"][0]["empty"], 1);

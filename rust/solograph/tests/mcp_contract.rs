@@ -1,7 +1,7 @@
 //! The binary as a client sees it: spawned, spoken to over stdio, every tool
-//! called — the Rust counterpart of tests/test_tool_contracts.py. A tool's
-//! result has to arrive in the shape Python's server sent: a list as one JSON
-//! block per item plus structuredContent.result, a dict as one JSON block.
+//! called. A list arrives as one JSON block per item plus
+//! structuredContent.result, a dict as one JSON block; the connect answer carries
+//! the instructions an agent with tool search reads before any tool.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -36,6 +36,8 @@ impl Client {
         };
         let init = c.rpc("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}));
         assert_eq!(init["result"]["serverInfo"]["name"], "solograph");
+        let instructions = init["result"]["instructions"].as_str().unwrap();
+        assert!(instructions.contains("session_search") && instructions.len() < 4096);
         writeln!(
             c.stdin,
             r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
@@ -124,7 +126,7 @@ fn fixture(t: &Path) -> Vec<(&'static str, String)> {
 }
 
 #[test]
-fn every_tool_answers_in_the_shape_python_did() {
+fn every_tool_answers() {
     let t = tempfile::tempdir().unwrap();
     let env = fixture(t.path());
     let scan = Command::new(env!("CARGO_BIN_EXE_solograph"))
@@ -139,30 +141,32 @@ fn every_tool_answers_in_the_shape_python_did() {
     );
 
     let mut c = Client::start(&env);
-    let tools: Vec<String> = c.rpc("tools/list", json!({}))["result"]["tools"]
+    let listed = c.rpc("tools/list", json!({}))["result"]["tools"].clone();
+    let mut got: Vec<&str> = listed
         .as_array()
         .unwrap()
         .iter()
-        .map(|t| t["name"].as_str().unwrap().to_string())
+        .map(|t| t["name"].as_str().unwrap())
         .collect();
-    let mut want = vec![
-        "kb_search",
-        "session_search",
-        "symbol_search",
-        "codegraph_stats",
-        "codegraph_explain",
-        "codegraph_shared",
-        "project_info",
-        "web_fetch",
-        "source_search",
-        "source_tags",
-        "source_related",
-        "source_list",
-    ];
-    want.sort_unstable();
-    let mut got = tools.clone();
-    got.sort();
-    assert_eq!(got, want);
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        [
+            "kb_search",
+            "project_info",
+            "session_search",
+            "source_search",
+            "symbol_search"
+        ]
+    );
+    let upfront: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["_meta"]["anthropic/alwaysLoad"] == true)
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(upfront.len(), 2, "{upfront:?}");
 
     let sessions = dict(&c.call("session_search", json!({"query": "graph"})));
     assert_eq!(sessions["results"][0]["session_id"], "s1");
@@ -183,37 +187,38 @@ fn every_tool_answers_in_the_shape_python_did() {
         "{names:?}"
     );
 
-    assert_eq!(dict(&c.call("codegraph_stats", json!({})))["projects"], 1);
+    let all = dict(&c.call("project_info", json!({})));
+    assert_eq!(all["projects"][0]["name"], "video");
+    assert_eq!(all["counts"]["projects"], 1);
+    assert_eq!(all["most_shared_packages"], json!([]));
+    let video = dict(&c.call("project_info", json!({"name": "video"})));
     assert_eq!(
-        dict(&c.call("codegraph_explain", json!({"project": "video"})))["counts"]["symbols"],
-        2
+        (video["name"].clone(), video["counts"]["symbols"].clone()),
+        (json!("video"), json!(2)),
+        "the registry entry and what the index knows, in one answer"
     );
     assert_eq!(
-        dict(&c.call("codegraph_explain", json!({"project": "Rustam's app"})))["error"],
+        dict(&c.call("project_info", json!({"name": "VIDEO"})))["counts"]["symbols"],
+        2,
+        "any case finds the registry entry and, through its name, the index"
+    );
+    assert_eq!(
+        dict(&c.call("project_info", json!({"name": "Rustam's app"})))["error"],
         "Project 'Rustam's app' not found."
     );
-    assert!(list(&c.call("codegraph_shared", json!({}))).is_empty());
-    assert_eq!(
-        dict(&c.call("project_info", json!({"name": "video"})))["name"],
-        "video"
-    );
-    assert_eq!(list(&c.call("project_info", json!({})))[0]["name"], "video");
+    assert!(list(&c.call("project_info", json!({"package": "nothing-like-it"}))).is_empty());
+
     assert!(list(&c.call("source_search", json!({"query": "pricing"}))).is_empty());
-    assert!(list(&c.call("source_list", json!({}))).is_empty());
-    assert!(list(&c.call("source_tags", json!({}))).is_empty());
+    let sources = dict(&c.call("source_search", json!({})));
+    assert_eq!(
+        (sources["sources"].clone(), sources["topics"].clone()),
+        (json!([]), json!([]))
+    );
     assert!(
         list(&c.call(
-            "source_related",
-            json!({"video_url": "https://youtu.be/abcdefghijk"})
+            "source_search",
+            json!({"related": "https://youtu.be/abcdefghijk"})
         ))
         .is_empty()
-    );
-    let fetched = dict(&c.call(
-        "web_fetch",
-        json!({"url": "http://127.0.0.1:9/", "timeout": 2}),
-    ));
-    assert_eq!(
-        fetched["status"], 0,
-        "an unreachable URL is an error object, not a failed call"
     );
 }

@@ -1,4 +1,4 @@
-//! `codegraph_explain`: what a project is made of. Port of Portfolio.explain.
+//! What a project is made of, for `project_info` with a name and `solograph explain`.
 
 use std::collections::HashMap;
 

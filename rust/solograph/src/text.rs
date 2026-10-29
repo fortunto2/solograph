@@ -167,6 +167,90 @@ pub fn split_identifier(name: &str) -> String {
 static TERM: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#""([^"]+)"(\*)?"#).expect("static regex"));
 
+/// Latin letters without their marks, and й as и: what the index's tokenizer
+/// (`unicode61 remove_diacritics 2`) matches on, so "gazipasa" reads a session that
+/// wrote "Gazipaşa" the way search found it.
+fn plain(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
+            'ç' | 'ć' | 'č' => 'c',
+            'ď' => 'd',
+            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ė' | 'ę' | 'ě' => 'e',
+            'ğ' => 'g',
+            'ì' | 'í' | 'î' | 'ï' | 'ī' | 'ı' | 'į' => 'i',
+            'ł' | 'ľ' => 'l',
+            'ñ' | 'ń' | 'ň' => 'n',
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ő' => 'o',
+            'ř' => 'r',
+            'ş' | 'ś' | 'š' | 'ș' => 's',
+            'ť' | 'ț' => 't',
+            'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ů' | 'ű' => 'u',
+            'ý' | 'ÿ' => 'y',
+            'ź' | 'ż' | 'ž' => 'z',
+            'й' => 'и',
+            c => c,
+        })
+        .collect()
+}
+
+/// The `n` paragraphs of `body` that hold the most distinct terms of `expr` (a
+/// match_expression() string), later ones first on a tie (a session's last word on
+/// something is usually its decision), returned in body order as (paragraph index,
+/// text cut to about `width` characters from a little before the first match).
+/// Terms match whole words, a prefix term the start of one, as in the index. A
+/// whole transcript is one document, megabytes long; this is how one is read.
+pub fn passages(body: &str, expr: &str, n: usize, width: usize) -> Vec<(usize, String)> {
+    let terms: Vec<(String, bool)> = TERM
+        .captures_iter(expr)
+        .map(|c| (plain(&c[1]), c.get(2).is_some()))
+        .collect();
+    let paragraphs: Vec<&str> = body.split("\n\n").collect();
+    let mut scored: Vec<(usize, usize, usize)> = Vec::new();
+    for (i, p) in paragraphs.iter().enumerate() {
+        // Most paragraphs hold none of the terms: a substring check skips them
+        // before any word is lowercased.
+        let lower = plain(&fold(&p.to_lowercase()));
+        if !terms.iter().any(|(t, _)| lower.contains(t.as_str())) {
+            continue;
+        }
+        let mut seen = vec![false; terms.len()];
+        let mut first: Option<usize> = None;
+        for m in WORD.find_iter(p) {
+            let w = plain(&fold(&m.as_str().to_lowercase()));
+            for (k, (t, prefix)) in terms.iter().enumerate() {
+                if (*prefix && w.starts_with(t.as_str())) || (!*prefix && &w == t) {
+                    seen[k] = true;
+                    first.get_or_insert(m.start());
+                }
+            }
+        }
+        let count = seen.iter().filter(|x| **x).count();
+        if let Some(at) = first {
+            scored.push((i, count, at));
+        }
+    }
+    scored.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.cmp(&a.0)));
+    scored.truncate(n);
+    scored.sort_unstable();
+    scored
+        .into_iter()
+        .map(|(i, _, at)| {
+            let p = paragraphs[i];
+            let start = p[..at].chars().count().saturating_sub(width / 4);
+            let total = p.chars().count();
+            let mut text: String = p.chars().skip(start).take(width).collect();
+            if start > 0 {
+                text.insert(0, '…');
+            }
+            if start + width < total {
+                text.push('…');
+            }
+            (i, text)
+        })
+        .collect()
+}
+
 /// A snippet without FTS5: the first word matching a term of `expr` (a
 /// match_expression() string), with ~8 words before it and ~16 after, matched words
 /// in «», cut ends marked …. FTS5's snippet() tokenises the whole body to choose its
@@ -230,6 +314,31 @@ pub fn window_snippet(body: &str, expr: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn passages_are_the_paragraphs_with_most_query_words_in_body_order() {
+        let body = "Начали с векторов.\n\nРешили: оставить FTS5, векторы убрать.\n\nПро погоду.\n\nПотом векторы снова обсуждали, FTS5 оставили окончательно.";
+        let got = super::passages(body, &super::match_expression("векторы FTS5"), 2, 400);
+        assert_eq!(got.iter().map(|(i, _)| *i).collect::<Vec<_>>(), [1, 3]);
+        assert!(got[0].1.starts_with("Решили"));
+        let long = format!("{}{}", "слово ".repeat(200), "ключ здесь");
+        let cut = super::passages(&long, &super::match_expression("ключ"), 1, 40);
+        assert!(
+            cut[0].1.starts_with('…') && cut[0].1.contains("ключ"),
+            "{:?}",
+            cut[0].1
+        );
+        assert!(super::passages(body, &super::match_expression("банан"), 3, 100).is_empty());
+        // Whole words: "ai" is not in "said"; marks do not hide a name.
+        let en = "Decided: keep FTS5 for search.\n\nThe weather was nice and I said hello again.";
+        let got = super::passages(en, &super::match_expression("AI FTS5"), 1, 400);
+        assert_eq!(got[0].0, 0);
+        let tr = "Едем в Gazipaşa завтра.\n\nПро другое.";
+        assert_eq!(
+            super::passages(tr, &super::match_expression("gazipasa"), 3, 400).len(),
+            1
+        );
+    }
 
     #[test]
     fn either_spelling_keeps_one_term_per_word() {

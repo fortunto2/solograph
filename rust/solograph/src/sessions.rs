@@ -409,6 +409,54 @@ pub struct SessionSearch {
     /// Each transcript's first working directory, which never changes once
     /// written. The privacy verdict is not cached: a marker can appear any time.
     cwds: HashMap<PathBuf, String>,
+    /// The session asking, left out of its own answers: its prompt holds the very
+    /// words searched for, so it came first in 7 of 18 agent searches (Oct 2026).
+    skip: Option<String>,
+}
+
+/// The Claude Code session asking. Claude Code passes its id to MCP servers and
+/// to the shell, but an MCP server outlives `/clear`, which starts a new session
+/// with the old id still in the server's environment. So the id is checked
+/// against the transcripts of the project directory: the asking session's was
+/// written in the last minutes. The environment's id when it is one of those (or
+/// when nothing can be checked), else the only live one, else none.
+pub fn calling_session() -> Option<String> {
+    let env = std::env::var("CLAUDE_CODE_SESSION_ID")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let project = std::env::var("CLAUDE_PROJECT_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())?;
+    let live = live_sessions(&claude_dir(), &project, std::time::SystemTime::now());
+    pick_session(env, &live)
+}
+
+fn pick_session(env: Option<String>, live: &[String]) -> Option<String> {
+    match (env, live) {
+        (Some(e), _) if live.is_empty() || live.contains(&e) => Some(e),
+        (_, [one]) => Some(one.clone()),
+        _ => None,
+    }
+}
+
+/// Sessions of `project` whose transcript changed in the last two minutes. Claude
+/// Code keeps them in `projects/<the path with every other character as ->`.
+fn live_sessions(claude: &Path, project: &Path, now: std::time::SystemTime) -> Vec<String> {
+    let name: String = project
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let recent = |m: std::time::SystemTime| now.duration_since(m).is_ok_and(|d| d.as_secs() <= 120);
+    std::fs::read_dir(claude.join("projects").join(name))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+        .filter(|e| e.metadata().and_then(|m| m.modified()).is_ok_and(recent))
+        .filter_map(|e| Some(e.path().file_stem()?.to_string_lossy().into_owned()))
+        .collect()
 }
 
 impl SessionSearch {
@@ -434,7 +482,13 @@ impl SessionSearch {
             store,
             projects_dir: root.join("projects"),
             cwds: HashMap::new(),
+            skip: None,
         })
+    }
+
+    /// Leave this session out of the answers that follow.
+    pub fn skip(&mut self, session: Option<String>) {
+        self.skip = session;
     }
 
     /// Judged per transcript, every sync. It used to be cached per Claude project
@@ -508,7 +562,14 @@ impl SessionSearch {
     ) -> Result<Value> {
         let synced = self.sync()?;
         let mut results = Vec::new();
-        for hit in self.ranked(query, n_results, project)? {
+        let extra = usize::from(self.skip.is_some());
+        let hits = self.ranked(query, n_results.saturating_add(extra), project)?;
+        let skip = self.skip.as_deref();
+        for hit in hits
+            .into_iter()
+            .filter(|h| h["doc_id"].as_str() != skip)
+            .take(n_results)
+        {
             let doc_id = hit["doc_id"].as_str().unwrap_or("").to_string();
             let mut r = Map::new();
             r.insert("session_id".into(), json!(doc_id));
@@ -544,6 +605,51 @@ impl SessionSearch {
         }
         let cov = coverage(synced.as_ref(), self.store.count()?);
         Ok(json!({"results": results, "coverage": cov}))
+    }
+}
+
+impl SessionSearch {
+    /// One session read for `query`: the `n` passages that hold most of its words.
+    /// `session` is a session_id from a search, or its first characters.
+    pub fn read(&mut self, session: &str, query: &str, n: usize) -> Result<Value> {
+        self.sync()?;
+        let rows: Vec<(String, Option<String>, i64, String, String)> = self
+            .store
+            .db
+            .prepare(
+                "SELECT d.doc_id, d.meta, d.gone, f.title, f.body FROM docs d \
+                 JOIN fts f ON f.rowid = d.id WHERE substr(d.doc_id, 1, length(?1)) = ?1 LIMIT 2",
+            )?
+            .query_map([session.trim()], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let (doc_id, meta, gone, title, body) = match rows.as_slice() {
+            [one] => one,
+            [] => return Ok(json!({"error": format!("No session {session} in the index")})),
+            _ => return Ok(json!({"error": format!("{session} starts more than one session id")})),
+        };
+        let meta: Value = meta
+            .as_deref()
+            .and_then(|m| serde_json::from_str(m).ok())
+            .unwrap_or(Value::Null);
+        let mut expr = crate::text::match_expression(query);
+        if let Some(fixed) = self.store.respell(query, &[])? {
+            expr = crate::text::union(&expr, &crate::text::match_expression(&fixed));
+        }
+        let passages: Vec<Value> = crate::text::passages(body, &expr, n, 700)
+            .into_iter()
+            .map(|(part, text)| json!({"part": part, "text": text}))
+            .collect();
+        Ok(json!({
+            "session_id": doc_id,
+            "project": meta.get("project").cloned().unwrap_or(Value::Null),
+            "started_at": meta.get("started_at").cloned().unwrap_or(Value::Null),
+            "title": title,
+            "parts": body.split("\n\n").count(),
+            "passages": passages,
+            "transcript": if *gone == 1 { "deleted from disk; this text is the only copy" } else { "on disk" },
+        }))
     }
 }
 

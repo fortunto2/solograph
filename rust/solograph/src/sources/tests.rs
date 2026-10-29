@@ -304,3 +304,14 @@ fn an_absurd_n_returns_instead_of_looping() {
     let hits = i.search("investors", None, 1usize << 62).unwrap();
     assert_eq!(hits.len(), 1);
 }
+
+#[test]
+fn a_video_url_gives_its_id() {
+    use super::youtube_id;
+    assert_eq!(
+        youtube_id("https://www.youtube.com/watch?v=EsTrWCV0Ph4&t=796s"),
+        "EsTrWCV0Ph4"
+    );
+    assert_eq!(youtube_id("https://youtu.be/EsTrWCV0Ph4"), "EsTrWCV0Ph4");
+    assert_eq!(youtube_id("EsTrWCV0Ph4"), "EsTrWCV0Ph4");
+}

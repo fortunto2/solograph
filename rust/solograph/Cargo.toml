@@ -1,6 +1,6 @@
 [package]
 name = "solograph"
-version = "0.16.0"
+version = "0.17.0"
 edition = "2024"
 description = "Solograph core: MCP server and search indexes over SQLite FTS5"
 license = "MIT"
@@ -15,7 +15,6 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 libc = "0.2"
 memchr = "2"
 regex = "1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate", "charset", "cookies"] }
 rmcp = { version = "3.8", features = ["server", "macros", "transport-io"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 rust-stemmers = "1.2"

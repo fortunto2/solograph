@@ -65,6 +65,23 @@ fn a_new_transcript_is_found_on_the_next_search() {
 }
 
 #[test]
+fn the_asking_session_is_left_out_and_the_answer_stays_full() {
+    let t = tempfile::tempdir().unwrap();
+    for id in ["s1", "s2", "s3"] {
+        transcript(
+            &proj(t.path()).join(format!("{id}.jsonl")),
+            "настрой вебхук HubSpot для сделок",
+            "Done.",
+        );
+    }
+    let mut s = search(t.path());
+    s.skip(Some("s2".into()));
+    let mut got = ids(&s.search("hubspot", 2, None).unwrap());
+    got.sort();
+    assert_eq!(got, ["s1", "s3"]);
+}
+
+#[test]
 fn a_deleted_transcript_stays_searchable_and_says_so() {
     let t = tempfile::tempdir().unwrap();
     let mut s = search(t.path());
@@ -588,4 +605,68 @@ fn an_index_written_before_redaction_is_cleaned_on_open() {
         body.contains("[redacted:anthropic-key]") && !body.contains("sk-ant-api03"),
         "{body}"
     );
+}
+
+#[test]
+fn a_found_session_is_read_for_the_query_by_its_id_or_a_prefix() {
+    let t = tempfile::tempdir().unwrap();
+    transcript(
+        &proj(t.path()).join("abc123.jsonl"),
+        "что решили с векторами?",
+        "Решили: векторы убрать, оставить FTS5.\n\nПро погоду ничего.",
+    );
+    let mut s = search(t.path());
+    let out = s.read("abc", "векторы", 3).unwrap();
+    assert_eq!(out["session_id"], "abc123");
+    let texts: Vec<&str> = out["passages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["text"].as_str().unwrap())
+        .collect();
+    assert!(texts.iter().any(|t| t.starts_with("Решили")), "{texts:?}");
+    assert!(!texts.iter().any(|t| t.contains("погоду")));
+    assert!(s.read("zzz", "векторы", 3).unwrap()["error"].is_string());
+}
+
+#[test]
+fn the_asking_session_is_the_live_transcript_when_the_servers_id_is_stale() {
+    use super::{live_sessions, pick_session};
+    let t = tempfile::tempdir().unwrap();
+    let dir = t.path().join("projects").join("-w-my-app");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("new.jsonl"), "{}\n").unwrap();
+    let now = std::time::SystemTime::now();
+    let live = live_sessions(t.path(), std::path::Path::new("/w/my_app"), now);
+    assert_eq!(live, ["new"]);
+    // After /clear the server still holds the old id: the live one is asking.
+    assert_eq!(
+        pick_session(Some("old".into()), &live).as_deref(),
+        Some("new")
+    );
+    assert_eq!(
+        pick_session(Some("new".into()), &live).as_deref(),
+        Some("new")
+    );
+    // Nothing to check against: trust the environment.
+    assert_eq!(
+        pick_session(Some("old".into()), &[]).as_deref(),
+        Some("old")
+    );
+    // Two live sessions and a stale id: no telling, skip nothing.
+    assert_eq!(
+        pick_session(Some("old".into()), &["a".into(), "b".into()]),
+        None
+    );
+    let later = now + std::time::Duration::from_secs(600);
+    assert!(live_sessions(t.path(), std::path::Path::new("/w/my_app"), later).is_empty());
+}
+
+#[test]
+fn a_session_prefix_is_literal_not_a_pattern() {
+    let t = tempfile::tempdir().unwrap();
+    transcript(&proj(t.path()).join("abc123.jsonl"), "векторы", "ок");
+    let mut s = search(t.path());
+    assert!(s.read("a_c", "векторы", 3).unwrap()["error"].is_string());
+    assert_eq!(s.read("abc", "векторы", 3).unwrap()["session_id"], "abc123");
 }

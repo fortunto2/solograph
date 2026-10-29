@@ -26,6 +26,7 @@ fn session(cwd: &Path, log: &Path, extra: &[(&str, &str)]) -> Vec<Value> {
         .env("KB_PATH", cwd.join("kb"))
         .env("SOLOGRAPH_LOG_DIR", log)
         .env("HOME", cwd)
+        .env_remove("CLAUDE_CODE_SESSION_ID")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -89,9 +90,19 @@ fn read(log: &Path) -> Vec<Value> {
 fn every_tool_call_is_one_line_with_what_it_found() {
     let t = tempfile::tempdir().unwrap();
     kb(&t.path().join("kb"));
-    let lines = session(t.path(), &t.path().join("log"), &[]);
+    let lines = session(
+        t.path(),
+        &t.path().join("log"),
+        &[("CLAUDE_CODE_SESSION_ID", "s-42")],
+    );
     assert_eq!(lines.len(), 2, "{lines:?}");
     assert_eq!(lines[0]["via"], "mcp");
+    assert_eq!(
+        (lines[0]["session"].clone(), lines[0]["client"].clone()),
+        (json!("s-42"), json!("t")),
+        "an agent's call names its session and client; the report counts only those"
+    );
+    assert!(lines[0]["chars"].as_u64().unwrap() > 0);
     assert_eq!(lines[0]["tool"], "kb_search");
     assert_eq!(lines[0]["args"]["query"], "sandbox");
     assert_eq!(lines[0]["n"], 1);
