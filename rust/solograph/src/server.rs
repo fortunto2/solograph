@@ -476,7 +476,13 @@ impl ServerHandler for Solograph {
     ) -> Result<rmcp::model::CallToolResponse, ErrorData> {
         let started = std::time::Instant::now();
         let (name, args) = (request.name.to_string(), request.arguments.clone());
-        let client = context.peer.peer_info().map(|i| i.client_info.name.clone());
+        // Clients on the stateless protocol (Claude Code since 2.1.3xx) send no
+        // initialize: their name rides in each request's _meta.
+        let client = context
+            .meta
+            .client_info()
+            .map(|i| i.name)
+            .or_else(|| context.peer.peer_info().map(|i| i.client_info.name.clone()));
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         let out = self.tool_router.call(tcc).await;
         let result = match &out {

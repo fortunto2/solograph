@@ -63,7 +63,9 @@ fn session(cwd: &Path, log: &Path, extra: &[(&str, &str)]) -> Vec<Value> {
     rpc(
         3,
         "tools/call",
-        json!({"name": "kb_search", "arguments": {"query": "zzqx"}}),
+        // A stateless-protocol client names itself in each request's _meta.
+        json!({"name": "kb_search", "arguments": {"query": "zzqx"},
+               "_meta": {"io.modelcontextprotocol/clientInfo": {"name": "claude-code", "version": "2"}}}),
     );
     drop(stdin);
     child.wait().unwrap();
@@ -103,6 +105,7 @@ fn every_tool_call_is_one_line_with_what_it_found() {
         "an agent's call names its session and client; the report counts only those"
     );
     assert!(lines[0]["chars"].as_u64().unwrap() > 0);
+    assert_eq!(lines[1]["client"], "claude-code");
     assert_eq!(lines[0]["tool"], "kb_search");
     assert_eq!(lines[0]["args"]["query"], "sandbox");
     assert_eq!(lines[0]["n"], 1);

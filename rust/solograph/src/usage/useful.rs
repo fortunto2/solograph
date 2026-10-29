@@ -100,15 +100,22 @@ impl Turns {
     /// Whether, after `at` and before the next prompt, one of `ids` was handed to
     /// a tool: a page read, a file opened, a found session read with
     /// `session_search(session_id=…)`. Another search by `tool` itself counts only
-    /// in that last form: its query is words, not what it found.
+    /// in that last form: its query is words, not what it found. A session may be
+    /// read by the first characters of its id, as the tool allows.
     pub fn opened(&self, at: i64, tool: &str, ids: &[&str]) -> bool {
         self.events
             .iter()
             .skip_while(|(t, _, _)| *t < at)
             .take_while(|(_, name, _)| !name.is_empty())
             .any(|(_, name, input)| {
-                (!name.ends_with(tool) || input.contains("\"session_id\""))
-                    && ids.iter().any(|id| input.contains(id))
+                let read: Option<String> = serde_json::from_str::<Value>(input)
+                    .ok()
+                    .and_then(|v| v["session_id"].as_str().map(str::to_string))
+                    .filter(|s| s.len() >= 6);
+                (!name.ends_with(tool) || read.is_some())
+                    && ids.iter().any(|id| {
+                        input.contains(id) || read.as_deref().is_some_and(|r| id.starts_with(r))
+                    })
             })
     }
 }
@@ -267,6 +274,11 @@ mod tests {
             read.opened(at, "session_search", &["abc123"]),
             "reading a found session is opening it"
         );
+        assert!(
+            read.opened(at, "session_search", &["abc123-full-uuid"]),
+            "by the first characters of its id too"
+        );
+        assert!(!read.opened(at, "session_search", &["zzz999-other"]));
     }
 
     #[test]
