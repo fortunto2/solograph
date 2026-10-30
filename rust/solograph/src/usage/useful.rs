@@ -13,10 +13,10 @@ use serde_json::{Value, json};
 /// A search redone this soon, by the same tool in the same session, means the
 /// first answer did not do. Sooner than `PARALLEL_SECS` it is one batch of
 /// searches sent together, not a second try.
-const RETRY_SECS: i64 = 120;
+pub const RETRY_SECS: i64 = 120;
 const PARALLEL_SECS: i64 = 3;
 
-fn secs(ts: &str) -> Option<i64> {
+pub fn secs(ts: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(ts)
         .ok()
         .map(|t| t.timestamp())
@@ -27,20 +27,43 @@ fn agent_call(l: &Value) -> bool {
     l["via"] == "mcp" && l["session"].as_str().is_some_and(|s| !s.is_empty())
 }
 
-/// What one transcript shows after a moment: the tool inputs the agent sent until
-/// the user's next prompt.
-pub struct Turns {
-    /// (unix seconds, tool name, input as JSON text) or a prompt (name "").
-    events: Vec<(i64, String, String)>,
+fn session(l: &Value) -> &str {
+    l["session"].as_str().unwrap_or("")
 }
 
-/// A user line the person typed: not a tool result, not text Claude Code inserted
-/// (`isMeta` skill bodies and images, `<task-notification>`, `<local-command-…>`).
+fn ts(l: &Value) -> Option<i64> {
+    l["ts"].as_str().and_then(secs)
+}
+
+/// A transcript line's time, read without parsing the line: the last
+/// `"timestamp"` key, since Claude Code writes it after the message.
+fn stamp(line: &str) -> Option<i64> {
+    let at = line.rfind("\"timestamp\":\"")? + "\"timestamp\":\"".len();
+    secs(&line[at..at + line[at..].find('"')?])
+}
+
+/// A tool call in a transcript: its input as JSON text, and the session it
+/// reads when it is `session_search(session_id=…)`.
+struct Call {
+    name: String,
+    input: String,
+    reads: Option<String>,
+}
+
+/// What one transcript shows after a moment: the tool calls the agent made until
+/// the user's next prompt.
+pub struct Turns {
+    /// (unix seconds, the call), or a prompt (None), in time order.
+    events: Vec<(i64, Option<Call>)>,
+}
+
+/// A user line the person typed (`sessions::typed`): not a tool result, not an
+/// `isMeta` line (skill bodies, image notes).
 fn typed(o: &Value) -> bool {
     if o["type"] != "user" || o["isMeta"] == true {
         return false;
     }
-    let own = |t: &str| !t.starts_with('<') && !t.starts_with("[Image");
+    let own = crate::sessions::typed;
     match &o["message"]["content"] {
         Value::String(t) => own(t),
         Value::Array(bs) => {
@@ -54,28 +77,45 @@ fn typed(o: &Value) -> bool {
 }
 
 impl Turns {
-    /// A session's transcript, with the tool calls of its subagents
-    /// (`<session>/subagents/*.jsonl`): their searches are logged under it.
-    pub fn read(path: &Path) -> Option<Self> {
+    /// A session's transcript from `since` (unix seconds) on, with the tool calls
+    /// of its subagents (`<session>/subagents/*.jsonl`): their searches are logged
+    /// under it. Nothing earlier can be what a later search led to.
+    pub fn read(path: &Path, since: i64) -> Option<Self> {
         let mut events = Vec::new();
-        Self::scan(path, true, &mut events)?;
+        Self::scan(path, since, true, &mut events)?;
         let subagents = path.with_extension("").join("subagents");
         for f in std::fs::read_dir(subagents).into_iter().flatten().flatten() {
-            let _ = Self::scan(&f.path(), false, &mut events);
+            let written = f
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok());
+            if written.is_none_or(|d| d.as_secs() as i64 >= since) {
+                let _ = Self::scan(&f.path(), since, false, &mut events);
+            }
         }
         events.sort_by_key(|e| e.0);
         Some(Self { events })
     }
 
-    fn scan(path: &Path, prompts: bool, events: &mut Vec<(i64, String, String)>) -> Option<()> {
+    fn scan(
+        path: &Path,
+        since: i64,
+        prompts: bool,
+        events: &mut Vec<(i64, Option<Call>)>,
+    ) -> Option<()> {
         use std::io::BufRead;
         let file = std::io::BufReader::new(std::fs::File::open(path).ok()?);
         for line in file.lines().map_while(Result::ok) {
-            // Live transcripts reach hundreds of MB, most of it tool results: parse
-            // only the lines that can be a tool call or a prompt.
-            let call = line.contains("\"tool_use\"");
-            let prompt = line.contains("\"type\":\"user\"") && !line.contains("\"tool_result\"");
-            if !call && !prompt {
+            // Live transcripts reach hundreds of MB, most of it tool results and
+            // pasted images: parse only the lines that can be an agent's tool call or
+            // a typed prompt, and none from before `since`.
+            let call = line.contains("\"tool_use\"") && line.contains("\"type\":\"assistant\"");
+            let prompt = prompts
+                && line.contains("\"type\":\"user\"")
+                && !line.contains("\"tool_result\"")
+                && !line.contains("\"isMeta\":true");
+            if !(call || prompt) || stamp(&line).is_some_and(|t| t < since) {
                 continue;
             }
             let Ok(o) = serde_json::from_str::<Value>(&line) else {
@@ -84,13 +124,26 @@ impl Turns {
             let Some(t) = o["timestamp"].as_str().and_then(secs) else {
                 continue;
             };
-            if prompts && typed(&o) {
-                events.push((t, String::new(), String::new()));
+            if prompt && typed(&o) {
+                events.push((t, None));
             }
             for b in o["message"]["content"].as_array().into_iter().flatten() {
-                if b["type"] == "tool_use" {
-                    let name = b["name"].as_str().unwrap_or("").to_string();
-                    events.push((t, name, b["input"].to_string()));
+                if b["type"] == "tool_use"
+                    && let Some(name) = b["name"].as_str()
+                {
+                    let reads = b["input"]["session_id"]
+                        .as_str()
+                        .filter(|s| s.len() >= 6)
+                        .map(str::to_string);
+                    let input = b["input"].to_string();
+                    events.push((
+                        t,
+                        Some(Call {
+                            name: name.to_string(),
+                            input,
+                            reads,
+                        }),
+                    ));
                 }
             }
         }
@@ -105,16 +158,13 @@ impl Turns {
     pub fn opened(&self, at: i64, tool: &str, ids: &[&str]) -> bool {
         self.events
             .iter()
-            .skip_while(|(t, _, _)| *t < at)
-            .take_while(|(_, name, _)| !name.is_empty())
-            .any(|(_, name, input)| {
-                let read: Option<String> = serde_json::from_str::<Value>(input)
-                    .ok()
-                    .and_then(|v| v["session_id"].as_str().map(str::to_string))
-                    .filter(|s| s.len() >= 6);
-                (!name.ends_with(tool) || read.is_some())
+            .skip_while(|(t, _)| *t < at)
+            .map_while(|(_, call)| call.as_ref())
+            .any(|c| {
+                (!c.name.ends_with(tool) || c.reads.is_some())
                     && ids.iter().any(|id| {
-                        input.contains(id) || read.as_deref().is_some_and(|r| id.starts_with(r))
+                        c.input.contains(id)
+                            || c.reads.as_deref().is_some_and(|r| id.starts_with(r))
                     })
             })
     }
@@ -129,13 +179,13 @@ pub fn transcript(claude_dir: &Path, session: &str) -> Option<PathBuf> {
         .find(|p| p.exists())
 }
 
-/// The five numbers. `turns` gives a session's transcript when it can be read.
-pub fn report(lines: &[Value], turns: &dyn Fn(&str) -> Option<Turns>) -> Value {
+/// The five numbers. `turns(session, since)` gives a session's transcript from
+/// `since` on, when it can be read.
+pub fn report(lines: &[Value], turns: &dyn Fn(&str, i64) -> Option<Turns>) -> Value {
     let calls: Vec<&Value> = lines.iter().filter(|l| agent_call(l)).collect();
     let hooks: Vec<&Value> = lines.iter().filter(|l| l["via"] == "hook").collect();
-    let session = |l: &Value| l["session"].as_str().unwrap_or("").to_string();
-    let seen: HashSet<String> = hooks.iter().chain(&calls).map(|l| session(l)).collect();
-    let searched: HashSet<String> = calls.iter().map(|l| session(l)).collect();
+    let seen: HashSet<&str> = hooks.iter().chain(&calls).map(|l| session(l)).collect();
+    let searched: HashSet<&str> = calls.iter().map(|l| session(l)).collect();
 
     // A hint is followed when the agent calls solograph before the next prompt.
     let mut followed = 0;
@@ -145,54 +195,62 @@ pub fn report(lines: &[Value], turns: &dyn Fn(&str) -> Option<Turns>) -> Value {
             continue;
         }
         hinted += 1;
-        let (s, from) = (session(h), h["ts"].as_str().and_then(secs).unwrap_or(0));
+        let (s, from) = (session(h), ts(h).unwrap_or(0));
         let until = hooks[i + 1..]
             .iter()
             .find(|n| session(n) == s)
-            .and_then(|n| n["ts"].as_str().and_then(secs))
+            .and_then(|n| ts(n))
             .unwrap_or(i64::MAX);
-        followed += usize::from(calls.iter().any(|c| {
-            session(c) == s
-                && c["ts"]
-                    .as_str()
-                    .and_then(secs)
-                    .is_some_and(|t| t >= from && t < until)
-        }));
+        followed += usize::from(
+            calls
+                .iter()
+                .any(|c| session(c) == s && ts(c).is_some_and(|t| t >= from && t < until)),
+        );
     }
 
     // Reading a found session (`session_id`) is the use of a search, not one.
-    let searches: Vec<&&Value> = calls
+    let searches: Vec<&Value> = calls
         .iter()
+        .copied()
         .filter(|l| l["tool"].as_str().is_some_and(|t| t.ends_with("_search")))
         .filter(|l| l["args"]["session_id"].is_null())
         .collect();
-    let found: Vec<&&Value> = searches
+    let found: Vec<&Value> = searches
         .iter()
-        .filter(|l| l["n"].as_u64().unwrap_or(0) > 0)
         .copied()
+        .filter(|l| l["n"].as_u64().unwrap_or(0) > 0)
         .collect();
     let retried = searches
         .iter()
         .enumerate()
         .filter(|(i, l)| {
-            let t = l["ts"].as_str().and_then(secs).unwrap_or(0);
+            let t = ts(l).unwrap_or(0);
             searches[i + 1..].iter().any(|n| {
                 session(n) == session(l)
                     && n["tool"] == l["tool"]
                     && n["args"] != l["args"]
-                    && n["ts"]
-                        .as_str()
-                        .and_then(secs)
-                        .is_some_and(|nt| (PARALLEL_SECS..=RETRY_SECS).contains(&(nt - t)))
+                    && ts(n).is_some_and(|nt| (PARALLEL_SECS..=RETRY_SECS).contains(&(nt - t)))
             })
         })
         .count();
 
-    let mut cache: HashMap<String, Option<Turns>> = HashMap::new();
+    // Each transcript is read once, from its session's first search that found
+    // something.
+    let mut since: HashMap<&str, i64> = HashMap::new();
+    for l in &found {
+        let t = ts(l).unwrap_or(0);
+        since
+            .entry(session(l))
+            .and_modify(|s| *s = (*s).min(t))
+            .or_insert(t);
+    }
+    let transcripts: HashMap<&str, Turns> = since
+        .into_iter()
+        .filter_map(|(s, t)| Some((s, turns(s, t)?)))
+        .collect();
     let (mut checked, mut opened) = (0, 0);
     for l in &found {
-        let s = session(l);
-        let Some(t) = cache.entry(s.clone()).or_insert_with(|| turns(&s)) else {
+        let Some(t) = transcripts.get(session(l)) else {
             continue;
         };
         let ids: Vec<&str> = l["top"]
@@ -202,8 +260,7 @@ pub fn report(lines: &[Value], turns: &dyn Fn(&str) -> Option<Turns>) -> Value {
             .filter_map(Value::as_str)
             .collect();
         checked += 1;
-        let at = l["ts"].as_str().and_then(secs).unwrap_or(0);
-        opened += usize::from(t.opened(at, l["tool"].as_str().unwrap_or(""), &ids));
+        opened += usize::from(t.opened(ts(l).unwrap_or(0), l["tool"].as_str().unwrap_or(""), &ids));
     }
     json!({
         "sessions": seen.len(),
@@ -225,16 +282,20 @@ mod tests {
 
     use super::{Turns, report};
 
-    fn turns(lines: &[serde_json::Value]) -> Turns {
+    fn turns_since(lines: &[serde_json::Value], since: i64) -> Turns {
         let t = tempfile::NamedTempFile::new().unwrap();
         let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
         std::fs::write(t.path(), text).unwrap();
-        Turns::read(t.path()).unwrap()
+        Turns::read(t.path(), since).unwrap()
+    }
+
+    fn turns(lines: &[serde_json::Value]) -> Turns {
+        turns_since(lines, 0)
     }
 
     #[test]
     fn opening_a_found_page_before_the_next_prompt_counts_and_after_it_does_not() {
-        let t = turns(&[
+        let lines = [
             json!({"type": "user", "timestamp": "2026-10-29T10:00:00Z", "message": {"content": "как мы делали песочницу?"}}),
             json!({"type": "assistant", "timestamp": "2026-10-29T10:00:05Z", "message": {"content": [
                 {"type": "tool_use", "name": "mcp__solograph__kb_search", "input": {"query": "sandbox-only-here"}}]}}),
@@ -243,7 +304,8 @@ mod tests {
             json!({"type": "user", "timestamp": "2026-10-29T10:01:00Z", "message": {"content": [{"type": "text", "text": "ок"}]}}),
             json!({"type": "assistant", "timestamp": "2026-10-29T10:01:05Z", "message": {"content": [
                 {"type": "tool_use", "name": "Read", "input": {"file_path": "/kb/wiki/other.md"}}]}}),
-        ]);
+        ];
+        let t = turns(&lines);
         let at = chrono::DateTime::parse_from_rfc3339("2026-10-29T10:00:06Z")
             .unwrap()
             .timestamp();
@@ -252,6 +314,8 @@ mod tests {
         assert!(!t.opened(at - 2, "kb_search", &["sandbox-only-here"]));
         // A page read only after the next prompt was not this search's doing.
         assert!(!t.opened(at, "kb_search", &["wiki/other.md"]));
+        // Read from a later moment, the earlier lines are not there at all.
+        assert!(!turns_since(&lines, at + 10).opened(at, "kb_search", &["wiki/sandbox.md"]));
 
         let skill = turns(&[
             json!({"type": "assistant", "timestamp": "2026-10-29T10:00:07Z", "message": {"content": [
@@ -265,6 +329,21 @@ mod tests {
             skill.opened(at, "kb_search", &["wiki/sandbox.md"]),
             "text Claude Code inserts is not the next prompt"
         );
+
+        for typed in [
+            "<command-message>simplify</command-message> <command-name>/simplify</command-name>",
+            "[Image #1] поправь чтоб не мешало",
+        ] {
+            let next = turns(&[
+                json!({"type": "user", "timestamp": "2026-10-29T10:00:08Z", "message": {"content": typed}}),
+                json!({"type": "assistant", "timestamp": "2026-10-29T10:00:09Z", "message": {"content": [
+                    {"type": "tool_use", "name": "Read", "input": {"file_path": "/kb/wiki/sandbox.md"}}]}}),
+            ]);
+            assert!(
+                !next.opened(at, "kb_search", &["wiki/sandbox.md"]),
+                "a slash command or a prompt with an image is the next prompt: {typed}"
+            );
+        }
 
         let read = turns(&[
             json!({"type": "assistant", "timestamp": "2026-10-29T10:00:09Z", "message": {"content": [
@@ -300,7 +379,7 @@ mod tests {
         // Two searches sent together are one batch, not a retry.
         lines.push(call("2026-10-29T10:20:00Z", "b", "one", 1));
         lines.push(call("2026-10-29T10:20:01Z", "b", "two", 1));
-        let r = report(&lines, &|_| None);
+        let r = report(&lines, &|_, _| None);
         assert_eq!(r["sessions"], 2);
         assert_eq!(r["searched"], 2);
         assert_eq!(

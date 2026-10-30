@@ -167,12 +167,15 @@ pub fn split_identifier(name: &str) -> String {
 static TERM: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#""([^"]+)"(\*)?"#).expect("static regex"));
 
-/// Latin letters without their marks, and й as и: what the index's tokenizer
+/// Text as terms are compared, in one pass: lowercase, ё as е (`fold`), Latin
+/// letters without their marks and й as и, which is what the index's tokenizer
 /// (`unicode61 remove_diacritics 2`) matches on, so "gazipasa" reads a session that
 /// wrote "Gazipaşa" the way search found it.
-fn plain(text: &str) -> String {
+fn norm(text: &str) -> String {
     text.chars()
+        .flat_map(char::to_lowercase)
         .map(|c| match c {
+            'ё' => 'е',
             'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
             'ç' | 'ć' | 'č' => 'c',
             'ď' => 'd',
@@ -194,6 +197,23 @@ fn plain(text: &str) -> String {
         .collect()
 }
 
+/// The terms of `expr` (a match_expression() string) as (term, is a prefix), in
+/// the form `norm` gives words.
+fn terms(expr: &str) -> Vec<(String, bool)> {
+    TERM.captures_iter(expr)
+        .map(|c| (norm(&c[1]), c.get(2).is_some()))
+        .collect()
+}
+
+/// Whether `word`, normalised, is `term`: or starts with it, for a prefix term.
+fn is_term(word: &str, (term, prefix): &(String, bool)) -> bool {
+    if *prefix {
+        word.starts_with(term.as_str())
+    } else {
+        word == term
+    }
+}
+
 /// The `n` paragraphs of `body` that hold the most distinct terms of `expr` (a
 /// match_expression() string), later ones first on a tie (a session's last word on
 /// something is usually its decision), returned in body order as (paragraph index,
@@ -201,25 +221,22 @@ fn plain(text: &str) -> String {
 /// Terms match whole words, a prefix term the start of one, as in the index. A
 /// whole transcript is one document, megabytes long; this is how one is read.
 pub fn passages(body: &str, expr: &str, n: usize, width: usize) -> Vec<(usize, String)> {
-    let terms: Vec<(String, bool)> = TERM
-        .captures_iter(expr)
-        .map(|c| (plain(&c[1]), c.get(2).is_some()))
-        .collect();
+    let terms = terms(expr);
     let paragraphs: Vec<&str> = body.split("\n\n").collect();
     let mut scored: Vec<(usize, usize, usize)> = Vec::new();
     for (i, p) in paragraphs.iter().enumerate() {
         // Most paragraphs hold none of the terms: a substring check skips them
-        // before any word is lowercased.
-        let lower = plain(&fold(&p.to_lowercase()));
+        // before any word is looked at.
+        let lower = norm(p);
         if !terms.iter().any(|(t, _)| lower.contains(t.as_str())) {
             continue;
         }
         let mut seen = vec![false; terms.len()];
         let mut first: Option<usize> = None;
         for m in WORD.find_iter(p) {
-            let w = plain(&fold(&m.as_str().to_lowercase()));
-            for (k, (t, prefix)) in terms.iter().enumerate() {
-                if (*prefix && w.starts_with(t.as_str())) || (!*prefix && &w == t) {
+            let w = norm(m.as_str());
+            for (k, t) in terms.iter().enumerate() {
+                if is_term(&w, t) {
                     seen[k] = true;
                     first.get_or_insert(m.start());
                 }
@@ -258,19 +275,10 @@ pub fn passages(body: &str, expr: &str, n: usize, width: usize) -> Vec<(usize, S
 /// while this stops at the first hit. Words are lowercased one at a time, so byte
 /// offsets into `body` stay valid whatever it contains. None when nothing matches.
 pub fn window_snippet(body: &str, expr: &str) -> Option<String> {
-    let terms: Vec<(String, bool)> = TERM
-        .captures_iter(expr)
-        .map(|c| (c[1].to_string(), c.get(2).is_some()))
-        .collect();
+    let terms = terms(expr);
     let hit = |w: &str| {
-        let w = fold(&w.to_lowercase());
-        terms.iter().any(|(t, prefix)| {
-            if *prefix {
-                w.starts_with(t.as_str())
-            } else {
-                &w == t
-            }
-        })
+        let w = norm(w);
+        terms.iter().any(|t| is_term(&w, t))
     };
     let first = WORD.find_iter(body).find(|m| hit(m.as_str()))?;
     // Words in a byte window around the hit, then 8 before and 16 after it.

@@ -58,7 +58,7 @@ fn a_new_transcript_is_found_on_the_next_search() {
         "настрой вебхук HubSpot для сделок",
         "Done.",
     );
-    let out = s.search("hubspot вебхуки", 5, None).unwrap();
+    let out = s.search("hubspot вебхуки", 5, None, None).unwrap();
     assert_eq!(ids(&out), ["s1"]);
     assert_eq!(out["coverage"]["status"], "complete");
     assert_eq!(out["coverage"]["read_now"], 1);
@@ -75,8 +75,7 @@ fn the_asking_session_is_left_out_and_the_answer_stays_full() {
         );
     }
     let mut s = search(t.path());
-    s.skip(Some("s2".into()));
-    let mut got = ids(&s.search("hubspot", 2, None).unwrap());
+    let mut got = ids(&s.search("hubspot", 2, None, Some("s2")).unwrap());
     got.sort();
     assert_eq!(got, ["s1", "s3"]);
 }
@@ -90,9 +89,9 @@ fn a_deleted_transcript_stays_searchable_and_says_so() {
         "audio to midi model training",
         "Done.",
     );
-    s.search("midi", 5, None).unwrap();
+    s.search("midi", 5, None, None).unwrap();
     std::fs::remove_file(path).unwrap();
-    let out = s.search("midi", 5, None).unwrap();
+    let out = s.search("midi", 5, None, None).unwrap();
     assert_eq!(out["results"][0]["session_id"], "s1");
     assert!(
         out["results"][0]["transcript"]
@@ -112,7 +111,7 @@ fn the_answer_is_searchable_not_just_the_prompt() {
         "почему падает сборка",
         "Причина: ldflags потерял -lsqlite3",
     );
-    assert_eq!(ids(&s.search("lsqlite3", 5, None).unwrap()), ["s1"]);
+    assert_eq!(ids(&s.search("lsqlite3", 5, None, None).unwrap()), ["s1"]);
 }
 
 #[test]
@@ -120,7 +119,7 @@ fn skill_expansions_are_not_the_session() {
     let t = tempfile::tempdir().unwrap();
     let mut s = search(t.path());
     transcript(&proj(t.path()).join("s1.jsonl"), "fix the parser", "Done.");
-    assert!(ids(&s.search("base directory skill", 5, None).unwrap()).is_empty());
+    assert!(ids(&s.search("base directory skill", 5, None, None).unwrap()).is_empty());
 }
 
 #[test]
@@ -132,7 +131,7 @@ fn an_unreadable_directory_is_unknown_never_complete() {
     )
     .unwrap();
     assert_eq!(
-        s.search("anything", 5, None).unwrap()["coverage"]["status"],
+        s.search("anything", 5, None, None).unwrap()["coverage"]["status"],
         "unknown"
     );
 }
@@ -180,7 +179,7 @@ fn project_filter() {
         .replace("/w/proj", "/w/other");
     std::fs::write(&s2, text).unwrap();
     assert_eq!(
-        ids(&s.search("deploy landing", 5, Some("other")).unwrap()),
+        ids(&s.search("deploy landing", 5, Some("other"), None).unwrap()),
         ["s2"]
     );
 }
@@ -194,7 +193,7 @@ fn a_growing_transcript_is_read_from_where_it_stopped() {
         "start the export",
         "Done.",
     );
-    s.search("export", 5, None).unwrap();
+    s.search("export", 5, None, None).unwrap();
     // Proof that only the tail is read: the head changes in place, same length.
     let head = std::fs::read(&path).unwrap();
     let pos = head.windows(6).position(|w| w == b"export").unwrap();
@@ -207,10 +206,10 @@ fn a_growing_transcript_is_read_from_where_it_stopped() {
             &json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "Saved as parquet"}]}}),
         ),
     );
-    let out = s.search("parquet", 5, None).unwrap();
+    let out = s.search("parquet", 5, None, None).unwrap();
     assert_eq!(out["results"][0]["session_id"], "s1");
     assert_eq!(out["results"][0]["title"], "start the export");
-    assert!(ids(&s.search("zebras", 5, None).unwrap()).is_empty());
+    assert!(ids(&s.search("zebras", 5, None, None).unwrap()).is_empty());
     let offset: i64 = s
         .store
         .db
@@ -234,9 +233,9 @@ fn a_line_still_being_written_is_read_once_it_is_whole() {
         &json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "kubernetes rollout done"}]}}),
     );
     append(&path, &tail[..30]);
-    assert!(ids(&s.search("kubernetes", 5, None).unwrap()).is_empty());
+    assert!(ids(&s.search("kubernetes", 5, None, None).unwrap()).is_empty());
     append(&path, &tail[30..]);
-    assert_eq!(ids(&s.search("kubernetes", 5, None).unwrap()), ["s1"]);
+    assert_eq!(ids(&s.search("kubernetes", 5, None, None).unwrap()), ["s1"]);
 }
 
 #[test]
@@ -249,7 +248,7 @@ fn claude_codes_own_title_wins_over_the_first_prompt() {
         "Done.",
     );
     assert_eq!(
-        s.search("графом", 5, None).unwrap()["results"][0]["title"],
+        s.search("графом", 5, None, None).unwrap()["results"][0]["title"],
         "ну что там с графом"
     );
     append(
@@ -259,7 +258,7 @@ fn claude_codes_own_title_wins_over_the_first_prompt() {
         ),
     );
     assert_eq!(
-        s.search("графом", 5, None).unwrap()["results"][0]["title"],
+        s.search("графом", 5, None, None).unwrap()["results"][0]["title"],
         "Solograph freshness fix"
     );
 }
@@ -278,7 +277,10 @@ fn batch_runs_from_temp_directories_are_not_conversations() {
         "label these turns: deploy landing",
         "Done.",
     );
-    assert_eq!(ids(&s.search("deploy landing", 5, None).unwrap()), ["s1"]);
+    assert_eq!(
+        ids(&s.search("deploy landing", 5, None, None).unwrap()),
+        ["s1"]
+    );
 }
 
 #[test]
@@ -296,11 +298,11 @@ fn a_session_inside_a_private_folder_is_never_indexed() {
         .replace("\"/w/proj\"", &format!("\"{}\"", private_cwd.display()));
     std::fs::write(&path, text).unwrap();
     assert_eq!(
-        ids(&search(t.path()).search("семейная", 5, None).unwrap()),
+        ids(&search(t.path()).search("семейная", 5, None, None).unwrap()),
         ["s1"]
     );
     std::fs::write(t.path().join("home/personal/.solograph-private"), "").unwrap();
-    let out = search(t.path()).search("семейная", 5, None).unwrap();
+    let out = search(t.path()).search("семейная", 5, None, None).unwrap();
     assert!(ids(&out).is_empty());
     assert_eq!(out["coverage"]["indexed"], 0);
 }
@@ -375,7 +377,7 @@ fn an_archived_title_that_was_a_system_line_is_fixed_on_open() {
     s.store.db.execute_batch("PRAGMA user_version = 0").unwrap();
     drop(s);
     let mut s = search(t.path());
-    let out = s.search("чеки", 5, None).unwrap();
+    let out = s.search("чеки", 5, None, None).unwrap();
     assert_eq!(out["results"][0]["title"], "разбери чеки за март");
 }
 
@@ -402,7 +404,7 @@ fn all_words_rank_above_some_words() {
             "ok",
         );
     }
-    let out = s.search("migrate billing webhook", 2, None).unwrap();
+    let out = s.search("migrate billing webhook", 2, None, None).unwrap();
     assert_eq!(ids(&out), ["all", "some"]);
 }
 
@@ -432,7 +434,7 @@ fn privacy_is_judged_per_transcript_not_from_the_first_one_in_the_folder() {
     )
     .unwrap();
     transcript_in(t.path(), "s1", &private_cwd, "семейная история");
-    let out = search(t.path()).search("семейная", 5, None).unwrap();
+    let out = search(t.path()).search("семейная", 5, None, None).unwrap();
     assert!(ids(&out).is_empty(), "{out}");
 }
 
@@ -443,9 +445,9 @@ fn a_marker_added_while_the_server_runs_is_honoured_on_the_next_search() {
     std::fs::create_dir_all(&cwd).unwrap();
     transcript_in(t.path(), "s1", &cwd, "семейная история");
     let mut s = search(t.path());
-    assert_eq!(ids(&s.search("семейная", 5, None).unwrap()), ["s1"]);
+    assert_eq!(ids(&s.search("семейная", 5, None, None).unwrap()), ["s1"]);
     std::fs::write(cwd.join(".solograph-private"), "").unwrap();
-    assert!(ids(&s.search("семейная", 5, None).unwrap()).is_empty());
+    assert!(ids(&s.search("семейная", 5, None, None).unwrap()).is_empty());
 }
 
 #[test]
@@ -455,11 +457,11 @@ fn an_archived_session_from_a_folder_marked_private_later_is_purged() {
     std::fs::create_dir_all(&cwd).unwrap();
     let path = transcript_in(t.path(), "s1", &cwd, "семейная история");
     let mut s = search(t.path());
-    assert_eq!(ids(&s.search("семейная", 5, None).unwrap()), ["s1"]);
+    assert_eq!(ids(&s.search("семейная", 5, None, None).unwrap()), ["s1"]);
     std::fs::remove_file(path).unwrap(); // Claude Code deleted it: archived
-    assert_eq!(ids(&s.search("семейная", 5, None).unwrap()), ["s1"]);
+    assert_eq!(ids(&s.search("семейная", 5, None, None).unwrap()), ["s1"]);
     std::fs::write(cwd.join(".solograph-private"), "").unwrap();
-    assert!(ids(&s.search("семейная", 5, None).unwrap()).is_empty());
+    assert!(ids(&s.search("семейная", 5, None, None).unwrap()).is_empty());
 }
 
 #[test]
@@ -472,7 +474,7 @@ fn a_transcript_with_no_cwd_at_all_is_not_indexed() {
         line(&json!({"type": "user", "message": {"content": "семейная история"}})),
     )
     .unwrap();
-    assert!(ids(&search(t.path()).search("семейная", 5, None).unwrap()).is_empty());
+    assert!(ids(&search(t.path()).search("семейная", 5, None, None).unwrap()).is_empty());
 }
 
 #[test]
@@ -492,7 +494,7 @@ fn a_hyphenated_project_is_found_by_its_real_name() {
         .replace("\"/w/proj\"", &format!("\"{}\"", cwd.display()));
     std::fs::write(&path, text).unwrap();
     let out = search(t.path())
-        .search("montage", 5, Some("video-analyzer"))
+        .search("montage", 5, Some("video-analyzer"), None)
         .unwrap();
     assert_eq!(ids(&out), ["s1"]);
     assert_eq!(out["results"][0]["project"], "video-analyzer");
@@ -512,7 +514,7 @@ fn a_session_started_with_a_skill_is_found_by_its_arguments() {
     ];
     std::fs::write(&path, lines.iter().map(line).collect::<String>()).unwrap();
     let out = search(t.path())
-        .search("therapist marketplace", 5, None)
+        .search("therapist marketplace", 5, None, None)
         .unwrap();
     assert_eq!(ids(&out), ["s1"]);
     assert!(
@@ -538,7 +540,9 @@ fn the_resume_command_survives_a_space_in_the_path() {
         .unwrap()
         .replace("\"/w/proj\"", &format!("\"{}\"", cwd.display()));
     std::fs::write(&path, text).unwrap();
-    let out = search(t.path()).search("space test", 5, None).unwrap();
+    let out = search(t.path())
+        .search("space test", 5, None, None)
+        .unwrap();
     let resume = out["results"][0]["resume"].as_str().unwrap();
     assert!(
         resume.starts_with(&format!("cd '{}'", cwd.display())),
@@ -555,7 +559,7 @@ fn a_secret_in_a_session_is_never_stored_or_shown() {
         "Rotate both keys.",
     );
     let mut s = search(t.path());
-    let out = s.search("deploy failed env", 5, None).unwrap();
+    let out = s.search("deploy failed env", 5, None, None).unwrap();
     assert_eq!(ids(&out), ["s1"]);
     let text = out.to_string();
     assert!(
@@ -563,7 +567,7 @@ fn a_secret_in_a_session_is_never_stored_or_shown() {
         "{text}"
     );
     // The value itself is not in the index at all.
-    assert!(ids(&s.search("AKIAZ7Q3LMN4PQR8STUV", 5, None).unwrap()).is_empty());
+    assert!(ids(&s.search("AKIAZ7Q3LMN4PQR8STUV", 5, None, None).unwrap()).is_empty());
     let body: String = s
         .store
         .db
@@ -585,7 +589,7 @@ fn an_index_written_before_redaction_is_cleaned_on_open() {
     );
     {
         let mut s = search(t.path());
-        s.search("old", 5, None).unwrap();
+        s.search("old", 5, None, None).unwrap();
         // As an older binary left it: a key straight in the body, version unset.
         s.store
             .db
@@ -660,6 +664,22 @@ fn the_asking_session_is_the_live_transcript_when_the_servers_id_is_stale() {
     );
     let later = now + std::time::Duration::from_secs(600);
     assert!(live_sessions(t.path(), std::path::Path::new("/w/my_app"), later).is_empty());
+
+    // A session waiting on its subagent writes nothing itself, and is live.
+    let waiting = std::fs::File::create(dir.join("parent.jsonl")).unwrap();
+    waiting
+        .set_modified(now - std::time::Duration::from_secs(600))
+        .unwrap();
+    let subagents = dir.join("parent").join("subagents");
+    std::fs::create_dir_all(&subagents).unwrap();
+    std::fs::write(subagents.join("agent-1.jsonl"), "{}\n").unwrap();
+    let mut live = live_sessions(
+        t.path(),
+        std::path::Path::new("/w/my_app"),
+        std::time::SystemTime::now(),
+    );
+    live.sort();
+    assert_eq!(live, ["new", "parent"]);
 }
 
 #[test]

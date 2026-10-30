@@ -190,7 +190,6 @@ fn symbols(a: &Args) -> Result<()> {
 fn sessions(a: &Args) -> Result<()> {
     let root = a.path("claude-dir");
     let mut idx = SessionSearch::open(None, root.as_deref())?;
-    idx.skip(crate::sessions::calling_session());
     if let Some(id) = a.val("session") {
         let out = idx.read(id, &a.words(0, "query")?, a.num("limit", 5)?)?;
         if a.json() {
@@ -203,7 +202,12 @@ fn sessions(a: &Args) -> Result<()> {
         }
         return Ok(());
     }
-    let out = idx.search(&a.words(0, "query")?, a.num("limit", 5)?, a.val("project"))?;
+    let out = idx.search(
+        &a.words(0, "query")?,
+        a.num("limit", 5)?,
+        a.val("project"),
+        crate::sessions::calling_session().as_deref(),
+    )?;
     if a.json() {
         println!("{}", pretty(&out));
         return Ok(());
@@ -655,11 +659,13 @@ fn usage(a: &Args) -> Result<()> {
     let u = |v: &Value| v.as_u64().unwrap_or(0);
     let dir = crate::usage::location();
     let claude = crate::sessions::claude_dir();
-    let turns = |session: &str| {
+    let turns = |session: &str, since: i64| {
         crate::usage::useful::transcript(&claude, session)
-            .and_then(|p| crate::usage::useful::Turns::read(&p))
+            .and_then(|p| crate::usage::useful::Turns::read(&p, since))
     };
-    let r = crate::usage::report(&crate::usage::read(&dir, a.num("days", 14)? as i64), &turns);
+    let lines = crate::usage::read(&dir, a.num("days", 14)? as i64);
+    let mut r = crate::usage::report(&lines);
+    r["useful"] = crate::usage::useful::report(&lines, &turns);
     if a.json() {
         println!("{}", pretty(&r));
         return Ok(());
@@ -723,37 +729,35 @@ fn print_useful(f: &Value) {
             .checked_div(b)
             .map_or_else(|| "-".to_string(), |p| format!("{p}%"))
     };
+    let retry = format!(
+        "searches were asked again within {} minutes",
+        crate::usage::useful::RETRY_SECS / 60
+    );
     println!("\nUseful (calls from Claude Code sessions; scripts and evals are left out):");
-    println!(
-        "  reach    {} of {} sessions searched ({})",
-        u("searched"),
-        u("sessions"),
-        pct(u("searched"), u("sessions"))
-    );
-    println!(
-        "  hints    {} of {} pointers and nudges were followed by a call in the same turn ({})",
-        u("followed"),
-        u("hinted"),
-        pct(u("followed"), u("hinted"))
-    );
-    println!(
-        "  found    {} of {} searches returned something ({})",
-        u("found"),
-        u("searches"),
-        pct(u("found"), u("searches"))
-    );
-    println!(
-        "  opened   {} of {} of those, in transcripts still on disk, led to opening a result ({})",
-        u("opened"),
-        u("checked"),
-        pct(u("opened"), u("checked"))
-    );
-    println!(
-        "  retried  {} of {} searches were asked again within 2 minutes ({})",
-        u("retried"),
-        u("searches"),
-        pct(u("retried"), u("searches"))
-    );
+    for (label, of, all, what) in [
+        ("reach", "searched", "sessions", "sessions searched"),
+        (
+            "hints",
+            "followed",
+            "hinted",
+            "pointers and nudges were followed by a call in the same turn",
+        ),
+        ("found", "found", "searches", "searches returned something"),
+        (
+            "opened",
+            "opened",
+            "checked",
+            "of those, in transcripts still on disk, led to opening a result",
+        ),
+        ("retried", "retried", "searches", &retry),
+    ] {
+        println!(
+            "  {label:8} {} of {} {what} ({})",
+            u(of),
+            u(all),
+            pct(u(of), u(all))
+        );
+    }
     println!("  errors   {}", u("errors"));
 }
 

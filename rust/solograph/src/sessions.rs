@@ -40,6 +40,16 @@ fn slash_command(text: &str) -> Option<String> {
     Some(format!("{name} {args}").trim().to_string())
 }
 
+/// Whether a user text block is what the person typed: a prompt (with or without
+/// "[Image #N]") or a slash command, not text Claude Code adds in tags
+/// (`<task-notification>`, `<local-command-stdout>`) or writes itself
+/// ("[Request interrupted by user]"). Skill bodies and image notes are `isMeta`
+/// lines, judged before the text.
+pub fn typed(text: &str) -> bool {
+    slash_command(text).is_some()
+        || !(text.starts_with('<') || text.starts_with("[Request interrupted"))
+}
+
 /// A path as one shell word.
 fn shell_quote(p: &str) -> String {
     if p.chars()
@@ -403,15 +413,14 @@ fn keep_out(cwd: &str) -> bool {
     cwd.is_empty() || is_private(cwd)
 }
 
+const GONE: &str = "deleted from disk; this text is the only copy";
+
 pub struct SessionSearch {
     pub store: FtsStore,
     projects_dir: PathBuf,
     /// Each transcript's first working directory, which never changes once
     /// written. The privacy verdict is not cached: a marker can appear any time.
     cwds: HashMap<PathBuf, String>,
-    /// The session asking, left out of its own answers: its prompt holds the very
-    /// words searched for, so it came first in 7 of 18 agent searches (Oct 2026).
-    skip: Option<String>,
 }
 
 /// The Claude Code session asking. Claude Code passes its id to MCP servers and
@@ -424,10 +433,7 @@ pub fn calling_session() -> Option<String> {
     let env = std::env::var("CLAUDE_CODE_SESSION_ID")
         .ok()
         .filter(|s| !s.is_empty());
-    let project = std::env::var("CLAUDE_PROJECT_DIR")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())?;
+    let project = env_path("CLAUDE_PROJECT_DIR").or_else(|| std::env::current_dir().ok())?;
     let live = live_sessions(&claude_dir(), &project, std::time::SystemTime::now());
     pick_session(env, &live)
 }
@@ -440,22 +446,32 @@ fn pick_session(env: Option<String>, live: &[String]) -> Option<String> {
     }
 }
 
-/// Sessions of `project` whose transcript changed in the last two minutes. Claude
-/// Code keeps them in `projects/<the path with every other character as ->`.
+/// Sessions of `project` whose transcript changed in the last two minutes, or one
+/// of their subagents' (`<id>/subagents/*.jsonl`): a session waiting on a subagent
+/// writes nothing itself, and the subagent's calls are its calls. Claude Code keeps
+/// them in `projects/<the path with every other character as ->`.
 fn live_sessions(claude: &Path, project: &Path, now: std::time::SystemTime) -> Vec<String> {
     let name: String = project
         .to_string_lossy()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
-    let recent = |m: std::time::SystemTime| now.duration_since(m).is_ok_and(|d| d.as_secs() <= 120);
-    std::fs::read_dir(claude.join("projects").join(name))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
-        .filter(|e| e.metadata().and_then(|m| m.modified()).is_ok_and(recent))
-        .filter_map(|e| Some(e.path().file_stem()?.to_string_lossy().into_owned()))
+    let recent = |p: &Path| {
+        std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .is_ok_and(|m| now.duration_since(m).is_ok_and(|d| d.as_secs() <= 120))
+    };
+    let files = |dir: PathBuf| {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+    };
+    files(claude.join("projects").join(name))
+        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .filter(|p| recent(p) || files(p.with_extension("").join("subagents")).any(|s| recent(&s)))
+        .filter_map(|p| Some(p.file_stem()?.to_string_lossy().into_owned()))
         .collect()
 }
 
@@ -482,13 +498,7 @@ impl SessionSearch {
             store,
             projects_dir: root.join("projects"),
             cwds: HashMap::new(),
-            skip: None,
         })
-    }
-
-    /// Leave this session out of the answers that follow.
-    pub fn skip(&mut self, session: Option<String>) {
-        self.skip = session;
     }
 
     /// Judged per transcript, every sync. It used to be cached per Claude project
@@ -554,17 +564,20 @@ impl SessionSearch {
         Ok(Some((report, files.len(), private.len())))
     }
 
+    /// Sessions for `query`, without `skip`: the session asking, whose prompt holds
+    /// the very words searched for, so it came first in 7 of 18 agent searches
+    /// (Oct 2026).
     pub fn search(
         &mut self,
         query: &str,
         n_results: usize,
         project: Option<&str>,
+        skip: Option<&str>,
     ) -> Result<Value> {
         let synced = self.sync()?;
         let mut results = Vec::new();
-        let extra = usize::from(self.skip.is_some());
+        let extra = usize::from(skip.is_some());
         let hits = self.ranked(query, n_results.saturating_add(extra), project)?;
-        let skip = self.skip.as_deref();
         for hit in hits
             .into_iter()
             .filter(|h| h["doc_id"].as_str() != skip)
@@ -587,10 +600,7 @@ impl SessionSearch {
             r.insert("snippet".into(), hit["snippet"].clone());
             r.insert("score".into(), hit["score"].clone());
             if hit["gone"] == true {
-                r.insert(
-                    "transcript".into(),
-                    json!("deleted from disk; this text is the only copy"),
-                );
+                r.insert("transcript".into(), json!(GONE));
             } else if let Some(pp) = hit.get("project_path").filter(|v| crate::fts::truthy(v)) {
                 let pp = pp.as_str().map_or_else(|| pp.to_string(), str::to_string);
                 r.insert(
@@ -633,10 +643,7 @@ impl SessionSearch {
             .as_deref()
             .and_then(|m| serde_json::from_str(m).ok())
             .unwrap_or(Value::Null);
-        let mut expr = crate::text::match_expression(query);
-        if let Some(fixed) = self.store.respell(query, &[])? {
-            expr = crate::text::union(&expr, &crate::text::match_expression(&fixed));
-        }
+        let expr = any_word(query, self.respelt(query).as_deref());
         let passages: Vec<Value> = crate::text::passages(body, &expr, n, 700)
             .into_iter()
             .map(|(part, text)| json!({"part": part, "text": text}))
@@ -648,12 +655,27 @@ impl SessionSearch {
             "title": title,
             "parts": body.split("\n\n").count(),
             "passages": passages,
-            "transcript": if *gone == 1 { "deleted from disk; this text is the only copy" } else { "on disk" },
+            "transcript": if *gone == 1 { GONE } else { "on disk" },
         }))
     }
 }
 
+/// Any word of `query` in either spelling: the widest search pass, and what a read
+/// looks for. `fixed` is the query respelt, when it had a typo.
+fn any_word(query: &str, fixed: Option<&str>) -> String {
+    crate::text::union(
+        &crate::text::match_expression(query),
+        &crate::text::match_expression(fixed.unwrap_or(query)),
+    )
+}
+
 impl SessionSearch {
+    /// The query with its typos fixed (fts/spell.rs), when it had any. A failed
+    /// lookup is no fix: the query as written still searches.
+    fn respelt(&self, query: &str) -> Option<String> {
+        self.store.respell(query, &[]).ok().flatten()
+    }
+
     /// All the query's words before some of them. Measured on 37 known-answer
     /// sessions (27 Oct 2026): recall@1 26 → 29, recall@5 30 → 32. Title weight
     /// 1 or 10 instead of 3 and a recency boost did not help, and were left out.
@@ -668,16 +690,12 @@ impl SessionSearch {
         // written, every word in either spelling, any word in either. A typo drops
         // its word from the first (fts/spell.rs); a session that holds the words as
         // written, typos and all ("придуматьк"), stays first.
-        let fixed = self.store.respell(query, &[]).ok().flatten();
-        let q = fixed.as_deref().unwrap_or(query);
+        let fixed = self.respelt(query);
         let mut passes = vec![crate::text::all_terms(query)];
-        if fixed.is_some() {
+        if let Some(q) = &fixed {
             passes.push(crate::text::all_terms_either(query, q));
         }
-        passes.push(crate::text::union(
-            &crate::text::match_expression(query),
-            &crate::text::match_expression(q),
-        ));
+        passes.push(any_word(query, fixed.as_deref()));
         passes.dedup();
         let mut hits: Vec<Map<String, Value>> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();

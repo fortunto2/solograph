@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 use anyhow::Result;
-use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
+use rmcp::handler::server::{common::Extension, router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
 use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
@@ -192,6 +192,11 @@ fn with<S, T>(
     f(guard.as_mut().expect("opened above"))
 }
 
+/// The Claude Code session making a call (`sessions::calling_session`), put in
+/// the request by `call_tool`.
+#[derive(Clone)]
+struct Asking(Option<String>);
+
 fn list_result(items: Vec<Value>) -> CallToolResult {
     let mut r = CallToolResult::success(
         items
@@ -213,6 +218,15 @@ fn failed(tool: &str, e: anyhow::Error) -> CallToolResult {
     ))])
 }
 
+/// A tool's answer: a list item by item, anything else as one dict.
+fn answer(tool: &str, out: Result<Value>) -> CallToolResult {
+    match out {
+        Ok(Value::Array(items)) => list_result(items),
+        Ok(v) => dict_result(v),
+        Err(e) => failed(tool, e),
+    }
+}
+
 /// CODEGRAPH_REGISTRY, else ~/.solo/registry.yaml, when it exists.
 fn registry_path() -> Option<PathBuf> {
     match env_path("CODEGRAPH_REGISTRY") {
@@ -232,16 +246,16 @@ impl Solograph {
         }
     }
 
-    /// Every project the registry lists, or an error naming the fix.
-    fn registry() -> Result<std::result::Result<Vec<Value>, Value>> {
+    /// Every project the registry lists; None when there is no registry.
+    fn registry() -> Result<Option<Vec<Value>>> {
         let Some(path) = registry_path() else {
-            return Ok(Err(
-                json!({"error": "Registry not found. Set CODEGRAPH_REGISTRY env var or run: solograph scan"}),
-            ));
+            return Ok(None);
         };
         let data: serde_yaml::Value = serde_yaml::from_str(&std::fs::read_to_string(path)?)?;
         let data = crate::yamlval::to_json(&data);
-        Ok(Ok(data["projects"].as_array().cloned().unwrap_or_default()))
+        Ok(Some(
+            data["projects"].as_array().cloned().unwrap_or_default(),
+        ))
     }
 
     /// One project: its registry entry, then what the portfolio index knows of it.
@@ -249,14 +263,11 @@ impl Solograph {
     /// so the index is asked for the registry's spelling.
     fn project(&self, name: &str) -> Result<Value> {
         let lower = name.to_lowercase();
-        let entry = match Self::registry()? {
-            Ok(projects) => projects.into_iter().find(|p| {
-                p["name"]
-                    .as_str()
-                    .is_some_and(|n| n.to_lowercase() == lower)
-            }),
-            Err(_) => None,
-        };
+        let entry = Self::registry()?.into_iter().flatten().find(|p| {
+            p["name"]
+                .as_str()
+                .is_some_and(|n| n.to_lowercase() == lower)
+        });
         let exact = entry
             .as_ref()
             .and_then(|e| e["name"].as_str())
@@ -286,26 +297,28 @@ impl Solograph {
     /// All projects with their stacks, the portfolio's counts, and the ten
     /// packages the most projects share.
     fn portfolio_overview(&self) -> Result<Value> {
-        let projects: Vec<Value> = match Self::registry()? {
-            Ok(projects) => projects
-                .iter()
-                .map(|p| {
-                    let mut o = Map::new();
-                    o.insert("name".into(), p["name"].clone());
-                    o.insert(
-                        "stacks".into(),
-                        p.get("stacks").cloned().unwrap_or(json!([])),
-                    );
-                    let day = p["last_commit"].as_str().unwrap_or("");
-                    o.insert("last_commit".into(), json!(day.get(..10).unwrap_or(day)));
-                    if let Some(st) = p["status"].as_str().filter(|s| *s != "active") {
-                        o.insert("status".into(), json!(st));
-                    }
-                    Value::Object(o)
-                })
-                .collect(),
-            Err(e) => return Ok(e),
+        let Some(projects) = Self::registry()? else {
+            return Ok(
+                json!({"error": "Registry not found. Set CODEGRAPH_REGISTRY env var or run: solograph scan"}),
+            );
         };
+        let projects: Vec<Value> = projects
+            .iter()
+            .map(|p| {
+                let mut o = Map::new();
+                o.insert("name".into(), p["name"].clone());
+                o.insert(
+                    "stacks".into(),
+                    p.get("stacks").cloned().unwrap_or(json!([])),
+                );
+                let day = p["last_commit"].as_str().unwrap_or("");
+                o.insert("last_commit".into(), json!(day.get(..10).unwrap_or(day)));
+                if let Some(st) = p["status"].as_str().filter(|s| *s != "active") {
+                    o.insert("status".into(), json!(st));
+                }
+                Value::Object(o)
+            })
+            .collect();
         let (counts, shared) = self
             .with_portfolio(|p| Ok((p.stats()?, p.shared_packages(None)?)))
             .unwrap_or_else(|e| (json!({"error": format!("{e:#}")}), Vec::new()));
@@ -335,9 +348,9 @@ impl Solograph {
         Parameters(a): Parameters<KbSearchArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let Some(root) = crate::kb::detect_root() else {
-            return Ok(list_result(vec![
+            return Ok(dict_result(
                 json!({"error": "KB not configured. Set KB_PATH env var."}),
-            ]));
+            ));
         };
         let found = with(
             &self.kb,
@@ -352,10 +365,7 @@ impl Solograph {
                 )
             },
         );
-        Ok(match found {
-            Ok(v) => list_result(v),
-            Err(e) => failed("kb_search", e),
-        })
+        Ok(answer("kb_search", found.map(Value::Array)))
     }
 
     #[tool(
@@ -365,23 +375,22 @@ impl Solograph {
     async fn session_search(
         &self,
         Parameters(a): Parameters<SessionSearchArgs>,
+        Extension(Asking(asking)): Extension<Asking>,
     ) -> Result<CallToolResult, ErrorData> {
         let found = with(
             &self.sessions,
             || SessionSearch::open(None, None),
             |s| match a.session_id.as_deref() {
                 Some(id) => s.read(id, &a.query, a.n_results),
-                None => {
-                    // Per call: the session asking changes under a running server.
-                    s.skip(crate::sessions::calling_session());
-                    s.search(&a.query, a.n_results, a.project.as_deref())
-                }
+                None => s.search(
+                    &a.query,
+                    a.n_results,
+                    a.project.as_deref(),
+                    asking.as_deref(),
+                ),
             },
         );
-        Ok(match found {
-            Ok(v) => dict_result(v),
-            Err(e) => failed("session_search", e),
-        })
+        Ok(answer("session_search", found))
     }
 
     #[tool(
@@ -391,19 +400,15 @@ impl Solograph {
         &self,
         Parameters(a): Parameters<SymbolSearchArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        Ok(
-            match self.with_portfolio(|p| {
-                p.search_symbols(
-                    &a.query,
-                    a.n_results,
-                    a.project.as_deref(),
-                    a.kind.as_deref(),
-                )
-            }) {
-                Ok(v) => list_result(v),
-                Err(e) => failed("symbol_search", e),
-            },
-        )
+        let found = self.with_portfolio(|p| {
+            p.search_symbols(
+                &a.query,
+                a.n_results,
+                a.project.as_deref(),
+                a.kind.as_deref(),
+            )
+        });
+        Ok(answer("symbol_search", found.map(Value::Array)))
     }
 
     #[tool(
@@ -420,11 +425,7 @@ impl Solograph {
                 .map(Value::Array),
             (None, None) => self.portfolio_overview(),
         };
-        Ok(match out {
-            Ok(Value::Array(items)) => list_result(items),
-            Ok(v) => dict_result(v),
-            Err(e) => failed("project_info", e),
-        })
+        Ok(answer("project_info", out))
     }
 
     #[tool(
@@ -448,11 +449,7 @@ impl Solograph {
                 "topics": s.list_tags(source.unwrap_or("youtube"))?,
             })),
         });
-        Ok(match out {
-            Ok(Value::Array(items)) => list_result(items),
-            Ok(v) => dict_result(v),
-            Err(e) => failed("source_search", e),
-        })
+        Ok(answer("source_search", out))
     }
 }
 
@@ -472,17 +469,17 @@ impl ServerHandler for Solograph {
     async fn call_tool(
         &self,
         request: rmcp::model::CallToolRequestParams,
-        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+        mut context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, ErrorData> {
         let started = std::time::Instant::now();
         let (name, args) = (request.name.to_string(), request.arguments.clone());
         // Clients on the stateless protocol (Claude Code since 2.1.3xx) send no
-        // initialize: their name rides in each request's _meta.
-        let client = context
-            .meta
-            .client_info()
-            .map(|i| i.name)
-            .or_else(|| context.peer.peer_info().map(|i| i.client_info.name.clone()));
+        // initialize: their name rides in each request's _meta, which this reads first.
+        let client = context.client_info().map(|i| i.name);
+        // Once per call, for the tool and the log alike: it changes under a
+        // running server (`/clear`, another session in the same project).
+        let asking = crate::sessions::calling_session();
+        context.extensions.insert(Asking(asking.clone()));
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         let out = self.tool_router.call(tcc).await;
         let result = match &out {
@@ -495,6 +492,7 @@ impl ServerHandler for Solograph {
             result,
             started.elapsed(),
             client.as_deref(),
+            asking.as_deref(),
         );
         out
     }
