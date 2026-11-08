@@ -219,6 +219,7 @@ Every store is per-registration, so one install serves several profiles (say a p
 One FTS index at `$SOURCES_ROOT/search.db`, documents keyed `<source>/<id>`, plus `videos` and `video_tags` tables.
 
 - **YouTube** — `index-youtube` discovers videos via SearXNG, fetches metadata and VTT with yt-dlp, chunks by chapter. Each chunk is a document, so a hit links to its second (`&t=140s`); a search returns each video once, at its best chunk. Topic tags come from keyword matching against the `TOPICS` table in `sources.py` (title hits count double).
+- **YouTube from another machine** — YouTube answers subtitle requests from hotel or office Wi-Fi with HTTP 429. `scripts/yt-spool.py` runs nightly on an always-on box behind a home connection: it reads the transcript with youtube-transcript-api, writes it as WebVTT with real timestamps, adds trimmed yt-dlp metadata, and stops on the first refusal. `scripts/yt-pull.sh` (set `YT_SPOOL_HOST`) pushes `channels.yaml` and the already indexed ids there, moves finished pairs into the VTT cache and indexes them, and YouTube is not asked again. Measured 8 Nov 2026: subtitles via yt-dlp got 429 from the home IP, the transcript API returned all 3 of 3 videos.
 - **ProductHunt / TrustMRR** — scrapers into the same index; upvotes nudge ranking by at most 15%.
 - **Telegram** — `scripts/index_telegram.py` in the consuming repo.
 

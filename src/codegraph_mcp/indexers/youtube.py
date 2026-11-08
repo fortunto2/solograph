@@ -264,18 +264,23 @@ def fetch_video_metadata(video_id: str) -> dict:
         "upload_date": "",
     }
 
-    # 1. Metadata via --dump-json
+    # 1. Metadata: a cached <id>.info.json (scripts/yt-spool.py writes one from a machine
+    # YouTube does not refuse), else --dump-json.
+    cached_info = VTT_DIR / f"{video_id}.info.json"
     try:
-        result = subprocess.run(
-            ["yt-dlp", "-j", "--no-download", url],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            # The metadata call is refused with 429 too once the IP is blocked.
-            return {**empty, "rate_limited": "HTTP Error 429" in (result.stderr or "")}
-        data = json.loads(result.stdout)
+        if cached_info.exists():
+            data = json.loads(cached_info.read_text(encoding="utf-8"))
+        else:
+            result = subprocess.run(
+                ["yt-dlp", "-j", "--no-download", url],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                # The metadata call is refused with 429 too once the IP is blocked.
+                return {**empty, "rate_limited": "HTTP Error 429" in (result.stderr or "")}
+            data = json.loads(result.stdout)
     except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
         return empty
 
