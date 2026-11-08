@@ -104,7 +104,8 @@ def fetch_transcript(video_id: str) -> list[dict] | None:
     from youtube_transcript_api._errors import IpBlocked, RequestBlocked
 
     try:
-        fetched = YouTubeTranscriptApi().fetch(video_id, languages=["en", "en-US", "en-GB"])
+        # English first (the index is English); Russian for channels that speak it.
+        fetched = YouTubeTranscriptApi().fetch(video_id, languages=["en", "en-US", "en-GB", "ru"])
     except (IpBlocked, RequestBlocked) as e:
         raise Blocked(type(e).__name__) from e
     except Exception as e:  # no captions yet, disabled, private, age-gated
@@ -134,6 +135,9 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=5, help="latest videos to look at per channel")
     ap.add_argument("--max-videos", type=int, default=40, help="videos to fetch in one run")
     ap.add_argument("--pause", type=float, default=20, help="seconds between videos (jittered)")
+    ap.add_argument(
+        "-c", "--channel", action="append", help="only these handles (a backfill: pair with a large --limit)"
+    )
     a = ap.parse_args()
 
     spool: Path = a.spool
@@ -150,7 +154,7 @@ def main() -> int:
     started, fetched, missing = time.time(), 0, 0
     try:
         queue: list[str] = []
-        for handle in load_channels(channels_file):
+        for handle in a.channel or load_channels(channels_file):
             ids = discover(handle, a.limit)
             queue += [v for v in ids if v not in known and v not in done and v not in queue]
             time.sleep(random.uniform(2, 5))
