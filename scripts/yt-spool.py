@@ -133,8 +133,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--spool", type=Path, default=Path.home() / ".solo" / "yt-spool")
     ap.add_argument("--limit", type=int, default=5, help="latest videos to look at per channel")
-    ap.add_argument("--max-videos", type=int, default=40, help="videos to fetch in one run")
-    ap.add_argument("--pause", type=float, default=20, help="seconds between videos (jittered)")
+    ap.add_argument("--max-videos", type=int, default=25, help="videos to fetch in one run")
+    # 8 Nov 2026, home IP: 15 s between videos drew IpBlocked after 12 videos in 342 s.
+    ap.add_argument("--pause", type=float, default=60, help="seconds between videos (jittered)")
     ap.add_argument(
         "-c", "--channel", action="append", help="only these handles (a backfill: pair with a large --limit)"
     )
