@@ -14,7 +14,7 @@ REMOTE=${YT_SPOOL_DIR:-.solo/yt-spool}
 YT=$HOME/.solo/sources/youtube
 VTT=$YT/vtt
 DB=$HOME/.solo/sources/search.db
-export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=20)
 mkdir -p "$VTT"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/yt-pull.XXXXXX")
