@@ -27,6 +27,11 @@ if ! "${SSH[@]}" "$HOST" "mkdir -p $REMOTE"; then
     echo "$(date '+%F %T') yt-pull: offline, next tick"
     exit 0
   fi
+  # A paused mesh VPN looks exactly like a dead host (9 Nov 2026: the box was up, WARP was paused).
+  if command -v warp-cli >/dev/null && ! warp-cli status 2>/dev/null | grep -q "Connected"; then
+    echo "$(date '+%F %T') yt-pull: $HOST unreachable and WARP is not connected; if the host is reached over WARP, that is why" >&2
+    exit 1
+  fi
   echo "$(date '+%F %T') yt-pull: $HOST unreachable while the network is up" >&2
   exit 1
 fi
