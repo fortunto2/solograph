@@ -35,6 +35,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 VTT_DIR = Path.home() / ".solo" / "sources" / "youtube" / "vtt"
@@ -131,6 +132,50 @@ def export(yt, handle: str, video: dict, out: Path) -> bool:
     return True
 
 
+RETRIES, RETRY_WAIT = 5, 60  # a daily job: a DNS blip at 07:30 must not cost the day (9 Nov 2026)
+
+
+class QuotaExhausted(Exception):
+    """The project's daily Data API quota is spent; nothing to do until it resets."""
+
+
+def with_retries(fn):
+    """Run fn, retrying network failures. Safe to repeat: exported pairs are skipped on disk."""
+    from google.auth.exceptions import TransportError
+    from googleapiclient.errors import HttpError
+    from httplib2 import HttpLib2Error
+
+    for attempt in range(1, RETRIES + 1):
+        try:
+            return fn()
+        except HttpError as e:
+            if b"quotaExceeded" in (e.content or b"") or "quotaExceeded" in str(e):
+                raise QuotaExhausted from e
+            raise
+        except (OSError, TransportError, HttpLib2Error) as e:
+            if attempt == RETRIES:
+                raise
+            print(f"network: {type(e).__name__}: {str(e)[:120]}; retry {attempt}/{RETRIES - 1} in {RETRY_WAIT}s")
+            time.sleep(RETRY_WAIT)
+    raise AssertionError("unreachable")
+
+
+def channel(token: Path, known: set[str], st: dict, out: Path) -> list[str]:
+    """Export one channel's new uploads within st['budget']; return the ids ready to index."""
+    yt = client(token)
+    handle, videos = public_uploads(yt)
+    new = [v["id"] for v in videos if v["id"] not in known]
+    todo = [v for v in videos if v["id"] in new and not (out / f"{v['id']}.vtt").exists()]
+    print(f"{handle}: {len(videos)} public, {len(new)} not indexed, {st['budget'] // UNITS_PER_VIDEO} fit the budget")
+    for v in todo:
+        if st["budget"] < UNITS_PER_VIDEO:
+            break
+        st["budget"] -= UNITS_PER_VIDEO  # spent even if the call fails: quota counts the request
+        st["written"] += export(yt, handle, v, out)
+    # A pair cached by an earlier run that stopped before indexing is indexed now.
+    return [i for i in new if (out / f"{i}.vtt").exists() and (out / f"{i}.info.json").exists()]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("--token", type=Path, action="append", required=True, help="OAuth token of a channel (repeat)")
@@ -143,24 +188,18 @@ def main() -> int:
         sys.stdout.reconfigure(line_buffering=True)
 
     a.out.mkdir(parents=True, exist_ok=True)
-    known, budget, written, pending = known_ids(a.db), a.max_units, 0, []
+    known, st, pending = known_ids(a.db), {"budget": a.max_units, "written": 0}, []
     for token in a.token:
         token = token.expanduser()
         if not token.exists():
             print(f"{token}: no token, skipped (authorize that channel first)")
             continue
-        yt = client(token)
-        handle, videos = public_uploads(yt)
-        new = [v["id"] for v in videos if v["id"] not in known]
-        todo = [v for v in videos if v["id"] in new and not (a.out / f"{v['id']}.vtt").exists()]
-        print(f"{handle}: {len(videos)} public, {len(new)} not indexed, {budget // UNITS_PER_VIDEO} fit the budget")
-        for v in todo:
-            if budget < UNITS_PER_VIDEO:
-                break
-            budget -= UNITS_PER_VIDEO
-            written += export(yt, handle, v, a.out)
-        # A pair cached by an earlier run that stopped before indexing is indexed now.
-        pending += [i for i in new if (a.out / f"{i}.vtt").exists() and (a.out / f"{i}.info.json").exists()]
+        try:
+            pending += with_retries(lambda t=token: channel(t, known, st, a.out))
+        except QuotaExhausted:
+            print("quota exhausted for today; the next run continues from here")
+            break
+    written, budget = st["written"], st["budget"]
     print(f"{written} exported, {a.max_units - budget} units; {len(pending)} to index")
     if pending and not a.no_index:
         args = [x for vid in pending for x in ("-u", f"https://www.youtube.com/watch?v={vid}")]
