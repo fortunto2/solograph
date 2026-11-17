@@ -9,6 +9,8 @@
 //!   SOLOGRAPH_MCP_TOKEN or SOLOGRAPH_MCP_TOKEN_FILE   the bearer token (32+ characters)
 //!   SOLOGRAPH_MCP_HOSTS   public host names the tunnel forwards (the Host header rmcp checks)
 //!   SOLOGRAPH_MCP_PORT    default 8014
+//!   SOLOGRAPH_MCP_WRITE=1 also offer `capture`. Off by default: over HTTP the server is
+//!       read-only, so a leaked token or a misrouted tunnel can read but never write.
 //!   SOLOGRAPH_MCP_TRUST_ACCESS=1   also let in a request carrying `Cf-Access-Jwt-Assertion`. Set it
 //!       ONLY when the tunnel in front validates that JWT itself (cloudflared ingress
 //!       `originRequest.access.required` with the app's audience): then the header proves
@@ -92,12 +94,24 @@ fn trust_access() -> bool {
     )
 }
 
+fn write_enabled() -> bool {
+    matches!(
+        std::env::var("SOLOGRAPH_MCP_WRITE").as_deref(),
+        Ok("1" | "true" | "yes")
+    )
+}
+
 pub async fn serve(port: u16) -> Result<()> {
     let token: Arc<str> = token()?.into();
     let trust = trust_access();
     let hosts = hosts();
     let config = StreamableHttpServerConfig::default().with_allowed_hosts(hosts.clone());
-    let handler = crate::server::Solograph::new();
+    let write = write_enabled();
+    let handler = if write {
+        crate::server::Solograph::new()
+    } else {
+        crate::server::Solograph::read_only()
+    };
     let mcp = StreamableHttpService::new(
         move || Ok(handler.clone()),
         LocalSessionManager::default().into(),
@@ -118,7 +132,8 @@ pub async fn serve(port: u16) -> Result<()> {
         .await
         .with_context(|| format!("bind 127.0.0.1:{port}"))?;
     eprintln!(
-        "solograph mcp-http on http://127.0.0.1:{port}/mcp (hosts: {}; access jwt trusted: {trust})",
+        "solograph mcp-http on http://127.0.0.1:{port}/mcp (hosts: {}; access jwt trusted: {trust}; \
+         writes: {write})",
         hosts.join(", ")
     );
     axum::serve(listener, app)

@@ -277,21 +277,34 @@ fn registry_path() -> Option<PathBuf> {
 
 impl Solograph {
     pub fn new() -> Self {
+        Self::with(true)
+    }
+
+    /// The same server without its one write, `capture`: for a transport other machines
+    /// reach (`mcp-http`), where reading is the use and a write is a decision to make.
+    pub fn read_only() -> Self {
+        Self::with(false)
+    }
+
+    fn with(write: bool) -> Self {
         Self {
             kb: Default::default(),
             sessions: Default::default(),
             sources: Default::default(),
             portfolio: Default::default(),
-            tool_router: Self::router(crate::brain::detect().is_some()),
+            tool_router: Self::router(crate::brain::detect().is_some(), write),
         }
     }
 
     /// The tools this KB offers: the brain's two only when it has a `brain:` section,
-    /// so a KB without one (another profile, a client's) never lists them.
-    fn router(brain: bool) -> ToolRouter<Self> {
+    /// so a KB without one (another profile, a client's) never lists them; `capture`
+    /// only when writes are allowed.
+    fn router(brain: bool, write: bool) -> ToolRouter<Self> {
         let mut r = Self::tool_router();
         if !brain {
             r.remove_route("brain_start");
+        }
+        if !brain || !write {
             r.remove_route("capture");
         }
         r
@@ -617,7 +630,29 @@ impl ServerHandler for Solograph {
 mod tests {
     use serde_json::json;
 
-    use super::{KbSearchArgs, ProjectInfoArgs, SymbolSearchArgs};
+    use super::{KbSearchArgs, ProjectInfoArgs, Solograph, SymbolSearchArgs};
+
+    fn tools(brain: bool, write: bool) -> Vec<String> {
+        let mut t: Vec<String> = Solograph::router(brain, write)
+            .list_all()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        t.sort();
+        t
+    }
+
+    #[test]
+    fn capture_is_offered_only_with_a_brain_and_writes_allowed() {
+        let has = |b, w, name: &str| tools(b, w).iter().any(|t| t == name);
+        assert!(has(true, true, "capture") && has(true, true, "brain_start"));
+        assert!(
+            !has(true, false, "capture"),
+            "read-only (mcp-http default) never writes"
+        );
+        assert!(has(true, false, "brain_start") && has(true, false, "kb_search"));
+        assert!(!has(false, true, "capture") && !has(false, true, "brain_start"));
+    }
 
     #[test]
     fn strings_for_numbers_and_flags_and_empty_filters_are_understood() {
