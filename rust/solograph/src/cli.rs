@@ -750,6 +750,12 @@ fn print_useful(f: &Value) {
             "of those, in transcripts still on disk, led to opening a result",
         ),
         ("retried", "retried", "searches", &retry),
+        (
+            "re-asked",
+            "rephrased",
+            "searches",
+            "of them, the next search on the same question (shared word or Russian to English)",
+        ),
     ] {
         println!(
             "  {label:8} {} of {} {what} ({})",

@@ -101,7 +101,7 @@ brain:
 | Tool | What it does |
 |------|--------------|
 | `brain_start` | Returns the orient file: the map of what lives where, how to read it, how to write back, today's state. The agent calls it once before work on the user's projects, notes, decisions or tasks |
-| `capture` | Writes one new markdown file (`type: capture`, `kind`: note, decision, finding, handoff or idea) into the capture folder, signed with the client's name. Append-only: a second capture with the same title that day gets `-2`; nothing existing is edited. Up to 20,000 characters; the usage log keeps only the length |
+| `capture` | Writes one new markdown file (`type: capture`, `kind`: note, decision, finding, handoff or idea) into the capture folder, signed with the client's name. Append-only: a second capture with the same title that day gets `-2`; nothing existing is edited. Up to 20,000 characters; the usage log keeps only the length. Optional `topic` (`id` or `id#n`, a harness registry topic) goes into the frontmatter, and the registry lists the note under that topic |
 
 Both are marked `anthropic/alwaysLoad` (0.19), as `session_search` and `kb_search` are: Claude Code loads them with the session instead of behind tool search, because an agent does not go looking for a tool it does not know it has.
 
@@ -138,6 +138,7 @@ Why two and not a write tool per kind of thing: Rinat Abdullin's BitGN Brain wen
 | found | searches that returned something | 31 of 45 (69%) |
 | opened | of those, searches after which the agent opened a returned file or page, or read a returned session with `session_id`, before the next prompt (from the transcript, while it is on disk) | 11 of 31 (35%) |
 | retried | searches asked again by the same tool within 2 minutes: the first answer did not do | 8 of 45 (18%) |
+| re-asked | of those, the next search of the same tool on the same question (a shared word stem, or the Russian question put in English); `--json` lists the pairs as `asked_again`, Russian-then-English ones marked `english` (candidate aliases), and agent searches that found nothing as `found_nothing`. `retried` also counts a change of subject: over 14 days to 17 Nov 2026, 59 retried, 31 re-asked of 366 | not counted |
 
 The last column is two months of transcripts (one profile) counted with the same definitions. 13 of the 45 searches were errors: `session_search` failed on every call from 27 September to 25 October in the Python server it replaced, and nothing counted errors then. Reach is the number to move: a search that is never made helps no one, and hooks that put the pointer into the prompt are what other tools found agents act on (a skill the agent must remember was never invoked in 56% of Vercel's evals; injected context was used 66% of the time against 6% in Codeminer42's).
 

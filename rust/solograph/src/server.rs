@@ -166,6 +166,10 @@ pub struct CaptureArgs {
     /// One of note, decision, finding, handoff, idea (default note)
     #[serde(default, deserialize_with = "lenient::filter")]
     kind: Option<String>,
+    /// The registry topic this is about, `id` or `id#n` (optional): the registry then lists
+    /// the note under it (`task show <id>`), next to that topic's swarm tasks
+    #[serde(default, deserialize_with = "lenient::filter")]
+    topic: Option<String>,
 }
 
 /// What the client is told at connect. With tool search on (Claude Code's
@@ -531,6 +535,7 @@ impl Solograph {
             tags: &a.tags,
             kind: a.kind.as_deref().unwrap_or(""),
             client: client.as_deref(),
+            topic: a.topic.as_deref(),
         };
         let out = crate::brain::detect()
             .ok_or_else(|| anyhow::anyhow!("no brain: the KB has no `brain:` section"))

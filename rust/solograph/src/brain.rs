@@ -102,6 +102,8 @@ pub struct Note<'a> {
     pub tags: &'a [String],
     pub kind: &'a str,
     pub client: Option<&'a str>,
+    /// The registry topic it is about (`id` or `id#n`): the registry lists it under that topic.
+    pub topic: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -115,6 +117,24 @@ struct Front<'a> {
     kind: &'a str,
     source: &'a str,
     client: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    topic: Option<String>,
+}
+
+/// `id` or `id#n`, as the registry writes them; lowercased. Anything else is refused, so a
+/// typo fails here instead of linking the note to nothing.
+fn topic_ref(t: &str) -> Result<String> {
+    let t = t.trim().to_lowercase();
+    let (id, n) = match t.split_once('#') {
+        Some((id, n)) => (id, Some(n)),
+        None => (t.as_str(), None),
+    };
+    let id_ok = !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    let n_ok = n.is_none_or(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+    if !(id_ok && n_ok) {
+        bail!("topic must be a registry id like `brain-memory` or `brain-memory#2`, not {t:?}");
+    }
+    Ok(t)
 }
 
 /// File name from a title: letters and digits in any script, the rest one dash,
@@ -187,6 +207,11 @@ pub fn capture(
         kind,
         source: "brain-mcp",
         client: note.client.unwrap_or("unknown"),
+        topic: note
+            .topic
+            .filter(|t| !t.trim().is_empty())
+            .map(topic_ref)
+            .transpose()?,
     };
     let body = format!("---\n{}---\n\n{text}\n", serde_yaml::to_string(&front)?);
     let dir = inside(root, rel)?;
@@ -245,6 +270,25 @@ mod tests {
             tags,
             kind: "",
             client: Some("claude-code"),
+            topic: None,
+        }
+    }
+
+    #[test]
+    fn a_topic_links_the_note_and_a_bad_one_is_refused() {
+        let t = kb(BRAIN);
+        let cfg = Config::load(t.path()).unwrap().unwrap();
+        let mut n = note("Linked", "x", &[]);
+        n.topic = Some("Solopreneur-Brain#5");
+        let out = capture(t.path(), &cfg, &n, at()).unwrap();
+        let text = std::fs::read_to_string(t.path().join(out["path"].as_str().unwrap())).unwrap();
+        assert!(text.contains("\ntopic: solopreneur-brain#5\n"), "{text}");
+        let plain = capture(t.path(), &cfg, &note("Unlinked", "x", &[]), at()).unwrap();
+        let text = std::fs::read_to_string(t.path().join(plain["path"].as_str().unwrap())).unwrap();
+        assert!(!text.contains("topic:"), "no topic, no line: {text}");
+        for bad in ["two words", "x#", "x#a", "#3", "a/b"] {
+            n.topic = Some(bad);
+            assert!(capture(t.path(), &cfg, &n, at()).is_err(), "{bad}");
         }
     }
 

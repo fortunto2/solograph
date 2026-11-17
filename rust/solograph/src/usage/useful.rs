@@ -234,6 +234,13 @@ pub fn report(lines: &[Value], turns: &dyn Fn(&str, i64) -> Option<Turns>) -> Va
         })
         .count();
 
+    let asked_again = asked_again(&searches);
+    let found_nothing: Vec<Value> = searches
+        .iter()
+        .filter(|l| l["n"].as_u64() == Some(0))
+        .map(|l| json!({"ts": l["ts"], "tool": l["tool"], "query": query(l)}))
+        .collect();
+
     // Each transcript is read once, from its session's first search that found
     // something.
     let mut since: HashMap<&str, i64> = HashMap::new();
@@ -272,8 +279,64 @@ pub fn report(lines: &[Value], turns: &dyn Fn(&str, i64) -> Option<Turns>) -> Va
         "checked": checked,
         "opened": opened,
         "retried": retried,
+        "rephrased": asked_again.len(),
+        "asked_again": asked_again,
+        "found_nothing": found_nothing,
         "errors": calls.iter().filter(|l| l["error"] == true).count(),
     })
+}
+
+fn query(l: &Value) -> &str {
+    l["args"]["query"].as_str().unwrap_or("").trim()
+}
+
+/// The same question asked again: a search, then the next one of the same session and
+/// tool 3-120 s later, with a different query that shares a word with it (same stem, three
+/// letters or more) or puts a Russian question in English. "retried" counts any different
+/// search in that window, a change of subject included, and not only the next one: over 14
+/// days to 17.11.2026 it said 58 where 47 searches had a next one in the window and 34 of
+/// those were the same question. That 34 is the number to act on. A Russian-then-English
+/// pair is a candidate missing alias, not a proven one: an unrelated English search right
+/// after a Russian one passes too, so whoever drafts the alias checks the English term
+/// against the page it would lead to (harness brain drafts).
+fn asked_again(searches: &[&Value]) -> Vec<Value> {
+    let words = |q: &str| -> HashSet<String> {
+        crate::text::terms_of(q)
+            .into_iter()
+            .map(|(key, _)| key)
+            .filter(|k| k.chars().count() >= 3)
+            .collect()
+    };
+    let cyrillic = |q: &str| {
+        q.chars()
+            .any(|c| matches!(c, 'а'..='я' | 'А'..='Я' | 'ё' | 'Ё'))
+    };
+    let mut out = Vec::new();
+    for (i, l) in searches.iter().enumerate() {
+        let Some(next) = searches[i + 1..]
+            .iter()
+            .find(|n| session(n) == session(l) && n["tool"] == l["tool"])
+        else {
+            continue;
+        };
+        let gap = ts(next).unwrap_or(0) - ts(l).unwrap_or(0);
+        let (first, then) = (query(l), query(next));
+        if !(PARALLEL_SECS..=RETRY_SECS).contains(&gap)
+            || first.is_empty()
+            || first.to_lowercase() == then.to_lowercase()
+        {
+            continue;
+        }
+        let english =
+            cyrillic(first) && !cyrillic(then) && then.chars().any(|c| c.is_ascii_alphabetic());
+        if english || !words(first).is_disjoint(&words(then)) {
+            out.push(json!({
+                "tool": l["tool"], "first": first, "then": then, "gap_s": gap,
+                "first_found": l["n"].as_u64().unwrap_or(0), "english": english,
+            }));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -291,6 +354,50 @@ mod tests {
 
     fn turns(lines: &[serde_json::Value]) -> Turns {
         turns_since(lines, 0)
+    }
+
+    fn search(at: &str, tool: &str, q: &str, n: u64) -> serde_json::Value {
+        json!({"ts": format!("2026-11-17T10:{at}Z"), "via": "mcp", "session": "s1", "tool": tool,
+               "n": n, "args": {"query": q}})
+    }
+
+    #[test]
+    fn asked_again_is_the_next_search_on_the_same_question_not_a_change_of_subject() {
+        let lines = [
+            search("00:00", "kb_search", "песочница агента", 2),
+            search("00:30", "kb_search", "песочницу для агентов", 1), // same words: asked again
+            search("01:00", "kb_search", "счёт фактура", 3),          // new subject
+            search("01:01", "kb_search", "invoice templates", 3),     // 1 s later: parallel
+            search("02:00", "session_search", "мозг компании", 0),
+            search("02:40", "session_search", "company brain", 4), // Russian, then English
+            search("03:00", "kb_search", "visa", 1),
+            search("09:00", "kb_search", "visa letter", 1), // 6 minutes: a new turn
+        ];
+        let r = report(&lines, &|_, _| None);
+        let pairs = r["asked_again"].as_array().unwrap();
+        let got: Vec<(&str, &str, bool)> = pairs
+            .iter()
+            .map(|p| {
+                (
+                    p["first"].as_str().unwrap(),
+                    p["then"].as_str().unwrap(),
+                    p["english"] == true,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("песочница агента", "песочницу для агентов", false),
+                ("мозг компании", "company brain", true),
+            ]
+        );
+        assert_eq!(r["rephrased"], 2);
+        assert_eq!(r["found_nothing"].as_array().unwrap().len(), 1);
+        assert!(
+            r["retried"].as_u64().unwrap() >= 3,
+            "retried counts the change of subject too"
+        );
     }
 
     #[test]
