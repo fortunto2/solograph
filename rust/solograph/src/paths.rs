@@ -19,6 +19,14 @@ pub fn expand(p: &str) -> PathBuf {
 }
 
 /// The env var as a path, or None when unset or empty.
+/// A port from the environment, else the default.
+pub fn env_port(name: &str, default: u16) -> u16 {
+    std::env::var(name)
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(default)
+}
+
 pub fn env_path(name: &str) -> Option<PathBuf> {
     std::env::var(name)
         .ok()

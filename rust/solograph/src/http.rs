@@ -12,10 +12,7 @@ use serde_json::{Value, json};
 use crate::sources::SourceIndex;
 
 pub fn port() -> u16 {
-    std::env::var("SOLOGRAPH_SEARCH_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(8002)
+    crate::paths::env_port("SOLOGRAPH_SEARCH_PORT", 8002)
 }
 
 /// Percent-decoding as Python's parse_qs does it: `+` is a space, `%XX` a byte.

@@ -30,20 +30,17 @@ use rmcp::transport::streamable_http_server::{
 };
 
 pub fn port() -> u16 {
-    std::env::var("SOLOGRAPH_MCP_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(8014)
+    crate::paths::env_port("SOLOGRAPH_MCP_PORT", 8014)
 }
 
 /// The token from the environment or a file; short or missing tokens are refused.
-pub fn token() -> Result<String> {
+fn token() -> Result<String> {
     let raw = match std::env::var("SOLOGRAPH_MCP_TOKEN") {
         Ok(t) => t,
         Err(_) => {
-            let path = std::env::var("SOLOGRAPH_MCP_TOKEN_FILE")
+            let path = crate::paths::env_path("SOLOGRAPH_MCP_TOKEN_FILE")
                 .context("set SOLOGRAPH_MCP_TOKEN or SOLOGRAPH_MCP_TOKEN_FILE")?;
-            std::fs::read_to_string(&path).with_context(|| format!("read {path}"))?
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?
         }
     };
     let t = raw.trim().to_string();
@@ -54,7 +51,7 @@ pub fn token() -> Result<String> {
 }
 
 /// Loopback names, plus the public ones the tunnel forwards.
-pub fn hosts() -> Vec<String> {
+fn hosts() -> Vec<String> {
     let mut h: Vec<String> = ["127.0.0.1", "localhost"].map(String::from).to_vec();
     if let Ok(extra) = std::env::var("SOLOGRAPH_MCP_HOSTS") {
         h.extend(
@@ -88,7 +85,7 @@ fn authorized(req: &Request, token: &str, trust_access: bool) -> bool {
 }
 
 /// SOLOGRAPH_MCP_TRUST_ACCESS: see the module docs for when it is safe.
-pub fn trust_access() -> bool {
+fn trust_access() -> bool {
     matches!(
         std::env::var("SOLOGRAPH_MCP_TRUST_ACCESS").as_deref(),
         Ok("1" | "true" | "yes")

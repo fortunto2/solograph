@@ -222,6 +222,16 @@ fn quiet_on_closed_pipe() {
     }
 }
 
+/// `--port N`, else the command's own default (its env var, then its fixed port).
+fn port_arg(a: &cli::Args, default: fn() -> u16) -> Result<u16> {
+    match a.val("port") {
+        Some(p) => p
+            .parse()
+            .map_err(|_| anyhow::anyhow!("--port must be a number")),
+        None => Ok(default()),
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if !matches!(
@@ -238,22 +248,9 @@ fn main() -> ExitCode {
             .build()
             .map_err(Into::into)
             .and_then(|rt| rt.block_on(serve())),
-        Some("http") => parsed().and_then(|a| {
-            let port = match a.val("port") {
-                Some(p) => p
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("--port must be a number"))?,
-                None => http::port(),
-            };
-            http::serve(port)
-        }),
+        Some("http") => parsed().and_then(|a| http::serve(port_arg(&a, http::port)?)),
         Some("mcp-http") => parsed().and_then(|a| {
-            let port = match a.val("port") {
-                Some(p) => p
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("--port must be a number"))?,
-                None => mcp_http::port(),
-            };
+            let port = port_arg(&a, mcp_http::port)?;
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?
