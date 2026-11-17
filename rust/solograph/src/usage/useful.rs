@@ -327,8 +327,10 @@ fn asked_again(searches: &[&Value]) -> Vec<Value> {
         {
             continue;
         }
-        let english =
-            cyrillic(first) && !cyrillic(then) && then.chars().any(|c| c.is_ascii_alphabetic());
+        // A Russian question (no Latin word in it: a mixed one shares its Latin words by stem
+        // anyway) followed by one with no Russian at all.
+        let latin = |q: &str| q.chars().any(|c| c.is_ascii_alphabetic());
+        let english = cyrillic(first) && !latin(first) && !cyrillic(then) && latin(then);
         if english || !words(first).is_disjoint(&words(then)) {
             out.push(json!({
                 "tool": l["tool"], "first": first, "then": then, "gap_s": gap,
@@ -370,6 +372,8 @@ mod tests {
             search("01:01", "kb_search", "invoice templates", 3),     // 1 s later: parallel
             search("02:00", "session_search", "мозг компании", 0),
             search("02:40", "session_search", "company brain", 4), // Russian, then English
+            search("02:50", "session_search", "sweep bot-say Входящие", 3),
+            search("03:20", "session_search", "passkey claude.ai", 2), // mixed, then English: new subject
             search("03:00", "kb_search", "visa", 1),
             search("09:00", "kb_search", "visa letter", 1), // 6 minutes: a new turn
         ];
