@@ -94,14 +94,25 @@ A KB whose `.solograph.yaml` has a top-level `brain:` section gets two tools mor
 
 ```yaml
 brain:
-  orient: harness/brain/ORIENT.md   # what brain_start returns
-  capture: 3-inbox/brain            # where capture writes
+  orient: harness/brain/state/orient.md   # what brain_start returns
+  capture: 3-inbox                        # where capture writes
 ```
 
 | Tool | What it does |
 |------|--------------|
 | `brain_start` | Returns the orient file: the map of what lives where, how to read it, how to write back, today's state. The agent calls it once before work on the user's projects, notes, decisions or tasks |
 | `capture` | Writes one new markdown file (`type: capture`, `kind`: note, decision, finding, handoff or idea) into the capture folder, signed with the client's name. Append-only: a second capture with the same title that day gets `-2`; nothing existing is edited. Up to 20,000 characters; the usage log keeps only the length |
+
+Both are marked `anthropic/alwaysLoad` (0.19), as `session_search` and `kb_search` are: Claude Code loads them with the session instead of behind tool search, because an agent does not go looking for a tool it does not know it has.
+
+### Over HTTP, for agents that cannot start a process (0.19)
+
+`solograph mcp-http` serves the same tools over streamable HTTP, for Claude Code or Codex on another machine and, later, the phone. It binds `127.0.0.1` only (port 8014, `--port N` or `SOLOGRAPH_MCP_PORT`); getting there from outside is a tunnel's job, with Cloudflare Access in front. It also refuses every request without `Authorization: Bearer <token>`, so a tunnel left open by mistake still does not serve the user's sessions to the internet, and it will not start without a token of 32+ characters (`SOLOGRAPH_MCP_TOKEN` or `SOLOGRAPH_MCP_TOKEN_FILE`). rmcp checks the `Host` header against loopback plus `SOLOGRAPH_MCP_HOSTS` (the public names the tunnel forwards), which stops DNS rebinding.
+
+```bash
+SOLOGRAPH_MCP_TOKEN_FILE=~/.solo/mcp-token SOLOGRAPH_MCP_HOSTS=mcp.example.org solograph mcp-http
+claude mcp add --transport http brain https://mcp.example.org/mcp --header "Authorization: Bearer $TOKEN"
+```
 
 Why two and not a write tool per kind of thing: Rinat Abdullin's BitGN Brain went from a dozen tools to two (`start`, `run` for code executed next to the data). Here the agent's own shell is the `run`, so the entry and the write path are what is left. `brain:` sits at the top level because `kb:` refuses unknown keys, and a binary from before 0.18 must keep reading the same file.
 

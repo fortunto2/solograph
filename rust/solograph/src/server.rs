@@ -189,8 +189,9 @@ const BRAIN_INSTRUCTIONS: &str = "This KB is a brain: call brain_start once befo
 projects, notes, decisions, tasks or clients (the map of what lives where), and capture to leave \
 a decision, finding or handoff for later sessions and other agents.";
 
-/// Loads with the session instead of behind tool search: the two tools that
-/// answer "what did we do before" (Claude Code's `anthropic/alwaysLoad`).
+/// Loads with the session instead of behind tool search (Claude Code's `anthropic/alwaysLoad`):
+/// the two that answer "what did we do before", and the brain's entry and write path, which an
+/// agent will not go looking for.
 fn always_load() -> rmcp::model::MetaObject {
     let mut m = serde_json::Map::new();
     m.insert("anthropic/alwaysLoad".into(), json!(true));
@@ -499,6 +500,7 @@ impl Solograph {
     }
 
     #[tool(
+        meta = always_load(),
         description = "Start here before work that touches the user's projects, notes, decisions, tasks or\nclients: the map of their shared memory (the brain). What lives where, which tool or\nfile answers what, how to write back, and today's state. One call per session; it is\nshort. Offered only when the knowledge base has a `brain:` section."
     )]
     async fn brain_start(&self) -> Result<CallToolResult, ErrorData> {
@@ -515,6 +517,7 @@ impl Solograph {
     }
 
     #[tool(
+        meta = always_load(),
         description = "Write a note into the user's shared memory (the brain), so later sessions and other\nagents find it: a decision with its reason, a finding, a handoff to another agent, an\nidea. Append-only: one new file in the inbox, never an edit of an existing one, signed\nwith the client that wrote it. One subject per note; kb_search finds it at once."
     )]
     async fn capture(

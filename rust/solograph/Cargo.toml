@@ -1,6 +1,6 @@
 [package]
 name = "solograph"
-version = "0.18.0"
+version = "0.19.0"
 edition = "2024"
 description = "Solograph core: MCP server and search indexes over SQLite FTS5"
 license = "MIT"
@@ -11,11 +11,12 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 libc = "0.2"
 memchr = "2"
 regex = "1"
-rmcp = { version = "3.8", features = ["server", "macros", "transport-io"] }
+rmcp = { version = "3.8", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 rust-stemmers = "1.2"
 schemars = "1"
@@ -24,7 +25,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 streaming-iterator = "0.1"
 tiny_http = "0.12"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "net", "signal"] }
 toml = "0.9"
 tree-sitter = "0.26"
 tree-sitter-bash = "=0.25.1"

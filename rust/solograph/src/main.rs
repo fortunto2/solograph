@@ -13,6 +13,7 @@ mod git;
 mod hook;
 mod http;
 mod kb;
+mod mcp_http;
 mod paths;
 mod portfolio;
 mod registry;
@@ -37,6 +38,8 @@ const USAGE: &str = "solograph — code portfolio, sessions, KB and sources sear
 Usage:
   solograph [serve]                      MCP server on stdio (the default)
   solograph http [--port N]              sources over HTTP: /search /sources /health (port 8002)
+  solograph mcp-http [--port N]          the MCP server over streamable HTTP on 127.0.0.1 (port 8014),
+                                         bearer token required (SOLOGRAPH_MCP_TOKEN[_FILE])
 
   solograph symbols QUERY [-p P] [-k KIND] [-n N]   where something is defined, every project
   solograph sessions QUERY [-p P] [-n N] [--session ID]   past Claude Code sessions, full
@@ -223,7 +226,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if !matches!(
         args.first().map(String::as_str),
-        None | Some("serve" | "http")
+        None | Some("serve" | "http" | "mcp-http")
     ) {
         quiet_on_closed_pipe();
     }
@@ -243,6 +246,18 @@ fn main() -> ExitCode {
                 None => http::port(),
             };
             http::serve(port)
+        }),
+        Some("mcp-http") => parsed().and_then(|a| {
+            let port = match a.val("port") {
+                Some(p) => p
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("--port must be a number"))?,
+                None => mcp_http::port(),
+            };
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?
+                .block_on(mcp_http::serve(port))
         }),
         Some("scan") => parsed().and_then(|a| scan(&a)),
         Some("registry") => parsed().and_then(|a| {
