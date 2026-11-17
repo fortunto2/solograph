@@ -4,6 +4,7 @@
 //! TrustMRR, Telegram), which write the sources index this binary reads.
 
 mod aliases;
+mod brain;
 mod cli;
 mod deps;
 mod english;

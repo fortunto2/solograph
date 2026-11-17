@@ -53,6 +53,18 @@ mod lenient {
         }
     }
 
+    /// Tags as a list or as one comma-separated string.
+    pub fn tags<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+        Ok(match Option::<Value>::deserialize(d)? {
+            Some(Value::Array(a)) => a
+                .into_iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+            Some(Value::String(s)) => s.split(',').map(|t| t.trim().to_string()).collect(),
+            _ => Vec::new(),
+        })
+    }
+
     /// "" and null are no filter.
     pub fn filter<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
         Ok(Option::<String>::deserialize(d)?.filter(|s| !s.trim().is_empty()))
@@ -142,6 +154,20 @@ pub struct SourceSearchArgs {
     n_results: usize,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct CaptureArgs {
+    /// What it is about, in the words someone would search for it by
+    title: String,
+    /// The note itself, markdown: the decision and its reason, the finding, the handoff
+    text: String,
+    /// Tags, a list or "a, b" (optional; `brain` is always added)
+    #[serde(default, deserialize_with = "lenient::tags")]
+    tags: Vec<String>,
+    /// One of note, decision, finding, handoff, idea (default note)
+    #[serde(default, deserialize_with = "lenient::filter")]
+    kind: Option<String>,
+}
+
 /// What the client is told at connect. With tool search on (Claude Code's
 /// default) the agent sees only tool names and this text until it loads a tool,
 /// so it says when to reach for each one, search words first.
@@ -157,6 +183,11 @@ paths, ids). The session you are in is left out.
 - project_info: the user's projects: the list, one project's stack and layers, who uses a package.
 Matching is by words (BM25 over Russian and English stems), not by meaning: use the words the \
 text itself would contain, and try the other language when nothing comes back.";
+
+/// Added to INSTRUCTIONS when the KB has a brain.
+const BRAIN_INSTRUCTIONS: &str = "This KB is a brain: call brain_start once before work on the user's \
+projects, notes, decisions, tasks or clients (the map of what lives where), and capture to leave \
+a decision, finding or handoff for later sessions and other agents.";
 
 /// Loads with the session instead of behind tool search: the two tools that
 /// answer "what did we do before" (Claude Code's `anthropic/alwaysLoad`).
@@ -196,6 +227,10 @@ fn with<S, T>(
 /// the request by `call_tool`.
 #[derive(Clone)]
 struct Asking(Option<String>);
+
+/// The client making a call (its `clientInfo.name`), for `capture` to sign with.
+#[derive(Clone)]
+struct Client(Option<String>);
 
 fn list_result(items: Vec<Value>) -> CallToolResult {
     let mut r = CallToolResult::success(
@@ -242,8 +277,19 @@ impl Solograph {
             sessions: Default::default(),
             sources: Default::default(),
             portfolio: Default::default(),
-            tool_router: Self::tool_router(),
+            tool_router: Self::router(crate::brain::detect().is_some()),
         }
+    }
+
+    /// The tools this KB offers: the brain's two only when it has a `brain:` section,
+    /// so a KB without one (another profile, a client's) never lists them.
+    fn router(brain: bool) -> ToolRouter<Self> {
+        let mut r = Self::tool_router();
+        if !brain {
+            r.remove_route("brain_start");
+            r.remove_route("capture");
+        }
+        r
     }
 
     /// Every project the registry lists; None when there is no registry.
@@ -451,6 +497,45 @@ impl Solograph {
         });
         Ok(answer("source_search", out))
     }
+
+    #[tool(
+        description = "Start here before work that touches the user's projects, notes, decisions, tasks or\nclients: the map of their shared memory (the brain). What lives where, which tool or\nfile answers what, how to write back, and today's state. One call per session; it is\nshort. Offered only when the knowledge base has a `brain:` section."
+    )]
+    async fn brain_start(&self) -> Result<CallToolResult, ErrorData> {
+        let out = crate::brain::detect()
+            .ok_or_else(|| anyhow::anyhow!("no brain: the KB has no `brain:` section"))
+            .and_then(|(root, cfg)| crate::brain::start(&root, &cfg));
+        Ok(match out {
+            Ok((text, header)) => CallToolResult::success(vec![
+                ContentBlock::text(text),
+                ContentBlock::text(header.to_string()),
+            ]),
+            Err(e) => failed("brain_start", e),
+        })
+    }
+
+    #[tool(
+        description = "Write a note into the user's shared memory (the brain), so later sessions and other\nagents find it: a decision with its reason, a finding, a handoff to another agent, an\nidea. Append-only: one new file in the inbox, never an edit of an existing one, signed\nwith the client that wrote it. One subject per note; kb_search finds it at once."
+    )]
+    async fn capture(
+        &self,
+        Parameters(a): Parameters<CaptureArgs>,
+        Extension(Client(client)): Extension<Client>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let note = crate::brain::Note {
+            title: &a.title,
+            text: &a.text,
+            tags: &a.tags,
+            kind: a.kind.as_deref().unwrap_or(""),
+            client: client.as_deref(),
+        };
+        let out = crate::brain::detect()
+            .ok_or_else(|| anyhow::anyhow!("no brain: the KB has no `brain:` section"))
+            .and_then(|(root, cfg)| {
+                crate::brain::capture(&root, &cfg, &note, chrono::Local::now())
+            });
+        Ok(answer("capture", out))
+    }
 }
 
 impl Solograph {
@@ -480,6 +565,18 @@ impl ServerHandler for Solograph {
         // running server (`/clear`, another session in the same project).
         let asking = crate::sessions::calling_session();
         context.extensions.insert(Asking(asking.clone()));
+        context.extensions.insert(Client(client.clone()));
+        // A capture's text is already in its file; the log keeps only its length.
+        let args = match (name.as_str(), args) {
+            ("capture", Some(mut a)) => {
+                if let Some(t) = a.get("text").and_then(Value::as_str) {
+                    let n = t.chars().count();
+                    a.insert("text".into(), json!(format!("<{n} chars>")));
+                }
+                Some(a)
+            }
+            (_, a) => a,
+        };
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         let out = self.tool_router.call(tcc).await;
         let result = match &out {
@@ -500,7 +597,11 @@ impl ServerHandler for Solograph {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("solograph", env!("CARGO_PKG_VERSION")))
-            .with_instructions(INSTRUCTIONS)
+            .with_instructions(if crate::brain::detect().is_some() {
+                format!("{INSTRUCTIONS}\n{BRAIN_INSTRUCTIONS}")
+            } else {
+                INSTRUCTIONS.to_string()
+            })
     }
 }
 

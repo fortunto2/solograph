@@ -88,6 +88,23 @@ The session asking was left out because it came first: in 18 agent searches that
 
 Web search is not here: it lives in the separate [searxng MCP server](https://github.com/fortunto2/searxng-docker-tavily-adapter), so a broken import in one cannot take the other down.
 
+### Two more when the KB is a brain (0.18)
+
+A KB whose `.solograph.yaml` has a top-level `brain:` section gets two tools more; without it they are not listed at all, so another profile never sees them.
+
+```yaml
+brain:
+  orient: harness/brain/ORIENT.md   # what brain_start returns
+  capture: 3-inbox/brain            # where capture writes
+```
+
+| Tool | What it does |
+|------|--------------|
+| `brain_start` | Returns the orient file: the map of what lives where, how to read it, how to write back, today's state. The agent calls it once before work on the user's projects, notes, decisions or tasks |
+| `capture` | Writes one new markdown file (`type: capture`, `kind`: note, decision, finding, handoff or idea) into the capture folder, signed with the client's name. Append-only: a second capture with the same title that day gets `-2`; nothing existing is edited. Up to 20,000 characters; the usage log keeps only the length |
+
+Why two and not a write tool per kind of thing: Rinat Abdullin's BitGN Brain went from a dozen tools to two (`start`, `run` for code executed next to the data). Here the agent's own shell is the `run`, so the entry and the write path are what is left. `brain:` sits at the top level because `kb:` refuses unknown keys, and a binary from before 0.18 must keep reading the same file.
+
 ### How the indexes behave
 
 - **Symbols by their words.** Names are split on camelCase and snake_case (as codebase-memory-mcp's tokenizer does), so a phrase finds every spelling. All words rank above some words; an exact name comes first. Definitions only — functions, classes, protocols — from tree-sitter grammars for Python, Swift, TypeScript, JavaScript, Kotlin, Rust, Go, Java, Ruby, C, C++, PHP, HCL, Bash and SQL.
